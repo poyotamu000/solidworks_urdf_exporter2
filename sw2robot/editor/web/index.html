@@ -662,6 +662,9 @@ async function doRename(kind, oldName, newName) {
     if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
     log(`改名 ${kind}: ${oldName} → ${newName}`, 'ok');
     refreshHistory();
+    // a link rename invalidates the current selection (its name changed); clear
+    // it so the reload doesn't reference a link that no longer exists
+    selectLink(null);
     loadRobot(currentInfo, { keepPose: true });   // rebuild with the new name
     return true;
   } catch (e) {
@@ -685,6 +688,7 @@ function attachInlineRename(el, kind, getOld) {
   });
   el.addEventListener('keydown', e => {
     if (!editing) { return; }
+    e.stopPropagation();
     if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
     else if (e.key === 'Escape') { commit = false; el.blur(); }
   });
@@ -2263,7 +2267,8 @@ async function bulkSetType(type) {
 bulkbarEl.querySelectorAll('button[data-bt]').forEach(b =>
   b.addEventListener('click', () => bulkSetType(b.dataset.bt)));
 window.addEventListener('keydown', ev => {
-  if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) {
+  if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)
+      || document.activeElement?.isContentEditable) {
     return;                       // typing in a field, not a command
   }
   const target = selectedLink ?? hoveredLink;
@@ -2695,7 +2700,8 @@ async function doHistory(which) {
 undoBtn.addEventListener('click', () => doHistory('undo'));
 redoBtn.addEventListener('click', () => doHistory('redo'));
 window.addEventListener('keydown', ev => {
-  if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) {
+  if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)
+      || document.activeElement?.isContentEditable) {
     return;
   }
   if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey
