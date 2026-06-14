@@ -64,7 +64,7 @@
               /* let orbit/drag pass THROUGH the card; only its controls
                  are interactive (a big opaque card was a dead zone) */
               pointer-events: none; }
-  #linkinfo select, #linkinfo button { pointer-events: auto; }
+  #linkinfo select, #linkinfo button, #linkinfo input { pointer-events: auto; }
   #linkinfo h2 { font-size: 12px; margin: 0 0 4px; color: #7fd0ff; }
   #linkinfo table { border-collapse: collapse; width: 100%; }
   #linkinfo td { padding: 1px 4px 1px 0; vertical-align: top; }
@@ -83,10 +83,33 @@
   .joint input[type=range] { width: 100%; }
   .joint select { font-size: 11px; background: #15171a; color: #ddd;
                   border: 1px solid #444; border-radius: 3px; }
-  .joint select.t-revolute   { color: #ff9d9d; }
-  .joint select.t-continuous { color: #ffc09d; }
-  .joint select.t-prismatic  { color: #9dc4ff; }
-  .joint select.t-fixed      { color: #888; }
+  .joint select.t-revolute, .jpanel select.t-revolute     { color: #ff9d9d; }
+  .joint select.t-continuous, .jpanel select.t-continuous { color: #ffc09d; }
+  .joint select.t-prismatic, .jpanel select.t-prismatic   { color: #9dc4ff; }
+  .joint select.t-fixed, .jpanel select.t-fixed           { color: #888; }
+  /* in-viewer joint editor (shown when a joint/link is clicked) */
+  .jpanel { border: 1px solid #3a4750; border-radius: 4px; padding: 5px 6px;
+            margin-bottom: 6px; background: #161c22e0; }
+  .jp-title { color: #9fe0a8; font-size: 11px; margin-bottom: 4px;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .jp-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .jp-row > .jp-lbl { color: #8a93a3; min-width: 30px; }
+  .jp-type { flex: 1; background: #15171a; border: 1px solid #444;
+             border-radius: 3px; font-size: 11px; }
+  .jp-slider { flex: 1; min-width: 0; accent-color: #2d6acc; }
+  .jp-num { width: 60px; background: #15171a; color: #7fd0ff;
+            border: 1px solid #444; border-radius: 3px; font-size: 11px;
+            text-align: right; font-variant-numeric: tabular-nums; }
+  .jp-unit { color: #8a93a3; }
+  .jp-snaps { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .jp-snaps button { font-size: 10px; padding: 1px 7px; border-radius: 3px;
+                     border: 1px solid #3a4750; background: #222a31;
+                     color: #cfe3ff; cursor: pointer;
+                     font-variant-numeric: tabular-nums; }
+  .jp-snaps button:hover { background: #2d4a55; }
+  .jp-snaps button.cur { background: #2d6acc; color: #fff;
+                         border-color: #2d6acc; }
+  .jp-lim { color: #6b7480; font-size: 10px; margin-top: 3px; }
   .joint .mimictag { font-size: 10px; padding: 0 4px; border-radius: 3px;
                      background: #3d3556; color: #c5b3ff; }
   button { background: #3a3f48; color: #ddd; border: 1px solid #555;
@@ -576,7 +599,7 @@ function refreshApply() {
 function markChange(rec) {
   const t = rec.typeSel.value;
   rec.row.classList.toggle('dirty', t !== rec.origType);
-  rec.typeSel.className = 't-' + t;
+  rec.typeSel.className = 'jtypesel t-' + t;
   if (t !== rec.origType) {
     pending.set(rec.joint.name, {
       name: rec.joint.name, parent: rec.parent, child: rec.child, type: t });
@@ -584,6 +607,24 @@ function markChange(rec) {
     pending.delete(rec.joint.name);
   }
   refreshApply();
+}
+
+// the in-viewer joint editor's live-sync hook, set while #linkinfo shows a
+// movable joint: {name, set(nativeVal)} so the sidebar slider and the overlay
+// slider always show the same angle.
+let jpSync = null;
+
+// move a joint AND keep every UI that displays it in lock-step (the sidebar
+// row + the in-viewer joint panel).  `val` is in the joint's native unit
+// (radians for revolute/continuous, metres for prismatic).
+function previewJoint(name, val) {
+  viewer.setJointValue(name, val);
+  const rec = rows.get(name);
+  if (rec) {
+    if (rec.slider) { rec.slider.value = val; }
+    if (rec.val) { rec.val.textContent = fmt(val); }
+  }
+  if (jpSync && jpSync.name === name) { jpSync.set(val); }
 }
 
 const collapsed = new Set();    // link names folded in the tree (persists
@@ -652,7 +693,7 @@ function buildJointRows(robot) {
     const slider = row.querySelector('input[type=range]');
     if (slider) {
       slider.addEventListener('input', () =>
-        viewer.setJointValue(j.name, parseFloat(slider.value)));
+        previewJoint(j.name, parseFloat(slider.value)));
     }
     const rec = { joint: j, row, parent, child, origType: j.jointType,
                   typeSel: row.querySelector('.jtypesel'),
@@ -1226,7 +1267,125 @@ function showSelectionVisuals(name) {
   viewer.redraw();
 }
 
+// --- in-viewer joint editor: clicking a link surfaces its parent joint so the
+// type and angle can be edited right on the model (no scrolling the sidebar) --
+const JTYPES = ['revolute', 'continuous', 'prismatic', 'fixed'];
+
+function _jointUnit(jtype) {
+  const pris = jtype === 'prismatic';
+  return pris
+    ? { pris, unit: 'mm', step: 0.5, dec: 1,
+        toDisp: v => v * 1000, toNat: v => v / 1000 }
+    : { pris, unit: '°', step: 1, dec: 0,
+        toDisp: v => v * 180 / Math.PI, toNat: v => v * Math.PI / 180 };
+}
+
+// native [lo, hi] limits, falling back to a sensible range for continuous /
+// unlimited joints (mirrors the sidebar slider's behaviour)
+function _jointLimits(j) {
+  let lo = Number(j.limit?.lower), hi = Number(j.limit?.upper);
+  const ang = j.jointType !== 'prismatic';
+  if (j.jointType === 'continuous' || !(hi > lo)) {
+    if (ang) { lo = -Math.PI; hi = Math.PI; }
+    else { lo = -0.05; hi = 0.05; }
+  }
+  return [lo, hi];
+}
+
+function jointPanelHtml(j, parentLink, childLink) {
+  const movable = j.jointType !== 'fixed';
+  const mimic = !!j.mimicJoint;
+  const um = _jointUnit(j.jointType);
+  const ang = !um.pris;
+  const [lo, hi] = _jointLimits(j);
+  const dLo = um.toDisp(lo), dHi = um.toDisp(hi);
+  const cur = um.toDisp(Number(j.angle) || 0);
+  // snap shortcuts: the cardinal angles (with the limit endpoints) for a
+  // rotary joint, the endpoints + zero for a slide -- only those in range
+  const cand = ang ? [dLo, -180, -90, 0, 90, 180, dHi] : [dLo, 0, dHi];
+  const snaps = [...new Set(cand
+    .filter(v => v >= dLo - 1e-6 && v <= dHi + 1e-6)
+    .map(v => Math.round(v * 10) / 10))].sort((a, b) => a - b);
+  const typeOpts = JTYPES.map(t =>
+    `<option value="${t}" ${t === j.jointType ? 'selected' : ''}>${t}</option>`)
+    .join('');
+  let body = '';
+  if (movable && !mimic) {
+    body =
+      `<div class="jp-row">` +
+        `<input type="range" class="jp-slider" min="${dLo}" max="${dHi}" ` +
+          `step="${um.step}" value="${cur}">` +
+        `<input type="number" class="jp-num" min="${dLo}" max="${dHi}" ` +
+          `step="${um.step}" value="${cur.toFixed(um.dec)}">` +
+        `<span class="jp-unit">${um.unit}</span>` +
+      `</div>` +
+      `<div class="jp-snaps">` +
+        snaps.map(s => `<button data-v="${s}">${s}${um.unit}</button>`).join('') +
+      `</div>` +
+      `<div class="jp-lim">limit ${dLo.toFixed(um.dec)} … ${dHi.toFixed(um.dec)} ` +
+        `${um.unit}${ang ? ` &nbsp;(${lo.toFixed(2)} … ${hi.toFixed(2)} rad)` : ''}</div>`;
+  } else if (mimic) {
+    const mn = j.mimicJoint?.name ?? j.mimicJoint;
+    body = `<div class="jp-lim">driven by <b>${mn}</b> (mimic)</div>`;
+  } else {
+    body = `<div class="jp-lim">fixed — pick a type above to add motion</div>`;
+  }
+  return (
+    `<div class="jpanel">` +
+      `<div class="jp-title" title="joint: ${j.name}\n${parentLink} → ${childLink}">` +
+        `🔧 ${childLink}` + (mimic ? ` <span class="mimictag">mimic</span>` : '') +
+      `</div>` +
+      `<div class="jp-row">` +
+        `<span class="jp-lbl">type</span>` +
+        `<select class="jp-type t-${j.jointType}">${typeOpts}</select>` +
+      `</div>` + body +
+    `</div>`);
+}
+
+function wireJointPanel(el, j) {
+  const panel = el.querySelector('.jpanel');
+  if (!panel) { return; }
+  const typeSel = panel.querySelector('.jp-type');
+  typeSel?.addEventListener('change', () => {
+    const t = typeSel.value;
+    typeSel.className = 'jp-type t-' + t;
+    const rec = rows.get(j.name);     // reuse the sidebar's pending/apply flow
+    if (rec) { rec.typeSel.value = t; markChange(rec); }
+    log(`joint ${j.name}: type → ${t} (Apply で確定)`, 'ok');
+  });
+
+  const slider = panel.querySelector('.jp-slider');
+  if (!slider) { return; }            // fixed / mimic: no angle control
+  const num = panel.querySelector('.jp-num');
+  const um = _jointUnit(j.jointType);
+  const [lo, hi] = _jointLimits(j);
+  const dLo = um.toDisp(lo), dHi = um.toDisp(hi);
+  const snapBtns = [...panel.querySelectorAll('.jp-snaps button')];
+  const clamp = v => Math.min(dHi, Math.max(dLo, v));
+  const tol = um.pris ? 0.05 : 0.5;
+  const markCur = disp => snapBtns.forEach(b =>
+    b.classList.toggle('cur', Math.abs(parseFloat(b.dataset.v) - disp) < tol));
+  const show = disp => {
+    slider.value = disp;
+    num.value = disp.toFixed(um.dec);
+    markCur(disp);
+  };
+  const apply = disp => {
+    disp = clamp(isNaN(disp) ? 0 : disp);
+    show(disp);
+    previewJoint(j.name, um.toNat(disp));   // moves the model + syncs sidebar
+  };
+  slider.addEventListener('input', () => apply(parseFloat(slider.value)));
+  num.addEventListener('change', () => apply(parseFloat(num.value)));
+  snapBtns.forEach(b =>
+    b.addEventListener('click', () => apply(parseFloat(b.dataset.v))));
+  markCur(parseFloat(slider.value));
+  // external moves (the sidebar slider) refresh this panel without re-firing
+  jpSync = { name: j.name, set: nat => show(clamp(um.toDisp(nat))) };
+}
+
 function fillLinkInfo(name) {
+  jpSync = null;                  // the panel for the previous link is gone
   const el = document.getElementById('linkinfo');
   const link = viewer.robot?.links?.[name];
   if (!link) { el.style.display = 'none'; return; }
@@ -1253,13 +1412,17 @@ function fillLinkInfo(name) {
   const mm = v => (v * 1000).toFixed(1);
   const rowsHtml = [];
   const add = (k, v) => rowsHtml.push(`<tr><td>${k}</td><td>${v}</td></tr>`);
+  // the joint editor lives in its own panel (prepended below); here we only
+  // add the static axis read-out (movable joints) or the root marker
+  let jParentLink = '';
   if (j) {
-    const lim = j.jointType === 'fixed' ? ''
-      : ` [${Number(j.limit.lower).toFixed(2)} … ` +
-        `${Number(j.limit.upper).toFixed(2)}]`;
-    add('parent joint', `${j.jointType}${lim}` +
-        (j.axis ? ` axis=(${[...j.axis.toArray()]
-          .map(x => x.toFixed(2)).join(', ')})` : ''));
+    jParentLink = [...(j.urdfNode?.children ?? [])]
+      .find(e => e.tagName === 'parent')?.getAttribute('link')
+      ?? (j.parent?.name ?? '');
+    if (j.jointType !== 'fixed' && j.axis) {
+      add('joint axis', `(${[...j.axis.toArray()]
+        .map(x => x.toFixed(2)).join(', ')})`);
+    }
   } else {
     add('parent joint', '(root link)');
   }
@@ -1300,7 +1463,10 @@ function fillLinkInfo(name) {
      'カスタム…'].map(s =>
       `<option value="${s.split(' ').pop()}">${s}</option>`).join('') +
     `</select></td></tr>`);
-  el.innerHTML = `<h2>🔎 ${name}</h2><table>${rowsHtml.join('')}</table>`;
+  const jointHtml = j ? jointPanelHtml(j, jParentLink, name) : '';
+  el.innerHTML = jointHtml +
+    `<h2>🔎 ${name}</h2><table>${rowsHtml.join('')}</table>`;
+  if (j) { wireJointPanel(el, j); }
   const sel = el.querySelector('#li_mat');
   sel.addEventListener('change', async () => {
     let d = sel.value;
@@ -1354,6 +1520,7 @@ function selectLink(linkName) {
     bar.style.display = 'none';
     selVis?.removeFromParent();
     selVis = null;
+    jpSync = null;
     document.getElementById('linkinfo').style.display = 'none';
     viewer.redraw();
   }
@@ -2210,6 +2377,7 @@ function loadRobot(info, { drop = false, keepPose = false,
   pending.clear();
   savedMats.clear();              // old robot's meshes are discarded anyway
   selectedLink = null;
+  jpSync = null;                  // the old #linkinfo panel died with robot
   selVis = null;                  // died with the old robot
   clearFaceOverlay();
   document.getElementById('selbar').style.display = 'none';
