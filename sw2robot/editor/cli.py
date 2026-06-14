@@ -33,19 +33,19 @@ def main(argv=None):
 
     state = core.import_module(args.package_dir, config_path=args.config,
                                base_hint=args.base)
-    print(f"[cad2rc] imported '{state.robot_name}': {len(state.joints)} joints "
+    print(f"[sw2robot] imported '{state.robot_name}': {len(state.joints)} joints "
           f"({len(state.movable_joints())} movable), root={state.root_link}")
 
     if args.register:
         dst = core.register_module(state, args.register)
-        print(f"[cad2rc] registered -> {dst}")
+        print(f"[sw2robot] registered -> {dst}")
     if args.export:
         out = core.export_ros_package(state, args.export)
-        print(f"[cad2rc] exported  -> {out}")
+        print(f"[sw2robot] exported  -> {out}")
     if args.state_out:
         Path(args.state_out).write_text(state.model_dump_json(indent=2),
                                         encoding="utf-8")
-        print(f"[cad2rc] state     -> {args.state_out}")
+        print(f"[sw2robot] state     -> {args.state_out}")
     return state
 
 

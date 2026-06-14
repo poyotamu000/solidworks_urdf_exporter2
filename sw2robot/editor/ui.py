@@ -537,7 +537,7 @@ def build_gui(server, refresh, handles, watcher, robot,
            "state": state, "status": edit_status,
            "sk_joints": sk_joints, "gizmo": gizmo, "giz_state": gizmo_state,
            "on_gizmo": on_gizmo}
-    server._cad2rc_dbg = dbg
+    server._sw2robot_dbg = dbg
 
     panel = {"handles": []}
 
@@ -996,7 +996,7 @@ def mount_module(server, state: RobotCompilerState, export_dir: Path):
     refresh, handles = render_robot(server, robot)
     watcher = CollisionWatcher(robot, handles.meshes)
     build_gui(server, refresh, handles, watcher, robot, state, export_dir)
-    print(f"[cad2rc.ui] mounted '{state.robot_name}': {len(state.joints)} joints "
+    print(f"[sw2robot.ui] mounted '{state.robot_name}': {len(state.joints)} joints "
           f"({len(state.movable_joints())} movable), root={state.root_link}")
 
 
@@ -1217,7 +1217,7 @@ def launch(package_dir=None, config_path=None, base_hint=None, port=8080,
     else:
         show(None, None)
 
-    print(f"[cad2rc.ui] serving -> http://localhost:{port}"
+    print(f"[sw2robot.ui] serving -> http://localhost:{port}"
           + ("" if package_dir else "  (connect to SolidWorks in the panel)"))
     if not block:
         return server, holder

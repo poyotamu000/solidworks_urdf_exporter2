@@ -80,10 +80,10 @@ def chain_related(state: RobotCompilerState, joint: str) -> list:
 # --------------------------------------------------------------- persistence
 def state_path(state: RobotCompilerState, path=None) -> Path:
     """Default sidecar for an interactive session's edits:
-    ``<package_dir>/<robot_name>.cad2rc.json``."""
+    ``<package_dir>/<robot_name>.sw2robot.json``."""
     if path:
         return Path(path)
-    return Path(state.package_dir) / f"{state.robot_name}.cad2rc.json"
+    return Path(state.package_dir) / f"{state.robot_name}.sw2robot.json"
 
 
 def save_state(state: RobotCompilerState, path=None) -> Path:

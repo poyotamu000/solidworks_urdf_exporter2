@@ -70,7 +70,7 @@ def _convert_3dxml_to_glb(src):
     if os.path.exists(cache) \
             and os.path.getmtime(cache) >= os.path.getmtime(src):
         return cache
-    print(f"[cad2rc.web] converting {os.path.basename(src)} -> glb ...")
+    print(f"[sw2robot.web] converting {os.path.basename(src)} -> glb ...")
     import trimesh
     mesh = _to_single_mesh(trimesh.load(src))
     mesh.apply_scale(0.001)
@@ -97,9 +97,9 @@ def _preconvert_meshes(pkg_dir):
                             _convert_3dxml_to_glb(src)
                             n += 1
                     except Exception as e:
-                        print(f"[cad2rc.web] preconvert {f}: {e!r}")
+                        print(f"[sw2robot.web] preconvert {f}: {e!r}")
         if n:
-            print(f"[cad2rc.web] preconverted {n} meshes to glb")
+            print(f"[sw2robot.web] preconverted {n} meshes to glb")
     threading.Thread(target=run, daemon=True).start()
 
 
@@ -152,9 +152,9 @@ def _build_index(roots):
     try:
         for root in roots:
             if not os.path.isdir(root):
-                print(f"[cad2rc.web] index: skipping missing root {root}")
+                print(f"[sw2robot.web] index: skipping missing root {root}")
                 continue
-            print(f"[cad2rc.web] index: walking {root} ...")
+            print(f"[sw2robot.web] index: walking {root} ...")
             for dirpath, dirnames, filenames in os.walk(root):
                 dirnames[:] = [d for d in dirnames
                                if d.lower() not in _SKIP_DIRS
@@ -168,9 +168,9 @@ def _build_index(roots):
         _index["byname"], _index["count"] = byname, n
         with open(_INDEX_FILE, "w", encoding="utf-8") as f:
             json.dump(byname, f)
-        print(f"[cad2rc.web] index: {n} .sldasm files indexed")
+        print(f"[sw2robot.web] index: {n} .sldasm files indexed")
     except Exception as e:
-        print(f"[cad2rc.web] index build failed: {e!r}")
+        print(f"[sw2robot.web] index build failed: {e!r}")
     finally:
         _index["building"] = False
 
@@ -186,7 +186,7 @@ def _ensure_index(roots):
                 _index["byname"] = json.load(f)
             _index["count"] = sum(len(v)
                                   for v in _index["byname"].values())
-            print(f"[cad2rc.web] index: {_index['count']} entries loaded "
+            print(f"[sw2robot.web] index: {_index['count']} entries loaded "
                   f"from cache")
             return
         except Exception:
@@ -414,10 +414,10 @@ def _keepalive_loop():
             continue
         fails += 1
         if fails < 3:
-            print(f"[cad2rc.web] warm session ping failed "
+            print(f"[sw2robot.web] warm session ping failed "
                   f"({fails}/3) -- retrying before declaring it dead")
             continue
-        print("[cad2rc.web] warm SolidWorks session died while idle; "
+        print("[sw2robot.web] warm SolidWorks session died while idle; "
               "next extraction starts a fresh one")
         try:
             sess.shutdown()          # avoid leaving a zombie behind
@@ -441,7 +441,7 @@ def _run_extract(sldasm):
     """Background thread: SolidWorks extract + build -> module package."""
     def progress(msg):
         _job["log"].append(str(msg))
-        print(f"[cad2rc.web] extract: {msg}")
+        print(f"[sw2robot.web] extract: {msg}")
 
     # COM calls (launch, first contact with an idle session, OpenDoc6
     # loading a big assembly) block with no events for tens of seconds to
@@ -495,7 +495,7 @@ def _run_extract(sldasm):
                  f"the next extraction)")
     except Exception as e:
         _job["error"] = f"{type(e).__name__}: {e}"
-        print(f"[cad2rc.web] extract FAILED: {e!r}")
+        print(f"[sw2robot.web] extract FAILED: {e!r}")
         if "-2147417848" in repr(e) or "-2147417856" in repr(e):
             _sw["sess"] = None     # session died; next run starts fresh
     finally:
@@ -542,13 +542,13 @@ def _build_collision(urdf_path, key):
             if _coll["key"] == key:      # not re-targeted meanwhile
                 _coll.update(ctx={"sc": sc, "joints": joints},
                              building=False, error=None)
-        print(f"[cad2rc.web] collision model ready: {len(meshes)} hulls, "
+        print(f"[sw2robot.web] collision model ready: {len(meshes)} hulls, "
               f"{len(sc.baseline)} baseline pairs")
     except Exception as e:
         with _coll_lock:
             if _coll["key"] == key:
                 _coll.update(ctx=None, building=False, error=repr(e))
-        print(f"[cad2rc.web] collision model FAILED: {e!r}")
+        print(f"[sw2robot.web] collision model FAILED: {e!r}")
 
 
 # ---- auto joint limits: self-collision sweep over the live collision model.
@@ -590,7 +590,7 @@ def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg):
         out = json.loads(p.stdout)["results"]
     except Exception as e:
         return None, f"bad sweep output: {e}"
-    print(f"[cad2rc.web] auto_limits sweep: {time.time() - _t0:.1f}s "
+    print(f"[sw2robot.web] auto_limits sweep: {time.time() - _t0:.1f}s "
           f"({len(out)} joints, subprocess)", flush=True)
     return out, None
 
@@ -804,7 +804,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json({"error": "need a .sldasm name"},
                                            400)
                 hits = _locate_sldasm(name, size)
-                print(f"[cad2rc.web] locate {name} ({size}B): "
+                print(f"[sw2robot.web] locate {name} ({size}B): "
                       f"{len(hits)} hit(s)"
                       + (" [index still building]"
                          if _index["building"] else ""))
@@ -878,7 +878,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json({"error": str(e)}, 400)
                 cls.pkg_dir, cls.urdf_rel = pkg, rel
                 cls.robot_name = os.path.splitext(os.path.basename(rel))[0]
-                print(f"[cad2rc.web] open: {cls.robot_name} ({pkg})")
+                print(f"[sw2robot.web] open: {cls.robot_name} ({pkg})")
                 _preconvert_meshes(pkg)
                 return self._send_json(self._info())
             if path == "/api/export/zip":
@@ -938,7 +938,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         except BrokenPipeError:
             pass
         except Exception as e:           # surface failures to the client
-            print(f"[cad2rc.web] {self.path}: {e!r}")
+            print(f"[sw2robot.web] {self.path}: {e!r}")
             try:
                 self.send_error(500, str(e))
             except Exception:
@@ -967,7 +967,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 _t2 = time.time()
                 links = sorted({l for p in pairs for l in p})
                 if os.environ.get("CAD2RC_TIME_COLLISION"):
-                    print(f"[cad2rc.web] /api/collision read={_t1-_t0:.3f}s "
+                    print(f"[sw2robot.web] /api/collision read={_t1-_t0:.3f}s "
                           f"compute={_t2-_t1:.3f}s", flush=True)
                 return self._send_json({"ready": True, "pairs": pairs,
                                         "links": links})
@@ -1005,7 +1005,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     except Exception as e:
                         return self._send_json(
                             {"error": f"rebuild failed: {e}"}, 500)
-                print(f"[cad2rc.web] set_limits: {len(applied)} applied, "
+                print(f"[sw2robot.web] set_limits: {len(applied)} applied, "
                       f"{len(missed)} not matched")
                 return self._send_json({"applied": applied, "missed": missed})
             if parsed.path == "/api/set_types":
@@ -1052,7 +1052,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     except Exception as e:
                         return self._send_json(
                             {"error": f"rebuild failed: {e}"}, 500)
-                print(f"[cad2rc.web] set_types: {len(applied)} applied, "
+                print(f"[sw2robot.web] set_types: {len(applied)} applied, "
                       f"{len(missed)} not matched")
                 return self._send_json(
                     {"applied": [c.get("name") for c in applied],
@@ -1122,7 +1122,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
-                print(f"[cad2rc.web] set_base: {new_root} "
+                print(f"[sw2robot.web] set_base: {new_root} "
                       f"({flips} edges re-rooted)")
                 return self._send_json({"base": new_root, "flipped": flips})
             if parsed.path == "/api/set_root_pose":
@@ -1208,7 +1208,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
-                print(f"[cad2rc.web] set_root_pose: xyz={p.tolist()} "
+                print(f"[sw2robot.web] set_root_pose: xyz={p.tolist()} "
                       f"zdir={zdir}")
                 return self._send_json({"rpy": list(rpy_new),
                                         "xyz": list(xyz_new)})
@@ -1218,7 +1218,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 out = os.path.join(PROJECT_ROOT, "_client_report.json")
                 with open(out, "w", encoding="utf-8") as f:
                     json.dump(body, f, ensure_ascii=False, indent=1)
-                print(f"[cad2rc.web] CLIENT REPORT -> {out}")
+                print(f"[sw2robot.web] CLIENT REPORT -> {out}")
                 print(f"  controlsEnabled={body.get('controlsEnabled')} "
                       f"dragging={body.get('dragManipulating')} "
                       f"hover={body.get('dragHovered')} "
@@ -1265,7 +1265,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
-                print(f"[cad2rc.web] set_exclude: {name} "
+                print(f"[sw2robot.web] set_exclude: {name} "
                       f"on={body.get('on', True)} clear={body.get('clear')}")
                 return self._send_json({"excluded": [
                     ln[2:].strip() for ln in block.splitlines()]})
@@ -1307,7 +1307,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
-                print(f"[cad2rc.web] set_material: {link} -> {density}")
+                print(f"[sw2robot.web] set_material: {link} -> {density}")
                 return self._send_json({"link": link, "density": density})
             if parsed.path in ("/api/undo", "/api/redo"):
                 cls = type(self)
@@ -1335,7 +1335,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
-                print(f"[cad2rc.web] {src}: {label}")
+                print(f"[sw2robot.web] {src}: {label}")
                 return self._send_json(
                     {"done": src, "label": label,
                      "undo": len(h["undo"]), "redo": len(h["redo"])})
@@ -1352,7 +1352,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     os.path.join(cls.pkg_dir, cls.urdf_rel),
                     package_dir=cls.pkg_dir)
                 dst = core.register_module(state, reg)
-                print(f"[cad2rc.web] registered -> {dst}")
+                print(f"[sw2robot.web] registered -> {dst}")
                 return self._send_json({"registered": str(dst)})
             if parsed.path == "/api/convert":
                 n = int(self.headers.get("Content-Length", 0))
@@ -1360,14 +1360,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return self.send_error(400, "bad length")
                 data = self.rfile.read(n)
                 glb = _convert_3dxml_bytes(data)
-                print(f"[cad2rc.web] /api/convert: {n}B 3dxml -> "
+                print(f"[sw2robot.web] /api/convert: {n}B 3dxml -> "
                       f"{len(glb)}B glb")
                 return self._send_bytes(glb, "model/gltf-binary")
             return self.send_error(404)
         except BrokenPipeError:
             pass
         except Exception as e:
-            print(f"[cad2rc.web] {self.path}: {e!r}")
+            print(f"[sw2robot.web] {self.path}: {e!r}")
             try:
                 self.send_error(500, str(e))
             except Exception:
@@ -1387,13 +1387,13 @@ def serve(package_dir=None, root_dir=None, port=8090, cad_roots=None):
         pkg, rel = _resolve_package(package_dir)
         _Handler.pkg_dir, _Handler.urdf_rel = pkg, rel
         _Handler.robot_name = os.path.splitext(os.path.basename(rel))[0]
-        print(f"[cad2rc.web] serving '{_Handler.robot_name}' from {pkg}")
+        print(f"[sw2robot.web] serving '{_Handler.robot_name}' from {pkg}")
     else:
-        print(f"[cad2rc.web] no package yet -- pick one in the browser "
+        print(f"[sw2robot.web] no package yet -- pick one in the browser "
               f"(root: {_Handler.root_dir})")
     httpd = socketserver.ThreadingTCPServer(("", port), _Handler)
     httpd.daemon_threads = True
-    print(f"[cad2rc.web] open http://localhost:{port}")
+    print(f"[sw2robot.web] open http://localhost:{port}")
     httpd.serve_forever()
 
 

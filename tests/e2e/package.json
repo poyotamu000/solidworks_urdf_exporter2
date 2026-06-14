@@ -1,8 +1,8 @@
 {
-  "name": "cad2rc-e2e",
+  "name": "sw2robot-e2e",
   "private": true,
   "type": "module",
-  "description": "Browser E2E for the cad2rc web editor (needs the webserver running on :8090 and system Chrome)",
+  "description": "Browser E2E for the sw2robot web editor (needs the webserver running on :8090 and system Chrome)",
   "scripts": {
     "test": "node run.mjs"
   },

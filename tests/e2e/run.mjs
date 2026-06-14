@@ -1,4 +1,4 @@
-// cad2rc web editor E2E suite (puppeteer-core + system Chrome).
+// sw2robot web editor E2E suite (puppeteer-core + system Chrome).
 //
 // Prereqs:
 //   1. server running:  uv run python -m sw2robot.editor.webserver output/<pkg> --root output --port 8090
@@ -73,7 +73,7 @@ const meshState = () => page.evaluate(t => {
   const link = document.getElementById('viewer').robot.links[t];
   let vis = 0, hid = 0;
   for (const c of link.children) {
-    if (!c.isURDFJoint && !c.userData.cad2rcMarker) { c.visible ? vis++ : hid++; }
+    if (!c.isURDFJoint && !c.userData.sw2robotMarker) { c.visible ? vis++ : hid++; }
   }
   return { vis, hid };
 }, target);
@@ -222,7 +222,7 @@ await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 await sleep(15000);
 let colReady = false;
 for (let i = 0; i < 90 && !colReady; i++) {
-  colReady = await page.evaluate(() => window.cad2rc?.collision().ready === true);
+  colReady = await page.evaluate(() => window.sw2robot?.collision().ready === true);
   if (!colReady) { await sleep(2000); }
 }
 check('collision: model ready', colReady);
@@ -252,7 +252,7 @@ if (colReady) {
     const firstMesh = `(function find(n) {
       for (const ch of n.children) {
         if (ch.isURDFJoint) { continue; }
-        if (ch.isMesh && !ch.userData.cad2rcMarker) { return ch; }
+        if (ch.isMesh && !ch.userData.sw2robotMarker) { return ch; }
         const m = find(ch); if (m) { return m; }
       }
       return null;
@@ -265,7 +265,7 @@ if (colReady) {
     const red = await page.evaluate((f, fm) => {
       const link = document.getElementById('viewer').robot.links[f.links[0]];
       const mesh = eval(fm)(link);
-      return { links: window.cad2rc.collision().links,
+      return { links: window.sw2robot.collision().links,
                badge: document.getElementById('colstat').style.display,
                banner: document.getElementById('colstat').textContent,
                emissive: mesh?.material.emissive?.getHex() };
@@ -287,7 +287,7 @@ if (colReady) {
     const clear = await page.evaluate((f, fm) => {
       const link = document.getElementById('viewer').robot.links[f.links[0]];
       const mesh = eval(fm)(link);
-      return { links: window.cad2rc.collision().links,
+      return { links: window.sw2robot.collision().links,
                badge: document.getElementById('colstat').style.display,
                emissive: mesh?.material.emissive?.getHex() };
     }, found, firstMesh);
@@ -322,7 +322,7 @@ if (colReady) {
         contAfter > contBefore && !failed,
         `continuous ${contBefore} -> ${contAfter}`);
   // restore the package (revert the limit write so the suite is idempotent)
-  await page.evaluate(() => window.cad2rc.undo());
+  await page.evaluate(() => window.sw2robot.undo());
   let contRestored = contAfter;
   for (let i = 0; i < 90; i++) {
     await sleep(2000);
@@ -359,7 +359,7 @@ await page.mouse.up();
 await page.keyboard.up('Shift');
 await sleep(400);
 const drag = await page.evaluate(() => ({
-  selected: window.cad2rc.boxSelected().length,
+  selected: window.sw2robot.boxSelected().length,
   bulkbar: getComputedStyle(document.getElementById('bulkbar')).display }));
 const camAfter = await page.evaluate(() =>
   document.getElementById('viewer').camera.position.toArray());
@@ -369,12 +369,12 @@ check('box-select: Shift+drag selects links without orbiting',
       `selected=${drag.selected} orbited=${orbited}`);
 
 // bulk-set every link to fixed -> 0 movable, then undo restores
-await page.evaluate(() => { window.cad2rc.boxSelect(); window.cad2rc.bulkType('fixed'); });
+await page.evaluate(() => { window.sw2robot.boxSelect(); window.sw2robot.bulkType('fixed'); });
 let movAfter = movBefore;
 for (let i = 0; i < 40; i++) { await sleep(2000); movAfter = await movable(); if (movAfter < movBefore) break; }
 check('box-select: bulk "fixed" applies to all selected',
       movAfter < movBefore, `movable ${movBefore} -> ${movAfter}`);
-await page.evaluate(() => window.cad2rc.undo());
+await page.evaluate(() => window.sw2robot.undo());
 let movRestored = movAfter;
 for (let i = 0; i < 40; i++) { await sleep(2000); movRestored = await movable(); if (movRestored === movBefore) break; }
 check('box-select: undo restores joint types',
@@ -400,7 +400,7 @@ await page.evaluate(() => {
     }
     return of(u, opts);
   };
-  window.cad2rc.extractFlow('C:/fake/thing.SLDASM');
+  window.sw2robot.extractFlow('C:/fake/thing.SLDASM');
 });
 const lbar = () => page.evaluate(() => {
   const lb = document.getElementById('loadbar');
@@ -443,7 +443,7 @@ await page.evaluate(() => {
       return J({ running: true, error: null, log: ['starting SolidWorks ...'] });
     return of(u, opts);
   };
-  window.cad2rc.locateAndExtract('C:/drop/x.SLDASM', 12345);
+  window.sw2robot.locateAndExtract('C:/drop/x.SLDASM', 12345);
 });
 await sleep(300);
 const loc = await page.evaluate(() => ({

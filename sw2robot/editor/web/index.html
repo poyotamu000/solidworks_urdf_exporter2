@@ -1,13 +1,13 @@
 <!DOCTYPE html>
-<!-- cad2rc module viewer/editor: gkjohnson/urdf-loaders + our package server.
-     Served by `python -m cad2rc.webserver [package]`.  Meshes come from
-     /pkg/... (3DXML converted to GLB server-side) or drag&dropped folders.
+<!-- sw2robot module viewer/editor: gkjohnson/urdf-loaders + our package server.
+     Served by `python -m sw2robot.editor.webserver [package]`.  Meshes come
+     from /pkg/... (3DXML converted to GLB server-side) or drag&dropped folders.
      Joint-type edits are written into the package's joints.yaml and the
-     URDF is rebuilt server-side (sw2urdf.build, ~0.5 s). -->
+     URDF is rebuilt server-side (sw2robot.exporter.build, ~0.5 s). -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>cad2rc module viewer</title>
+<title>sw2robot module viewer</title>
 <style>
   html, body { margin: 0; height: 100%; background: #1a1c20; color: #ddd;
                font: 13px/1.5 system-ui, sans-serif; }
@@ -261,7 +261,7 @@
     <div id="linkinfo"></div>
   </div>
   <div id="panel">
-    <h1 id="title">cad2rc viewer</h1>
+    <h1 id="title">sw2robot viewer</h1>
     <div id="status">starting…</div>
     <div id="picker">
       <button id="useactive" style="display:none;width:100%;margin:2px 0">
@@ -429,7 +429,7 @@ const jointsEl = document.getElementById('joints');
 // scene, and three.js hits Line objects within a 1 m (!) default
 // threshold -- the grid was eating every drag attempt
 function markHelper(o) {
-  o.userData.cad2rcMarker = true;
+  o.userData.sw2robotMarker = true;
   o.raycast = () => {};
   o.children?.forEach(markHelper);
   return o;
@@ -465,7 +465,7 @@ viewer.highlightMaterial = new THREE.MeshBasicMaterial({
 viewer.addEventListener('joint-mouseover', e => {
   const j = viewer.robot?.joints?.[e.detail];
   j?.traverse(c => {
-    if (c.isMesh && !c.userData.cad2rcMarker && c.__origMaterial) {
+    if (c.isMesh && !c.userData.sw2robotMarker && c.__origMaterial) {
       c.material = _tintedClone(c.__origMaterial, 'hov');
     }
   });
@@ -477,7 +477,7 @@ let compMeta = {};             // link -> {material, density, name, override}
 let excludedList = [];         // component names excluded from the URDF
 
 // ---- operation log + diagnostic dump: every user action is recorded, and
-// window.cad2rc.report() ships the session state to the server, so a "now
+// window.sw2robot.report() ships the session state to the server, so a "now
 // it's broken" moment in the USER's long-lived session can be inspected
 // (and replayed in tests) instead of guessed at -------------------------
 const oplog = [];
@@ -1008,7 +1008,7 @@ function setTF(on) {
   tfNodes.forEach(o => { o.visible = on; });
   if (on) {
     viewer.robot?.traverse(c => {
-      if (c.isMesh && !c.userData.cad2rcMarker && c.material
+      if (c.isMesh && !c.userData.sw2robotMarker && c.material
           && !dimmedMats.has(c.material)) {
         dimmedMats.set(c.material, { t: c.material.transparent,
                                      o: c.material.opacity });
@@ -1071,7 +1071,7 @@ function _tintLink(linkName, kind) {   // kind: 'hov' | 'sel' | null
   (function walk(node) {
     for (const c of node.children) {
       if (c.isURDFJoint) { continue; }     // own meshes only, not subtree
-      if (c.isMesh && !c.userData.cad2rcMarker) {
+      if (c.isMesh && !c.userData.sw2robotMarker) {
         // the element's drag-hover keeps the pre-hover material in
         // __origMaterial and restores it on mouseout.  While that dance is
         // in progress, OUR tint must read/write __origMaterial (not
@@ -1200,7 +1200,7 @@ function applyLinkVisibility(name) {
   const vis = !hiddenLinks.has(name);
   (function walk(n) {                     // own visuals only, not subtree
     for (const c of n.children) {
-      if (c.isURDFJoint || c.userData.cad2rcMarker) { continue; }
+      if (c.isURDFJoint || c.userData.sw2robotMarker) { continue; }
       c.visible = vis;
       // three.js raycasts HIT invisible meshes: a hidden cover would still
       // grab drags (the element disables orbit while "hovering" its joint)
@@ -1400,7 +1400,7 @@ function fillLinkInfo(name) {
   let tris = 0, mat = null, meshFile = null;
   (function walk(n) {
     for (const c of n.children) {
-      if (c.isURDFJoint || c.userData.cad2rcMarker) { continue; }
+      if (c.isURDFJoint || c.userData.sw2robotMarker) { continue; }
       if (c.isMesh) {
         const idx = c.geometry.index;
         tris += (idx ? idx.count : c.geometry.attributes.position.count) / 3;
@@ -1709,7 +1709,7 @@ function robotBox() {
   const box = new THREE.Box3();
   const b = new THREE.Box3();
   robot.traverse(c => {
-    if (c.isMesh && !c.userData.cad2rcMarker && c.visible && c.geometry) {
+    if (c.isMesh && !c.userData.sw2robotMarker && c.visible && c.geometry) {
       if (!c.geometry.boundingBox) { c.geometry.computeBoundingBox(); }
       b.copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld);
       box.union(b);
@@ -1824,7 +1824,7 @@ function pickHit(ev) {
     x: ((ev.clientX - rect.left) / rect.width) * 2 - 1,
     y: -((ev.clientY - rect.top) / rect.height) * 2 + 1 }, viewer.camera);
   const hit = raycaster.intersectObject(viewer.robot, true)
-    .find(h => h.object.isMesh && !h.object.userData.cad2rcMarker);
+    .find(h => h.object.isMesh && !h.object.userData.sw2robotMarker);
   if (!hit) { return null; }
   let n = hit.object;
   while (n && !n.isURDFLink) { n = n.parent; }
@@ -2389,7 +2389,7 @@ function loadRobot(info, { drop = false, keepPose = false,
   document.getElementById('linkinfo').style.display = 'none';
   refreshApply();
   document.getElementById('title').textContent = info.name;
-  document.title = `${info.name} — cad2rc`;
+  document.title = `${info.name} — sw2robot`;
   if (!drop) {
     refreshRootBox({ resetBaseline: true });
     refreshCompMeta();
@@ -2597,7 +2597,7 @@ document.getElementById('regbtn').addEventListener('click', async () => {
     log('enter the robot-compiler registry dir (its --urdf-dir)', 'wrn');
     return;
   }
-  localStorage.setItem('cad2rc_regdir', dir);
+  localStorage.setItem('sw2robot_regdir', dir);
   log(`registering module to ${dir} …`);
   try {
     const resp = await fetch('/api/register', {
@@ -2613,7 +2613,7 @@ document.getElementById('regbtn').addEventListener('click', async () => {
   }
 });
 document.getElementById('regdir').value =
-  localStorage.getItem('cad2rc_regdir') ?? '';
+  localStorage.getItem('sw2robot_regdir') ?? '';
 
 async function openServerPath(p) {
   log(`/api/open ${p}`);
@@ -3012,8 +3012,8 @@ document.addEventListener('drop', e => {
 })();
 
 // ---- diagnostic dump: full session state, for the 🐞 button and for
-// driving/inspecting the page from tests via window.cad2rc ----------------
-function cad2rcDump() {
+// driving/inspecting the page from tests via window.sw2robot ----------------
+function sw2robotDump() {
   const v = viewer;
   const rect = v.getBoundingClientRect();
   const eaters = [];
@@ -3049,8 +3049,8 @@ function cad2rcDump() {
   };
 }
 
-window.cad2rc = {
-  dump: cad2rcDump,
+window.sw2robot = {
+  dump: sw2robotDump,
   collision: () => ({ ready: colReady, links: [...collisionLinks] }),
   extractFlow: p => extractFlow(p),     // for E2E (fetch is mocked there)
   locateAndExtract: (p, sz) => locateAndExtract(p, { size: sz }),
@@ -3063,7 +3063,7 @@ window.cad2rc = {
   undo: () => doHistory('undo'),
   redo: () => doHistory('redo'),
   report: async () => {
-    const d = cad2rcDump();
+    const d = sw2robotDump();
     try {
       await fetch('/api/client_log', {
         method: 'POST',
@@ -3077,7 +3077,7 @@ window.cad2rc = {
   },
 };
 document.getElementById('bug').addEventListener('click',
-  () => window.cad2rc.report());
+  () => window.sw2robot.report());
 
 const info = await (await fetch('/api/info')).json();
 if (info.urdf) { loadRobot(info); }
