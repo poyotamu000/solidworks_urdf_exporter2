@@ -64,7 +64,8 @@
               /* let orbit/drag pass THROUGH the card; only its controls
                  are interactive (a big opaque card was a dead zone) */
               pointer-events: none; }
-  #linkinfo select, #linkinfo button, #linkinfo input { pointer-events: auto; }
+  #linkinfo select, #linkinfo button, #linkinfo input,
+  #linkinfo .jp-rename { pointer-events: auto; }
   #linkinfo h2 { font-size: 12px; margin: 0 0 4px; color: #7fd0ff; }
   #linkinfo table { border-collapse: collapse; width: 100%; }
   #linkinfo td { padding: 1px 4px 1px 0; vertical-align: top; }
@@ -110,6 +111,7 @@
   .jp-snaps button.cur { background: #2d6acc; color: #fff;
                          border-color: #2d6acc; }
   .jp-lim { color: #6b7480; font-size: 10px; margin-top: 3px; }
+  .jp-name { flex: 1; min-width: 0; color: #cfe3ff; word-break: break-all; }
   /* rename (double-click a name in the tree/panel, or the ≣ 改名 list) */
   .renamable { cursor: text; }
   .renamable:hover { outline: 1px dotted #6cf; outline-offset: 1px; }
@@ -635,6 +637,9 @@ function markChange(rec) {
 // movable joint: {name, set(nativeVal)} so the sidebar slider and the overlay
 // slider always show the same angle.
 let jpSync = null;
+// link to re-select after the next edit-rebuild reload, so the joint panel
+// stays open on the same link after an immediate type change
+let reselectAfterLoad = null;
 
 // move a joint AND keep every UI that displays it in lock-step (the sidebar
 // row + the in-viewer joint panel).  `val` is in the joint's native unit
@@ -1459,10 +1464,17 @@ function jointPanelHtml(j, parentLink, childLink) {
   }
   return (
     `<div class="jpanel">` +
-      `<div class="jp-title" title="joint: ${j.name}\n${parentLink} → ${childLink}">` +
-        `🔧 <span class="jp-rename" data-link="${childLink}">${childLink}</span>` +
+      `<div class="jp-title" title="${parentLink} → ${childLink}">` +
+        `🔧 関節エディタ` +
         (mimic ? ` <span class="mimictag">mimic</span>` : '') +
       `</div>` +
+      // editable names (double-click): link = the child link, joint = the joint
+      `<div class="jp-row"><span class="jp-lbl">link</span>` +
+        `<span class="jp-rename jp-name" data-kind="link" ` +
+        `data-old="${childLink}">${childLink}</span></div>` +
+      `<div class="jp-row"><span class="jp-lbl">joint</span>` +
+        `<span class="jp-rename jp-name" data-kind="joint" ` +
+        `data-old="${j.name}">${j.name}</span></div>` +
       `<div class="jp-row">` +
         `<span class="jp-lbl">type</span>` +
         `<select class="jp-type t-${j.jointType}">${typeOpts}</select>` +
@@ -1473,17 +1485,22 @@ function jointPanelHtml(j, parentLink, childLink) {
 function wireJointPanel(el, j) {
   const panel = el.querySelector('.jpanel');
   if (!panel) { return; }
-  const titleEl = panel.querySelector('.jp-rename');   // dbl-click = rename link
-  if (titleEl) {
-    attachInlineRename(titleEl, 'link', () => titleEl.dataset.link);
-  }
+  // dbl-click a name to rename (link = child link, joint = the joint name)
+  panel.querySelectorAll('.jp-rename').forEach(el =>
+    attachInlineRename(el, el.dataset.kind, () => el.dataset.old));
   const typeSel = panel.querySelector('.jp-type');
-  typeSel?.addEventListener('change', () => {
+  typeSel?.addEventListener('change', async () => {
     const t = typeSel.value;
     typeSel.className = 'jp-type t-' + t;
-    const rec = rows.get(j.name);     // reuse the sidebar's pending/apply flow
-    if (rec) { rec.typeSel.value = t; markChange(rec); }
-    log(`joint ${j.name}: type → ${t} (Apply で確定)`, 'ok');
+    const child = [...(j.urdfNode?.children ?? [])]
+      .find(e => e.tagName === 'child')?.getAttribute('link') ?? '';
+    // a focused single-joint edit applies immediately (rebuild + reload), so
+    // the change actually takes effect (axis, export) without a separate Apply
+    reselectAfterLoad = child;        // keep this panel open on the new model
+    typeSel.disabled = true;
+    const reloading = await applyTypeChanges(
+      [{ name: j.name, parent: '', child, type: t }]);
+    if (!reloading && typeSel.isConnected) { typeSel.disabled = false; }
   });
 
   const slider = panel.querySelector('.jp-slider');
@@ -1741,9 +1758,11 @@ document.getElementById('bulkset').addEventListener('click', () => {
 });
 
 // apply -> patch joints.yaml + rebuild + reload
-applyBtn.addEventListener('click', async () => {
-  if (!pending.size || !currentInfo) { return; }
-  const changes = [...pending.values()];
+async function applyTypeChanges(changes) {
+  if (!changes.length || !currentInfo) {
+    reselectAfterLoad = null;
+    return false;
+  }
   applyBtn.disabled = true;
   log(`applying ${changes.length} type change(s) + rebuilding URDF …`);
   statusEl.textContent = '⏳ rebuilding URDF …';
@@ -1760,17 +1779,24 @@ applyBtn.addEventListener('click', async () => {
     if (!r.applied?.length) {
       log('NO change matched joints.yaml — nothing was rebuilt ' +
           '(joint naming mismatch; see missed list above)', 'err');
+      reselectAfterLoad = null;
       refreshApply();
-      return;
+      return false;
     }
     log(`rebuilt ✓ (${r.applied.length} change(s)) — reloading (meshes ` +
         `come from cache, pose+camera kept)`, 'ok');
     loadRobot(currentInfo, { keepPose: true });
     refreshHistory();
+    return true;
   } catch (e) {
     log(`apply failed: ${e.message ?? e}`, 'err');
+    reselectAfterLoad = null;
     refreshApply();
+    return false;
   }
+}
+applyBtn.addEventListener('click', () => {
+  if (pending.size) { applyTypeChanges([...pending.values()]); }
 });
 
 // ---- 🛠 auto joint limits via the self-collision sweep -------------------
@@ -2447,6 +2473,10 @@ viewer.addEventListener('geometry-loaded', () => {
     } else {
       removeLoadCover();
       fitView();
+    }
+    if (reselectAfterLoad) {
+      const rl = reselectAfterLoad; reselectAfterLoad = null;
+      if (viewer.robot.links[rl]) { selectLink(rl); }   // keep the panel open
     }
   });
   statusEl.textContent =
