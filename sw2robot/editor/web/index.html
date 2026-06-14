@@ -2099,9 +2099,63 @@ const scaleRefSel = document.getElementById('scaleref');
 const scaleHgt = document.getElementById('scalehgt');
 const scaleHgtU = document.getElementById('scalehgtu');
 let scaleRefObj = null;
+let scaleRefToken = 0;          // discards an in-flight mesh load if the
+                               // selection/height changed before it arrived
 const REF_MAT = () => new THREE.MeshStandardMaterial({
   color: 0x37c2c9, transparent: true, opacity: 0.4, roughness: 0.85,
   metalness: 0, side: THREE.DoubleSide, depthWrite: false });
+
+// free a three object's geometries/materials (used when swapping the human
+// capsule placeholder for the loaded OSS mesh, or discarding a stale load)
+function freeObj3D(o) {
+  o.traverse(n => {
+    n.geometry?.dispose?.();
+    const m = n.material;
+    if (Array.isArray(m)) { m.forEach(x => x.dispose?.()); }
+    else { m?.dispose?.(); }
+  });
+}
+
+function freeMat(m) {
+  if (Array.isArray(m)) { m.forEach(x => x.dispose?.()); }
+  else { m?.dispose?.(); }
+}
+
+// load the bundled OSS human mesh (CesiumMan, CC-BY 4.0 -- see
+// web/assets/ATTRIBUTION.md) as a translucent teal ghost, scaled so its REAL
+// height == H, feet on y=0, centred on x/z.  Resolves to a ready-to-add Group.
+function loadHumanMesh(H) {
+  return new Promise((resolve, reject) => {
+    new GLTFLoader().load('/assets/human.glb', gltf => {
+      let root = null;
+      try {
+        root = gltf.scene;
+        const mat = REF_MAT();
+        root.traverse(n => {
+          if (n.isMesh) {
+            freeMat(n.material);
+            n.material = mat; n.castShadow = false; n.receiveShadow = false;
+          }
+        });
+        const wrap = new THREE.Group();
+        wrap.add(root);
+        wrap.updateMatrixWorld(true);
+        let bb = new THREE.Box3().setFromObject(wrap);
+        const h0 = bb.max.y - bb.min.y;
+        if (!(h0 > 0)) { throw new Error('human mesh has no height'); }
+        wrap.scale.multiplyScalar(H / h0);
+        wrap.updateMatrixWorld(true);
+        bb = new THREE.Box3().setFromObject(wrap);
+        wrap.position.set(-(bb.min.x + bb.max.x) / 2, -bb.min.y,
+                          -(bb.min.z + bb.max.z) / 2);
+        resolve(wrap);
+      } catch (e) {
+        if (root) { freeObj3D(root); }
+        reject(e);
+      }
+    }, null, reject);
+  });
+}
 
 // build a reference at the scene scale (1 unit = 1 m), BASE sitting on y=0
 function makeScaleRef(type, heightM) {
@@ -2111,39 +2165,55 @@ function makeScaleRef(type, heightM) {
     new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, seg), mat);
   const sph = (r) => new THREE.Mesh(new THREE.SphereGeometry(r, 18, 14), mat);
   const box = (w, h, d) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  // CapsuleGeometry: rounded limbs read as a real body/finger (total height
+  // along +Y = len + 2r, centred at the origin)
+  const cap = (r, len) =>
+    new THREE.Mesh(new THREE.CapsuleGeometry(r, Math.max(len, 0.001), 6, 14), mat);
   if (type === 'human') {
-    const H = heightM;
-    const legL = 0.47 * H, torso = 0.34 * H, headR = 0.052 * H;
-    for (const dx of [-0.075 * H, 0.075 * H]) {
-      const l = cyl(0.036 * H, legL); l.position.set(dx, legL / 2, 0); g.add(l);
+    const H = heightM;                 // ~7.5-head proportions, capsule limbs
+    const headR = 0.052 * H, shY = 0.81 * H, hipY = 0.50 * H;
+    const head = sph(headR); head.position.y = H - headR; g.add(head);
+    const neck = cap(0.030 * H, 0.02 * H);
+    neck.position.y = (H - 2 * headR + shY) / 2; g.add(neck);
+    const torso = cap(0.115 * H, Math.max(0.02, (shY - hipY) - 0.20 * H));
+    torso.position.y = (shY + hipY) / 2; torso.scale.z = 0.55; g.add(torso);
+    const pelvis = cap(0.095 * H, 0.03 * H);
+    pelvis.position.y = hipY + 0.02 * H; pelvis.scale.z = 0.62; g.add(pelvis);
+    for (const s of [-1, 1]) {          // arms: shoulder -> hand (~mid-thigh)
+      const x = s * 0.155 * H, top = shY - 0.01 * H, bot = 0.40 * H;
+      const arm = cap(0.034 * H, Math.max(0.02, (top - bot) - 0.068 * H));
+      arm.position.set(x, (top + bot) / 2, 0); arm.rotation.z = s * 0.05;
+      g.add(arm);
+      const hand = sph(0.033 * H); hand.position.set(x, bot, 0); g.add(hand);
     }
-    const t = cyl(0.105 * H, torso); t.position.set(0, legL + torso / 2, 0); g.add(t);
-    const head = sph(headR);
-    head.position.set(0, legL + torso + headR * 0.9, 0); g.add(head);
-    for (const dx of [-0.135 * H, 0.135 * H]) {
-      const a = cyl(0.03 * H, torso * 1.05);
-      a.position.set(dx, legL + torso - torso * 0.5, 0); g.add(a);
+    for (const s of [-1, 1]) {          // legs: hip -> ankle, + a foot
+      const x = s * 0.075 * H, top = hipY + 0.02 * H, bot = 0.045 * H;
+      const leg = cap(0.052 * H, Math.max(0.02, (top - bot) - 0.104 * H));
+      leg.position.set(x, (top + bot) / 2, 0); g.add(leg);
+      const foot = box(0.06 * H, 0.028 * H, 0.13 * H);
+      foot.position.set(x, 0.014 * H, 0.03 * H); g.add(foot);
     }
-    // scale the assembled figure so its real height is EXACTLY H (a scale
-    // reference must be accurate; the limb proportions alone fall ~9% short)
+    // scale so its REAL height is EXACTLY H (a scale ref must be accurate)
     g.updateMatrixWorld(true);
     const bb = new THREE.Box3().setFromObject(g);
     const h0 = bb.max.y - bb.min.y;
     if (h0 > 0) { g.scale.multiplyScalar(H / h0); }
     g.userData.refLabel = `人 ${Math.round(H * 100)}cm`;
   } else if (type === 'hand') {
-    // flat-ish hand: palm + 4 fingers + thumb, ~18 cm tall, ~9 cm wide
-    const palm = box(0.085, 0.095, 0.022);
-    palm.position.set(0, 0.0475, 0); g.add(palm);
-    const fx = [-0.030, -0.010, 0.010, 0.030];
-    const fl = [0.060, 0.072, 0.066, 0.052];
-    fx.forEach((x, i) => {
-      const f = box(0.016, fl[i], 0.02);
-      f.position.set(x, 0.095 + fl[i] / 2, 0); g.add(f);
-    });
-    const thumb = box(0.05, 0.018, 0.02);
-    thumb.position.set(-0.06, 0.05, 0);
-    thumb.rotation.z = 0.7; g.add(thumb);
+    // palm + 4 capsule fingers + an angled thumb (~18 cm, wrist at y=0)
+    const palm = cap(0.024, 0.05); palm.scale.set(1.85, 1, 0.5);
+    palm.position.y = 0.049; g.add(palm);
+    const fingers = [   // x, knuckle y, length
+      [-0.026, 0.094, 0.050], [-0.009, 0.096, 0.060],
+      [0.009, 0.094, 0.055], [0.026, 0.088, 0.043]];
+    for (const [x, base, len] of fingers) {
+      const fr = 0.0078, fc = cap(fr, len);
+      fc.position.set(x, base + len / 2 + fr, 0); fc.scale.z = 0.85; g.add(fc);
+      const k = sph(fr * 1.1); k.position.set(x, base, 0); g.add(k);
+    }
+    const thumb = cap(0.0105, 0.04);
+    thumb.position.set(-0.043, 0.046, 0.004); thumb.rotation.z = 0.95;
+    g.add(thumb);
     g.userData.refLabel = '手 ≈18cm';
   } else if (type === 'can') {
     const c = cyl(0.033, 0.122, 24); c.position.y = 0.061; g.add(c);
@@ -2180,6 +2250,7 @@ function disposeScaleRef() {
 
 function buildScaleRef({ refit = true } = {}) {
   disposeScaleRef();
+  const myToken = ++scaleRefToken;     // any later build/dispose invalidates us
   const type = scaleRefSel.value;
   const showHgt = type === 'human';
   scaleHgt.style.display = showHgt ? '' : 'none';
@@ -2208,6 +2279,21 @@ function buildScaleRef({ refit = true } = {}) {
     log(`スケール参照: ${ref.userData.refLabel} を横に表示`, 'ok');
   }
   viewer.redraw();
+
+  // upgrade the human capsule placeholder to the real OSS mesh once it loads
+  // (async; the capsule stays as the fallback if the GLB fails to fetch)
+  if (type === 'human') {
+    loadHumanMesh(H).then(mesh => {
+      if (myToken !== scaleRefToken || !scaleRefObj) { freeObj3D(mesh); return; }
+      // swap the capsule limbs out for the mesh, keeping ref's placement
+      for (const c of [...scaleRefObj.children]) {
+        freeObj3D(c); scaleRefObj.remove(c);
+      }
+      mesh.traverse(markHelper);
+      scaleRefObj.add(mesh);
+      viewer.redraw();
+    }).catch(err => console.warn('[scale-ref] human mesh load failed', err));
+  }
 }
 scaleRefSel.addEventListener('change', buildScaleRef);
 scaleHgt.addEventListener('change', () => {
