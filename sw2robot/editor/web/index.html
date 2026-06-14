@@ -171,6 +171,24 @@
               style="font-size:11px;color:#334;align-self:center;
                      background:#ffffffcc;border:1px solid #99a;
                      border-radius:3px;padding:1px 4px"></select>
+      <select id="scaleref" title="寸法の目安に既知サイズの物体を横に置く"
+              style="font-size:11px;color:#334;align-self:center;
+                     background:#ffffffcc;border:1px solid #99a;
+                     border-radius:3px;padding:1px 4px">
+        <option value="">スケール参照: なし</option>
+        <option value="human">👤 人(身長)</option>
+        <option value="hand">✋ 手 (≈18cm)</option>
+        <option value="can">🥫 350ml缶 (φ66×122)</option>
+        <option value="card">💳 カード (86×54)</option>
+        <option value="ball">🎾 テニスボール (φ67)</option>
+        <option value="bar">📏 10cm バー</option>
+      </select>
+      <input id="scalehgt" type="number" min="30" max="220" step="1"
+             value="170" title="身長 (cm)"
+             style="display:none;width:48px;font-size:11px;color:#334;
+                    align-self:center;background:#ffffffcc;border:1px solid #99a;
+                    border-radius:3px;padding:1px 3px"><span id="scalehgtu"
+             style="display:none;font-size:11px;color:#ccd;align-self:center">cm</span>
     </div>
     <div id="hovertip"></div>
     <div id="colstat" style="position:absolute;left:50%;top:36px;
@@ -1571,8 +1589,8 @@ function seatModel() {
 }
 document.getElementById('vorigin').addEventListener('click', seatModel);
 
-function setView(name) {
-  const box = robotBox();
+function setView(name, boxOverride) {
+  const box = boxOverride || robotBox();
   if (!box) { return; }
   const center = box.getCenter(new THREE.Vector3());
   const diag = box.getSize(new THREE.Vector3()).length();
@@ -2075,6 +2093,127 @@ gridBtn.addEventListener('click', () => {
   viewer.redraw();
 });
 
+// ---- scale reference: a known-size object beside the robot so you can read
+// the real dimensions at a glance (the grid gives mm; this gives intuition) --
+const scaleRefSel = document.getElementById('scaleref');
+const scaleHgt = document.getElementById('scalehgt');
+const scaleHgtU = document.getElementById('scalehgtu');
+let scaleRefObj = null;
+const REF_MAT = () => new THREE.MeshStandardMaterial({
+  color: 0x37c2c9, transparent: true, opacity: 0.4, roughness: 0.85,
+  metalness: 0, side: THREE.DoubleSide, depthWrite: false });
+
+// build a reference at the scene scale (1 unit = 1 m), BASE sitting on y=0
+function makeScaleRef(type, heightM) {
+  const mat = REF_MAT();
+  const g = new THREE.Group();
+  const cyl = (r, h, seg = 14) =>
+    new THREE.Mesh(new THREE.CylinderGeometry(r, r, h, seg), mat);
+  const sph = (r) => new THREE.Mesh(new THREE.SphereGeometry(r, 18, 14), mat);
+  const box = (w, h, d) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  if (type === 'human') {
+    const H = heightM;
+    const legL = 0.47 * H, torso = 0.34 * H, headR = 0.052 * H;
+    for (const dx of [-0.075 * H, 0.075 * H]) {
+      const l = cyl(0.036 * H, legL); l.position.set(dx, legL / 2, 0); g.add(l);
+    }
+    const t = cyl(0.105 * H, torso); t.position.set(0, legL + torso / 2, 0); g.add(t);
+    const head = sph(headR);
+    head.position.set(0, legL + torso + headR * 0.9, 0); g.add(head);
+    for (const dx of [-0.135 * H, 0.135 * H]) {
+      const a = cyl(0.03 * H, torso * 1.05);
+      a.position.set(dx, legL + torso - torso * 0.5, 0); g.add(a);
+    }
+    // scale the assembled figure so its real height is EXACTLY H (a scale
+    // reference must be accurate; the limb proportions alone fall ~9% short)
+    g.updateMatrixWorld(true);
+    const bb = new THREE.Box3().setFromObject(g);
+    const h0 = bb.max.y - bb.min.y;
+    if (h0 > 0) { g.scale.multiplyScalar(H / h0); }
+    g.userData.refLabel = `人 ${Math.round(H * 100)}cm`;
+  } else if (type === 'hand') {
+    // flat-ish hand: palm + 4 fingers + thumb, ~18 cm tall, ~9 cm wide
+    const palm = box(0.085, 0.095, 0.022);
+    palm.position.set(0, 0.0475, 0); g.add(palm);
+    const fx = [-0.030, -0.010, 0.010, 0.030];
+    const fl = [0.060, 0.072, 0.066, 0.052];
+    fx.forEach((x, i) => {
+      const f = box(0.016, fl[i], 0.02);
+      f.position.set(x, 0.095 + fl[i] / 2, 0); g.add(f);
+    });
+    const thumb = box(0.05, 0.018, 0.02);
+    thumb.position.set(-0.06, 0.05, 0);
+    thumb.rotation.z = 0.7; g.add(thumb);
+    g.userData.refLabel = '手 ≈18cm';
+  } else if (type === 'can') {
+    const c = cyl(0.033, 0.122, 24); c.position.y = 0.061; g.add(c);
+    g.userData.refLabel = '350ml缶 φ66×122mm';
+  } else if (type === 'card') {
+    const c = box(0.086, 0.054, 0.0008); c.position.y = 0.027; g.add(c);
+    g.userData.refLabel = 'カード 86×54mm';
+  } else if (type === 'ball') {
+    const b = sph(0.0335); b.position.y = 0.0335; g.add(b);
+    g.userData.refLabel = 'テニスボール φ67mm';
+  } else if (type === 'bar') {
+    const b = box(0.10, 0.004, 0.004); b.position.set(0.05, 0.002, 0); g.add(b);
+    for (const x of [0, 0.05, 0.10]) {
+      const t = box(0.002, 0.012, 0.006); t.position.set(x, 0.006, 0); g.add(t);
+    }
+    g.userData.refLabel = '10cm バー';
+  }
+  return g;
+}
+
+function disposeScaleRef() {
+  if (!scaleRefObj) { return; }
+  const mats = new Set();
+  scaleRefObj.traverse(o => {
+    o.geometry?.dispose?.();
+    const m = o.material;
+    if (Array.isArray(m)) { m.forEach(x => mats.add(x)); }
+    else if (m) { mats.add(m); }
+  });
+  mats.forEach(m => m.dispose?.());
+  scaleRefObj.removeFromParent();
+  scaleRefObj = null;
+}
+
+function buildScaleRef({ refit = true } = {}) {
+  disposeScaleRef();
+  const type = scaleRefSel.value;
+  const showHgt = type === 'human';
+  scaleHgt.style.display = showHgt ? '' : 'none';
+  scaleHgtU.style.display = showHgt ? '' : 'none';
+  if (!type || !viewer.robot) { viewer.redraw(); return; }
+  const H = Math.max(0.3, Math.min(2.2, (parseFloat(scaleHgt.value) || 170) / 100));
+  const ref = makeScaleRef(type, H);
+  ref.traverse(markHelper);                     // never eat raycasts/drags
+  const rb = robotBox();
+  if (rb) {
+    const refBox = new THREE.Box3().setFromObject(ref);
+    const refSize = refBox.getSize(new THREE.Vector3());
+    const margin = Math.max(0.05, refSize.x * 0.4,
+                            rb.getSize(new THREE.Vector3()).x * 0.15);
+    ref.position.set(rb.max.x + margin + refSize.x / 2,
+                     -refBox.min.y, rb.getCenter(new THREE.Vector3()).z);
+  }
+  viewer.scene.add(ref);
+  scaleRefObj = ref;
+  // frame robot + reference together so the comparison is immediately visible
+  const rb2 = robotBox();
+  if (refit && rb2) {
+    const union = rb2.clone().union(
+      new THREE.Box3().setFromObject(ref));
+    setView('iso', union);
+    log(`スケール参照: ${ref.userData.refLabel} を横に表示`, 'ok');
+  }
+  viewer.redraw();
+}
+scaleRefSel.addEventListener('change', buildScaleRef);
+scaleHgt.addEventListener('change', () => {
+  if (scaleRefSel.value === 'human') { buildScaleRef(); }
+});
+
 viewer.addEventListener('urdf-processed', () => {
   const n = buildJointRows(viewer.robot);
   log(`URDF parsed ✓ — ${Object.keys(viewer.robot.links).length} links, ` +
@@ -2102,6 +2241,7 @@ viewer.addEventListener('geometry-loaded', () => {
     addAxisMarkers(viewer.robot);
     addOriginTriad(viewer.robot);
     buildGrid();
+    if (scaleRefSel.value) { buildScaleRef({ refit: false }); }
     hiddenLinks.forEach(n => applyLinkVisibility(n));
     tfNodes = [];                  // old robot's TF nodes died with it
     undimAll();                    // restore shared (cached) materials!
