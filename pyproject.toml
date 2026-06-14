@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "solidworks-urdf-exporter2"
+version = "0.1.0"
+description = "SolidWorks assembly -> URDF exporter with a browser-based editor"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Iori Yanokura", email = "ab.ioryz@gmail.com" }]
+dependencies = [
+    "numpy>=2",
+    "trimesh>=3.9",
+    "lxml",
+    "pydantic>=2",
+    "pyyaml>=6",
+    # only the EXTRACT step (driving SolidWorks COM) needs this, and only on Windows
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+# the live self-collision highlight + the auto joint-limit sweep (skrobot FK +
+# python-fcl), plus the standalone viser GUI.  The web editor's view / edit /
+# extract / build all work WITHOUT these; collision + auto-limits degrade
+# gracefully when they are not installed.
+ui = [
+    "scikit-robot>=0.0.30",
+    "python-fcl>=0.7",
+    "viser",
+]
+
+[project.scripts]
+sw2urdf = "sw2urdf.export:main"          # extract + build (needs SolidWorks)
+cad2rc = "cad2rc.cli:main"               # headless build/edit/export CLI
+cad2rc-web = "cad2rc.webserver:main"     # the browser editor server
+
+[tool.hatch.build.targets.wheel]
+packages = ["sw2urdf", "cad2rc"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"cad2rc/web/index.html" = "cad2rc/web/index.html"
+
+[tool.pytest.ini_options]
+# put the repo root on sys.path so `cad2rc` / `sw2urdf` import without an install
+pythonpath = ["."]
+testpaths = ["tests"]

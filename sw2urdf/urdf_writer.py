@@ -1,0 +1,198 @@
+"""Write a RobotModel as a URDF + minimal ROS package layout.
+
+Layout::
+
+    <pkg>/
+      urdf/<name>.urdf
+      meshes/<link>.3dxml        (written earlier by mesh.export_meshes)
+      package.xml
+      CMakeLists.txt
+
+Mesh references use a path relative to the urdf file (``../meshes/x.3dxml``),
+which scikit-robot / urdfpy resolve against the urdf directory -- this loads
+locally with no ROS environment.  ROS users can switch these to
+``package://<pkg>/meshes/...``.
+"""
+
+from __future__ import annotations
+
+import os
+
+from . import inertia as _inertia
+
+# Fallback inertial when no mesh is available / its volume is unusable.
+_PLACEHOLDER_INERTIAL = {
+    "mass": 0.1, "com": [0.0, 0.0, 0.0],
+    "inertia": (1e-4, 0.0, 0.0, 1e-4, 0.0, 1e-4), "method": "placeholder",
+}
+
+
+def _fmt(v):
+    return " ".join(f"{x:.8g}" for x in v)
+
+
+def _inertial_xml(comp, mesh_dir, density):
+    """Compute and format a link's <inertial> from its mesh; fall back to a
+    small placeholder if the mesh is missing or has no usable volume.  Returns
+    ``(xml_lines, method)`` so the caller can report approximations."""
+    info = None
+    if comp.mesh_file and mesh_dir:
+        # mesh_file may carry Windows backslashes (extracted on Windows); split
+        # on them so os.path.join builds a valid path on any platform.
+        rel = comp.mesh_file.replace("\\", "/")
+        # per-link density: the part's SolidWorks material wins over the
+        # global default (config `density:` still overrides everything via
+        # the caller)
+        d = getattr(comp, "density", None) or density
+        info = _inertia.link_inertial(
+            os.path.join(mesh_dir, *rel.split("/")),
+            comp.visual_xyz, comp.visual_rpy, density=d)
+    if info is None:
+        info = _PLACEHOLDER_INERTIAL
+    ixx, ixy, ixz, iyy, iyz, izz = info["inertia"]
+    lines = [
+        "    <inertial>",
+        f'      <origin xyz="{_fmt(info["com"])}" rpy="0 0 0"/>',
+        f'      <mass value="{info["mass"]:.6g}"/>',
+        f'      <inertia ixx="{ixx:.6g}" ixy="{ixy:.6g}" ixz="{ixz:.6g}" '
+        f'iyy="{iyy:.6g}" iyz="{iyz:.6g}" izz="{izz:.6g}"/>',
+        "    </inertial>",
+    ]
+    return lines, info["method"]
+
+
+def _report_inertia(methods):
+    """Print a one-line summary of how each link's inertia was obtained, so any
+    approximation (non-watertight mesh) is visible rather than silent."""
+    if not methods:
+        return
+    exact = methods.get("mesh", 0)
+    approx = {k: v for k, v in methods.items() if k != "mesh"}
+    msg = f"      inertia: {exact} from mesh"
+    if approx:
+        detail = ", ".join(f"{v} {k}" for k, v in sorted(approx.items()))
+        msg += f"; APPROX -> {detail}"
+    print(msg)
+
+
+def _link_xml(comp, ros_pkg=None, rn=lambda n: n, mesh_dir=None, density=None):
+    lines = [f'  <link name="{rn(comp.link_name)}">']
+    if comp.mesh_file:
+        mesh_ref = ("package://%s/%s" % (ros_pkg, comp.mesh_file.replace("\\", "/"))
+                    if ros_pkg else "../" + comp.mesh_file.replace("\\", "/"))
+        vorigin = (f'      <origin xyz="{_fmt(comp.visual_xyz)}" '
+                   f'rpy="{_fmt(comp.visual_rpy)}"/>')
+        for tag in ("visual", "collision"):
+            lines.append(f"    <{tag}>")
+            lines.append(vorigin)
+            lines.append("      <geometry>")
+            lines.append(f'        <mesh filename="{mesh_ref}"/>')
+            lines.append("      </geometry>")
+            lines.append(f"    </{tag}>")
+    inertial_lines, method = _inertial_xml(comp, mesh_dir, density)
+    lines.extend(inertial_lines)
+    lines.append("  </link>")
+    return "\n".join(lines), method
+
+
+def _joint_xml(joint, rn=lambda n: n):
+    lines = [f'  <joint name="{joint.name}" type="{joint.jtype}">']
+    lines.append(f'    <origin xyz="{_fmt(joint.xyz)}" rpy="{_fmt(joint.rpy)}"/>')
+    lines.append(f'    <parent link="{rn(joint.parent)}"/>')
+    lines.append(f'    <child link="{rn(joint.child)}"/>')
+    if joint.axis is not None:
+        lines.append(f'    <axis xyz="{_fmt(joint.axis)}"/>')
+    if joint.jtype in ("revolute", "prismatic"):
+        lo = joint.lower if joint.lower is not None else -3.14159
+        up = joint.upper if joint.upper is not None else 3.14159
+        lines.append(f'    <limit lower="{lo:.6g}" upper="{up:.6g}" '
+                     f'effort="10" velocity="3.14"/>')
+    if joint.mimic:
+        mj = joint.mimic.get("joint")
+        mult = joint.mimic.get("multiplier", 1.0)
+        off = joint.mimic.get("offset", 0.0)
+        lines.append(f'    <mimic joint="{mj}" multiplier="{mult:g}" '
+                     f'offset="{off:g}"/>')
+    if joint.mate_types:
+        lines.append(f'    <!-- mates: {", ".join(joint.mate_types)} -->')
+    lines.append("  </joint>")
+    return "\n".join(lines)
+
+
+def _port_xml(port, rn=lambda n: n):
+    """An output port: an empty dummy_link on a fixed joint (robot-compiler
+    detects ``dummy_link*`` as a bidirectional connection port)."""
+    suffix = port.name[len("dummy_link"):] if port.name.startswith("dummy_link") \
+        else "_" + port.name
+    jn = "dummy_joint" + suffix
+    return "\n".join([
+        f'  <link name="{port.name}"/>',
+        f'  <joint name="{jn}" type="fixed">',
+        f'    <origin xyz="{_fmt(port.xyz)}" rpy="{_fmt(port.rpy)}"/>',
+        f'    <parent link="{rn(port.parent_link)}"/>',
+        f'    <child link="{port.name}"/>',
+        "  </joint>",
+    ])
+
+
+def write_urdf(model, urdf_path, ros_pkg=None, density=_inertia.DEFAULT_DENSITY):
+    os.makedirs(os.path.dirname(urdf_path), exist_ok=True)
+    # The internal model keeps each component's own link name; the emitted URDF
+    # renames the root to the module convention (base_link = input port) so the
+    # module loads cleanly in robot-compiler.  Done here (not in the model) so
+    # the joint-config template / viewer keep referring to component names.
+    root_name = getattr(model, "root_link_name", "") or model.base_link
+
+    def rn(name):
+        return root_name if name == model.base_link else name
+
+    # meshes are stored relative to the package root (<pkg>/meshes/x), and the
+    # urdf lives at <pkg>/urdf/<name>.urdf -> the package root is two levels up.
+    mesh_dir = os.path.dirname(os.path.dirname(os.path.abspath(urdf_path)))
+
+    parts = [f'<?xml version="1.0"?>', f'<robot name="{model.name}">']
+    methods = {}
+    for comp in model.components:
+        xml, method = _link_xml(comp, ros_pkg, rn, mesh_dir=mesh_dir,
+                                density=density)
+        parts.append(xml)
+        methods[method] = methods.get(method, 0) + 1
+    _report_inertia(methods)
+    for joint in model.joints:
+        parts.append(_joint_xml(joint, rn))
+    for port in getattr(model, "ports", []):
+        parts.append(_port_xml(port, rn))
+    parts.append("</robot>\n")
+    with open(urdf_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(parts))
+    return urdf_path
+
+
+PACKAGE_XML = """<?xml version="1.0"?>
+<package format="2">
+  <name>{name}</name>
+  <version>0.0.1</version>
+  <description>URDF generated from SolidWorks assembly {name}</description>
+  <maintainer email="{email}">auto</maintainer>
+  <license>TODO</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rviz</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
+</package>
+"""
+
+CMAKELISTS = """cmake_minimum_required(VERSION 3.0.2)
+project({name})
+find_package(catkin REQUIRED)
+catkin_package()
+install(DIRECTORY urdf meshes
+  DESTINATION ${{CATKIN_PACKAGE_SHARE_DESTINATION}})
+"""
+
+
+def write_ros_package(model, pkg_dir, email="auto@example.com"):
+    with open(os.path.join(pkg_dir, "package.xml"), "w", encoding="utf-8") as f:
+        f.write(PACKAGE_XML.format(name=model.name, email=email))
+    with open(os.path.join(pkg_dir, "CMakeLists.txt"), "w", encoding="utf-8") as f:
+        f.write(CMAKELISTS.format(name=model.name))

@@ -1,0 +1,23 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+
+# regenerated mesh caches (3DXML -> GLB, done on first view) -- keep the .3dxml
+*.3dxml.glb
+
+# build artifacts sw2urdf.build regenerates from graph.json
+output/
+examples/*/urdf/
+examples/*/package.xml
+examples/*/CMakeLists.txt
+
+# test / tooling
+tests/e2e/node_modules/
+tests/e2e/package-lock.json
+_server*.txt
+_client_report.json
+_sldasm_index.json

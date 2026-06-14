@@ -1,0 +1,2919 @@
+<!DOCTYPE html>
+<!-- cad2rc module viewer/editor: gkjohnson/urdf-loaders + our package server.
+     Served by `python -m cad2rc.webserver [package]`.  Meshes come from
+     /pkg/... (3DXML converted to GLB server-side) or drag&dropped folders.
+     Joint-type edits are written into the package's joints.yaml and the
+     URDF is rebuilt server-side (sw2urdf.build, ~0.5 s). -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>cad2rc module viewer</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1c20; color: #ddd;
+               font: 13px/1.5 system-ui, sans-serif; }
+  #app { display: flex; height: 100%; }
+  #viewwrap { flex: 1; position: relative; min-width: 0; }
+  urdf-manipulator { position: absolute; inset: 0; display: block;
+    /* renderer is alpha:0, so this IS the 3D background (SolidWorks-ish) */
+    background: linear-gradient(#f2f4f7 0%, #d6dade 70%, #b9bec6 100%); }
+  #views { position: absolute; top: 8px; left: 8px; z-index: 5;
+           display: flex; gap: 4px; }
+  #views button { font-size: 11px; padding: 3px 8px; opacity: .85; }
+  #views button.toggle.active { background: #3d6fb4; border-color: #7db8ff;
+           color: #fff; opacity: 1; }
+  #panel { width: 340px; padding: 12px; overflow-y: auto; flex-shrink: 0;
+           background: #22252b; border-left: 1px solid #333;
+           display: flex; flex-direction: column; }
+  #panel h1 { font-size: 15px; margin: 0 0 4px; color: #fff; }
+  #status { color: #8a93a3; font-size: 12px; margin-bottom: 8px; }
+  #picker { border: 1px solid #333; border-radius: 4px; padding: 8px;
+            margin-bottom: 8px; background: #1e2126; }
+  #picker label { font-size: 11px; color: #8a93a3; display: block; }
+  #picker select, #picker input[type=text] {
+    width: 100%; box-sizing: border-box; margin: 2px 0 6px;
+    background: #15171a; color: #ddd; border: 1px solid #444;
+    border-radius: 3px; padding: 4px; }
+  #bulk { display: flex; gap: 4px; align-items: center; margin: 6px 0;
+          font-size: 12px; flex-wrap: wrap; }
+  #bulk select { background: #15171a; color: #ddd; border: 1px solid #444;
+                 border-radius: 3px; padding: 2px; }
+  #rootbox .rot { font-size: 11px; padding: 2px 6px; }
+  #rootbox .rnum { width: 44px; background: #15171a; color: #ddd;
+                   border: 1px solid #444; border-radius: 3px;
+                   padding: 2px 4px; font-size: 11px; }
+  #apply { background: #2d5a35; border-color: #3f7a4a; font-weight: bold; }
+  #apply:disabled { background: #3a3f48; color: #777; font-weight: normal; }
+  #joints { flex: 1; }
+  .joint { margin-bottom: 4px; padding: 2px 4px; border-radius: 4px; }
+  .joint .caret { width: 13px; flex-shrink: 0; display: inline-block;
+                  color: #8a93a3; user-select: none; text-align: center; }
+  .joint.root { margin-top: 6px; border-top: 1px solid #333;
+                padding-top: 6px; }
+  .mkroot { font-size: 10px; padding: 0 5px; opacity: .35; flex-shrink: 0; }
+  .joint:hover .mkroot { opacity: 1; }
+  .eye { font-size: 10px; padding: 0 3px; opacity: .35; flex-shrink: 0;
+         background: none; border: none; }
+  .joint:hover .eye, .eye.off { opacity: 1; }
+  .eye.off { filter: grayscale(1); }
+  #seleye.off { filter: grayscale(1); opacity: .5; }
+  .joint.hiddenlink .jname { opacity: .4; text-decoration: line-through; }
+  #linkinfo { border: 1px solid #456; border-radius: 4px; padding: 6px 8px;
+              background: #1c2228cc; font-size: 11.5px; display: none;
+              position: absolute; top: 76px; left: 8px; z-index: 5;
+              width: 280px; max-height: 45%; overflow-y: auto;
+              /* let orbit/drag pass THROUGH the card; only its controls
+                 are interactive (a big opaque card was a dead zone) */
+              pointer-events: none; }
+  #linkinfo select, #linkinfo button { pointer-events: auto; }
+  #linkinfo h2 { font-size: 12px; margin: 0 0 4px; color: #7fd0ff; }
+  #linkinfo table { border-collapse: collapse; width: 100%; }
+  #linkinfo td { padding: 1px 4px 1px 0; vertical-align: top; }
+  #linkinfo td:first-child { color: #8a93a3; white-space: nowrap; }
+  #linkinfo .sw { display: inline-block; width: 10px; height: 10px;
+                  border-radius: 2px; vertical-align: -1px;
+                  border: 1px solid #555; }
+  .jtype { font-size: 10px; padding: 0 4px; border-radius: 3px;
+           background: #444; color: #ccc; }
+  .joint.dirty { background: #2c2a1e; outline: 1px solid #6b5d2a; }
+  .joint .row1 { display: flex; align-items: center; gap: 6px; }
+  .joint .jname { flex: 1; overflow: hidden; text-overflow: ellipsis;
+                  white-space: nowrap; font-size: 12px; }
+  .joint .jval { color: #7fd0ff; font-variant-numeric: tabular-nums;
+                 font-size: 11px; min-width: 38px; text-align: right; }
+  .joint input[type=range] { width: 100%; }
+  .joint select { font-size: 11px; background: #15171a; color: #ddd;
+                  border: 1px solid #444; border-radius: 3px; }
+  .joint select.t-revolute   { color: #ff9d9d; }
+  .joint select.t-continuous { color: #ffc09d; }
+  .joint select.t-prismatic  { color: #9dc4ff; }
+  .joint select.t-fixed      { color: #888; }
+  .joint .mimictag { font-size: 10px; padding: 0 4px; border-radius: 3px;
+                     background: #3d3556; color: #c5b3ff; }
+  button { background: #3a3f48; color: #ddd; border: 1px solid #555;
+           border-radius: 4px; padding: 4px 10px; cursor: pointer; }
+  button:hover { background: #474d58; }
+  #hint { color: #666; font-size: 11px; margin: 8px 0; }
+  #log { height: 150px; overflow-y: auto; background: #15171a;
+         border: 1px solid #333; border-radius: 4px; padding: 6px;
+         font: 11px/1.5 ui-monospace, Consolas, monospace; flex-shrink: 0; }
+  #log .t   { color: #5a6472; margin-right: 6px; }
+  #log .ok  { color: #79c98b; }
+  #log .err { color: #ff8484; }
+  #log .wrn { color: #e8c468; }
+  #hovertip { position: absolute; display: none; pointer-events: none;
+              background: rgba(20,22,26,.85); color: #fff; padding: 2px 8px;
+              border-radius: 4px; font-size: 11px; z-index: 6;
+              white-space: nowrap; }
+  #hovertip .key { background: #444; border: 1px solid #666;
+                   border-radius: 3px; padding: 0 4px; font-family: monospace; }
+  #loadbar { position: absolute; left: 50%; top: 50%;
+             transform: translate(-50%, -50%); z-index: 7; display: none;
+             width: 340px; background: #1c2228ee; border: 1px solid #456;
+             border-radius: 8px; padding: 14px 18px; text-align: center;
+             pointer-events: none; }
+  #loadbar .lb-text { font-size: 13px; color: #fff; margin-bottom: 8px;
+                      overflow: hidden; text-overflow: ellipsis;
+                      white-space: nowrap; }
+  #loadbar .lb-track { height: 8px; background: #15171a; border-radius: 4px;
+                       overflow: hidden; }
+  #loadbar .lb-fill { height: 100%; width: 0%; border-radius: 4px;
+                      background: #4f9dde; transition: width .15s; }
+  #loadbar.indet .lb-fill { width: 30% !important;
+                            animation: lbslide 1.2s ease-in-out infinite; }
+  @keyframes lbslide {
+    0% { margin-left: 0; } 50% { margin-left: 70%; }
+    100% { margin-left: 0; } }
+  #loadbar .lb-sub { font-size: 11px; color: #8a93a3; margin-top: 6px;
+                     overflow: hidden; text-overflow: ellipsis;
+                     white-space: nowrap; }
+  #droptip { position: fixed; inset: 0; display: none; align-items: center;
+             justify-content: center; background: rgba(40,120,220,.25);
+             border: 3px dashed #6db3ff; font-size: 22px; color: #fff;
+             pointer-events: none; z-index: 10; }
+  body.dragging #droptip { display: flex; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/examples/jsm/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="droptip">drop a module folder or a .sldasm here</div>
+<div id="app">
+  <div id="viewwrap">
+    <urdf-manipulator id="viewer" up="Z" highlight-color="#ffb86b">
+    </urdf-manipulator>
+    <div id="views">
+      <button data-v="iso"   title="isometric">◇ Iso</button>
+      <button data-v="front" title="+X">Front</button>
+      <button data-v="back"  title="−X">Back</button>
+      <button data-v="left"  title="−Y">Left</button>
+      <button data-v="right" title="+Y">Right</button>
+      <button data-v="top"   title="+Z">Top</button>
+      <button data-v="bottom" title="−Z">Btm</button>
+      <button id="axes" class="toggle active" title="joint axes">axes
+      </button>
+      <button id="origin" class="toggle active" title="root origin triad">
+        origin</button>
+      <button id="tf" class="toggle"
+              title="TF view: frame triads at every link + parent lines, meshes dimmed">tf</button>
+      <button id="alignmode" class="toggle"
+              title="click a face: root origin moves there, +Z = face normal">⊕ align</button>
+      <button id="vorigin"
+              title="CAD全体を動かして base_link を世界原点(0,0,0)に合わせる">⌖ origin</button>
+      <button id="grid" class="toggle active"
+              title="ground grid at root Z=0">grid</button>
+      <select id="gridcap" title="grid pitch"
+              style="font-size:11px;color:#334;align-self:center;
+                     background:#ffffffcc;border:1px solid #99a;
+                     border-radius:3px;padding:1px 4px"></select>
+    </div>
+    <div id="hovertip"></div>
+    <div id="colstat" style="position:absolute;left:50%;top:36px;
+         transform:translateX(-50%);z-index:5;display:none;max-width:70%;
+         background:#5b1111dd;color:#ffb3b3;border:1px solid #a33;
+         border-radius:4px;padding:3px 10px;font-size:12px;
+         pointer-events:none;white-space:nowrap;overflow:hidden;
+         text-overflow:ellipsis"></div>
+    <div id="emptyprompt" style="position:absolute;left:50%;top:50%;
+         transform:translate(-50%,-50%);z-index:4;display:none;
+         text-align:center;color:#7a828e;pointer-events:none">
+      <div style="font-size:42px">⤓</div>
+      <div style="font-size:16px;margin-top:6px">
+        ここに .sldasm / パッケージフォルダを Drag &amp; Drop</div>
+      <div style="font-size:12px;margin-top:4px;color:#5a6472">
+        または右の「📄 ファイルを開く…」「📁 フォルダ…」から選択</div>
+    </div>
+    <div id="fsmodal" style="position:absolute;left:50%;top:8%;
+         transform:translateX(-50%);z-index:8;display:none;width:480px;
+         max-height:80%;background:#1c2228f5;border:1px solid #456;
+         border-radius:8px;padding:10px 12px;overflow:hidden;
+         flex-direction:column">
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+        <button id="fsup">⬆</button>
+        <span id="fspath" style="flex:1;font-size:11px;color:#8a93a3;
+              overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+              direction:rtl;text-align:left"></span>
+        <button id="fsclose">✕</button>
+      </div>
+      <div id="fslist" style="overflow-y:auto;font-size:12.5px"></div>
+    </div>
+    <div id="loadbackdrop" style="position:absolute;inset:0;z-index:6;
+         display:none;background:rgba(16,19,25,0.93)"></div>
+    <div id="loadbar">
+      <div class="lb-text"></div>
+      <div class="lb-track"><div class="lb-fill"></div></div>
+      <div class="lb-sub"></div>
+    </div>
+    <div id="selbar" style="position:absolute;top:40px;left:8px;z-index:5;
+         display:none;gap:4px;align-items:center;background:#22252bdd;
+         border:1px solid #444;border-radius:4px;padding:4px 8px;
+         font-size:12px">
+      <span id="selname" style="color:#55d6ff"></span>
+      <button id="seleye" title="show/hide this link">👁</button>
+      <button id="selexclude"
+              title="URDFから除外する (yaml exclude: に追加、Ctrl+Zで戻る)">🗑</button>
+      <button id="selroot">⌂ make root</button>
+      <button id="seldesel">✕</button>
+    </div>
+    <div id="boxsel" style="position:absolute;z-index:6;display:none;
+         border:1px dashed #7ad; background:#7ad2; pointer-events:none"></div>
+    <div id="bulkbar" style="position:absolute;bottom:14px;left:50%;
+         transform:translateX(-50%);z-index:8;display:none;gap:6px;
+         align-items:center;background:#22252bf2;border:1px solid #567;
+         border-radius:6px;padding:6px 10px;font-size:12px;color:#dde;
+         box-shadow:0 4px 16px #0007">
+      <span id="bulkcount" style="color:#8fd0ff"></span>
+      <span style="color:#8a93a3">→ 一括設定:</span>
+      <button data-bt="fixed">固定</button>
+      <button data-bt="revolute">回転</button>
+      <button data-bt="continuous">連続回転</button>
+      <button data-bt="prismatic">直動</button>
+      <button id="bulkclose" style="margin-left:4px">✕</button>
+    </div>
+    <div id="linkinfo"></div>
+  </div>
+  <div id="panel">
+    <h1 id="title">cad2rc viewer</h1>
+    <div id="status">starting…</div>
+    <div id="picker">
+      <button id="useactive" style="display:none;width:100%;margin:2px 0">
+        🎯 Extract the assembly open in SolidWorks</button>
+      <div id="swstat" style="font-size:11px;color:#8a93a3"></div>
+      <div style="display:flex;gap:4px">
+        <button id="openfile" style="flex:1"
+                title="OSのファイルダイアログ (.sldasm / .urdf)">
+          📄 ファイルを開く…</button>
+        <button id="openfolder" style="flex:1"
+                title="OSのフォルダダイアログ (パッケージフォルダ)">
+          📁 フォルダ…</button>
+        <button id="fsbrowse"
+                title="サーバー側のファイルブラウザ (ダイアログで見つからない時)">
+          🗄</button>
+      </div>
+      <input id="openfileinput" type="file" accept=".sldasm,.SLDASM,.urdf"
+             style="display:none">
+      <input id="openfolderinput" type="file" webkitdirectory directory
+             multiple style="display:none">
+    </div>
+    <div>
+      <button id="reset">Reset pose</button>
+      <button id="apply" disabled>Apply joint changes</button>
+      <button id="undo" disabled title="undo (Ctrl+Z)">↶</button>
+      <button id="redo" disabled title="redo (Ctrl+Y)">↷</button>
+      <button id="bug" title="壊れたらこれ: 操作ログ+状態をサーバーに送る">🐞
+      </button>
+    </div>
+    <div>
+      <button id="autolimits" style="width:100%"
+              title="各回転関節を ±2π(±360°)の範囲で自己干渉が起きる角度まで掃引(粗スキャン+二分探索)して lower/upper を自動設定。±2π まで自由に回る関節は continuous に。Ctrl+Zで戻せます">
+        🛠 自動関節リミット (自己干渉, ±2π)</button>
+    </div>
+    <div id="rootbox" style="border:1px solid #333;border-radius:4px;
+         padding:6px 8px;margin:6px 0;background:#1e2126;font-size:12px">
+      <div style="color:#8a93a3;font-size:11px;margin-bottom:4px">
+        root frame (rotate about current axes / set numbers)</div>
+      <div style="display:flex;gap:3px;flex-wrap:wrap">
+        <button class="rot" data-ax="0" data-s="1"
+                style="color:#ff9d9d">X+90</button>
+        <button class="rot" data-ax="0" data-s="-1"
+                style="color:#ff9d9d">X−90</button>
+        <button class="rot" data-ax="1" data-s="1"
+                style="color:#8fd99f">Y+90</button>
+        <button class="rot" data-ax="1" data-s="-1"
+                style="color:#8fd99f">Y−90</button>
+        <button class="rot" data-ax="2" data-s="1"
+                style="color:#9dc4ff">Z+90</button>
+        <button class="rot" data-ax="2" data-s="-1"
+                style="color:#9dc4ff">Z−90</button>
+      </div>
+      <div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:5px">
+        <button id="snapground" title="原点をモデル底面の中心へ (Z=0が接地面に)">
+          ⊥ 接地</button>
+        <button id="snapcenter" title="原点をバウンディングボックス中心へ">
+          ⌖ 中心</button>
+        <button id="snapreset" title="root_rpy/root_xyz を全部0に戻す">
+          0 リセット</button>
+      </div>
+      <div style="display:flex;gap:3px;align-items:center;margin-top:5px;
+                  flex-wrap:wrap">
+        <span style="color:#8a93a3">rpy°</span>
+        <input class="rnum" id="r_r"><input class="rnum" id="r_p">
+        <input class="rnum" id="r_y">
+        <span style="color:#8a93a3">xyz mm</span>
+        <input class="rnum" id="r_x"><input class="rnum" id="r_yy">
+        <input class="rnum" id="r_z">
+        <span style="color:#666;font-size:10px">(Enter で即適用)</span>
+      </div>
+    </div>
+    <div id="bulk">
+      <input type="checkbox" id="selall" title="select all">
+      <span>selected →</span>
+      <select id="bulktype">
+        <option value="fixed">fixed</option>
+        <option value="revolute">revolute</option>
+        <option value="continuous">continuous</option>
+        <option value="prismatic">prismatic</option>
+      </select>
+      <button id="bulkset">Set</button>
+      <button id="exclchip" style="display:none;font-size:11px"></button>
+    </div>
+    <div id="joints"></div>
+    <div id="exportbox" style="border:1px solid #2d4a35;border-radius:4px;
+         padding:6px 8px;margin:6px 0;background:#1e2620;font-size:12px">
+      <div style="color:#8fd99f;font-size:11px;margin-bottom:4px">
+        📦 Export</div>
+      <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
+        <a id="expnative" href="/api/export/zip" download>
+          <button>⬇ ROS package</button></a>
+        <a id="expstl" href="/api/export/zip?meshes=stl" download>
+          <button title="meshes converted to STL so RViz can display them">
+            ⬇ ROS pkg (STL)</button></a>
+        <a id="exprc" href="/api/export/rczip" download>
+          <button title="MoveIt/Gazebo/servo/IL config zip via robot-compiler">
+            ⬇ configs zip</button></a>
+      </div>
+      <div style="display:flex;gap:4px;margin-top:5px;align-items:center">
+        <input type="text" id="regdir" placeholder="robot-compiler registry dir"
+               style="flex:1;background:#15171a;color:#ddd;
+                      border:1px solid #444;border-radius:3px;padding:3px">
+        <button id="regbtn">Register</button>
+      </div>
+    </div>
+    <div id="hint">drag a link to articulate its joint ·
+      orbit: left-drag background · pan: right-drag · zoom: wheel</div>
+    <div id="log"></div>
+  </div>
+</div>
+
+<!-- plain (non-module) script: runs even if ES-module loading breaks, so
+     errors during CDN imports are always visible on the page -->
+<script>
+  const logEl = document.getElementById('log');
+  const statusEl = document.getElementById('status');
+  const t0 = performance.now();
+  function log(msg, cls) {
+    const sec = ((performance.now() - t0) / 1000).toFixed(1);
+    const line = document.createElement('div');
+    line.innerHTML = `<span class="t">${sec}s</span>` +
+                     `<span class="${cls || ''}"></span>`;
+    line.lastChild.textContent = msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+    if (cls === 'err') { statusEl.textContent = '❌ ' + msg; }
+  }
+  window.log = log;
+  window.addEventListener('error', e =>
+    log(`JS error: ${e.message} (${(e.filename || '?').split('/').pop()}:` +
+        `${e.lineno})`, 'err'));
+  window.addEventListener('unhandledrejection', e =>
+    log(`promise rejected: ${e.reason}`, 'err'));
+  log('page loaded; importing three.js + urdf-loader from unpkg.com …');
+</script>
+
+<script type="module">
+let THREE, GLTFLoader, STLLoader, ColladaLoader;
+try {
+  THREE = await import('three');
+  ({ GLTFLoader } = await import('three/examples/jsm/loaders/GLTFLoader.js'));
+  ({ STLLoader } = await import('three/examples/jsm/loaders/STLLoader.js'));
+  ({ ColladaLoader } =
+      await import('three/examples/jsm/loaders/ColladaLoader.js'));
+  const { default: URDFManipulator } = await import(
+    'https://unpkg.com/urdf-loader@0.12.7/src/urdf-manipulator-element.js');
+  log('three.js + urdf-loader loaded ✓', 'ok');
+  customElements.define('urdf-manipulator', URDFManipulator);
+} catch (e) {
+  log(`CDN import failed: ${e.message ?? e}`, 'err');
+  log('→ check internet access / proxy for unpkg.com, then reload', 'wrn');
+  throw e;
+}
+
+const viewer = document.getElementById('viewer');
+const jointsEl = document.getElementById('joints');
+
+// every helper visual (axes, triads, TF, grid, face overlay) must be
+// INVISIBLE TO RAYCASTS: the element's drag controls raycast the whole
+// scene, and three.js hits Line objects within a 1 m (!) default
+// threshold -- the grid was eating every drag attempt
+function markHelper(o) {
+  o.userData.cad2rcMarker = true;
+  o.raycast = () => {};
+  o.children?.forEach(markHelper);
+  return o;
+}
+
+// brighter than the element defaults (hemi 0.5 / dir PI), which read dark
+// on small machined parts; the directional light FOLLOWS THE CAMERA
+// (SolidWorks-style headlight) so no orbit angle ends up in shadow
+viewer.ambientLight.intensity = 1.2;
+viewer.directionalLight.intensity = Math.PI * 1.1;
+viewer.directionalLight.castShadow = false;
+function headlight() {
+  const dl = viewer.directionalLight;
+  dl.position.copy(viewer.camera.position);
+  dl.target.position.copy(viewer.controls.target);
+  dl.target.updateMatrixWorld();
+}
+viewer.controls.addEventListener('change', headlight);
+headlight();
+
+// the element's default highlight (Phong) renders black in this scene --
+// replace it with the same material family as the GLB meshes, with an
+// emissive so it glows amber under any lighting
+// drag-hover highlight: the element swaps the subtree to its single flat
+// highlightMaterial (which hides all surface detail; single-sided ones
+// even rendered black on our flipped-normal GLBs).  Immediately after its
+// swap (the joint-mouseover event fires synchronously, before any render)
+// we replace each mesh with an emissive CLONE of its original material --
+// the part glows amber but keeps its colours and shading.  The element
+// restores the true originals itself on mouseout (__origMaterial).
+viewer.highlightMaterial = new THREE.MeshBasicMaterial({
+  color: 0xffb340, side: THREE.DoubleSide, toneMapped: false });
+viewer.addEventListener('joint-mouseover', e => {
+  const j = viewer.robot?.joints?.[e.detail];
+  j?.traverse(c => {
+    if (c.isMesh && !c.userData.cad2rcMarker && c.__origMaterial) {
+      c.material = _tintedClone(c.__origMaterial, 'hov');
+    }
+  });
+  viewer.redraw();
+});
+let dropMode = false;          // meshes come from dropped blobs, not /pkg/
+let currentInfo = null;        // {name, urdf} of the open server package
+let compMeta = {};             // link -> {material, density, name, override}
+let excludedList = [];         // component names excluded from the URDF
+
+// ---- operation log + diagnostic dump: every user action is recorded, and
+// window.cad2rc.report() ships the session state to the server, so a "now
+// it's broken" moment in the USER's long-lived session can be inspected
+// (and replayed in tests) instead of guessed at -------------------------
+const oplog = [];
+function op(name, args = {}) {
+  oplog.push({ t: Math.round(performance.now()), op: name, ...args });
+  if (oplog.length > 400) { oplog.splice(0, 100); }
+}
+
+async function refreshCompMeta() {
+  try {
+    const r = await (await fetch('/api/components')).json();
+    if (!r.error) {
+      compMeta = r.links ?? {};
+      excludedList = r.excluded ?? [];
+      const chip = document.getElementById('exclchip');
+      chip.style.display = excludedList.length ? '' : 'none';
+      chip.textContent = `🗑 excluded: ${excludedList.length} ↩`;
+      chip.title = excludedList.join('\n') + '\n(クリックで全部復元)';
+    }
+  } catch { /* no package yet */ }
+}
+
+// ---- centre loading bar --------------------------------------------------
+const loadbarEl = document.getElementById('loadbar');
+let loadbarTimer = null;
+
+function showLoadbar(text, { indet = false, delay = 0 } = {}) {
+  clearTimeout(loadbarTimer);
+  const show = () => {
+    loadbarEl.querySelector('.lb-text').textContent = text;
+    loadbarEl.querySelector('.lb-sub').textContent = '';
+    loadbarEl.classList.toggle('indet', indet);
+    if (indet) { loadbarEl.querySelector('.lb-fill').style.width = '30%'; }
+    loadbarEl.style.display = 'block';
+  };
+  if (delay) { loadbarTimer = setTimeout(show, delay); }
+  else { show(); }
+}
+
+function updateLoadbar(frac, sub, text) {
+  if (loadbarEl.style.display === 'none') { return; }
+  if (text != null) {
+    loadbarEl.querySelector('.lb-text').textContent = text;
+  }
+  if (frac != null) {
+    loadbarEl.classList.remove('indet');
+    loadbarEl.querySelector('.lb-fill').style.width =
+      `${Math.round(frac * 100)}%`;
+  }
+  if (sub != null) { loadbarEl.querySelector('.lb-sub').textContent = sub; }
+}
+
+function hideLoadbar() {
+  clearTimeout(loadbarTimer);
+  loadbarTimer = null;
+  loadbarEl.style.display = 'none';
+}
+
+// ---- mesh loading with per-file progress -------------------------------
+const meshStats = { want: 0, done: 0, fail: 0 };
+function meshTick(name, ok, detail) {
+  if (ok) { meshStats.done += 1; } else { meshStats.fail += 1; }
+  log(`mesh ${meshStats.done + meshStats.fail}/${meshStats.want} ` +
+      `${ok ? '✓' : '✗'} ${name}${detail ? ' — ' + detail : ''}`,
+      ok ? '' : 'err');
+  statusEl.textContent =
+    `loading meshes ${meshStats.done + meshStats.fail}/${meshStats.want}` +
+    (meshStats.fail ? ` (${meshStats.fail} failed)` : '');
+  updateLoadbar((meshStats.done + meshStats.fail) / (meshStats.want || 1),
+                `mesh ${meshStats.done + meshStats.fail}/${meshStats.want}`
+                + `  ${name}`, 'メッシュ読み込み中 …');
+}
+
+// NOTE: the element property is loadMeshFunc (NOT the loader's loadMeshCb)
+// meshCache: a rebuild after a joint edit only changes the URDF, never the
+// meshes -- serve repeat loads from memory (clone) so the reload is instant
+const meshCache = new Map();
+viewer.loadMeshFunc = (path, manager, done) => {
+  const clean = path.split('?')[0];
+  const name = clean.split('/').pop();
+  const lower = clean.toLowerCase();
+  meshStats.want += 1;
+  if (meshCache.has(path)) {
+    meshStats.done += 1;
+    done(meshCache.get(path).clone(true));
+    return;
+  }
+  const ok = obj => {
+    meshCache.set(path, obj);
+    meshTick(name, true);
+    done(obj.clone(true));
+  };
+  const fail = err => {
+    meshTick(name, false, err?.message ?? String(err));
+    done(null, err ?? new Error('load failed'));
+  };
+  if (lower.endsWith('.3dxml')) {
+    const url = dropMode ? path : path + '?glb=1';
+    new GLTFLoader(manager).load(url, g => ok(g.scene), null, fail);
+  } else if (lower.endsWith('.glb') || lower.endsWith('.gltf')) {
+    new GLTFLoader(manager).load(path, g => ok(g.scene), null, fail);
+  } else if (lower.endsWith('.stl')) {
+    new STLLoader(manager).load(path, geom => ok(new THREE.Mesh(geom,
+      new THREE.MeshPhongMaterial({ color: 0x999999 }))), null, fail);
+  } else if (lower.endsWith('.dae')) {
+    new ColladaLoader(manager).load(path, dae => ok(dae.scene), null, fail);
+  } else {
+    fail(new Error('unsupported mesh format'));
+  }
+};
+
+// ---- joint rows: slider (movable) + type select + bulk checkbox ---------
+const fmt = v => (Math.abs(v) < 1e-10 ? 0 : v).toFixed(2);
+const rows = new Map();        // joint name -> row record
+const pending = new Map();     // joint name -> change {name,parent,child,type}
+const applyBtn = document.getElementById('apply');
+
+function refreshApply() {
+  applyBtn.disabled = pending.size === 0;
+  applyBtn.textContent = pending.size
+    ? `Apply joint changes (${pending.size})` : 'Apply joint changes';
+}
+
+function markChange(rec) {
+  const t = rec.typeSel.value;
+  rec.row.classList.toggle('dirty', t !== rec.origType);
+  rec.typeSel.className = 't-' + t;
+  if (t !== rec.origType) {
+    pending.set(rec.joint.name, {
+      name: rec.joint.name, parent: rec.parent, child: rec.child, type: t });
+  } else {
+    pending.delete(rec.joint.name);
+  }
+  refreshApply();
+}
+
+const collapsed = new Set();    // link names folded in the tree (persists
+                                // across rebuilds within the session)
+let rootBaseName = null;        // which COMPONENT is base_link right now
+                                // (the URDF rename hides it)
+
+function buildJointRows(robot) {
+  jointsEl.innerHTML = '';
+  rows.clear();
+  pending.clear();
+  refreshApply();
+  // kinematic tree: parent link -> [joint, ...]; root = never a child
+  const linkOf = (j, tag) => [...(j.urdfNode?.children ?? [])]
+    .find(el => el.tagName === tag)?.getAttribute('link') ?? '';
+  const byParent = new Map();
+  const childLinks = new Set();
+  for (const j of Object.values(robot.joints)) {
+    const p = linkOf(j, 'parent') || (j.parent?.name ?? '');
+    childLinks.add(linkOf(j, 'child'));
+    if (!byParent.has(p)) { byParent.set(p, []); }
+    byParent.get(p).push(j);
+  }
+  byParent.forEach(list => list.sort(
+    (a, b) => linkOf(a, 'child').localeCompare(linkOf(b, 'child'))));
+  const roots = Object.keys(robot.links)
+    .filter(n => !childLinks.has(n));
+  let movable = 0;
+
+  function jointRow(j, depth) {
+    const isMimic = !!j.mimicJoint;
+    const isMov = j.jointType !== 'fixed';
+    if (isMov) { movable += 1; }
+    const parent = linkOf(j, 'parent');
+    const child = linkOf(j, 'child');
+    const kids = byParent.get(child) ?? [];
+    const row = document.createElement('div');
+    row.className = 'joint';
+    row.style.marginLeft = (depth * 14) + 'px';
+    let lo = Number(j.limit.lower), hi = Number(j.limit.upper);
+    if (j.jointType === 'continuous' || (lo === 0 && hi === 0)) {
+      lo = -3.14; hi = 3.14;
+    }
+    row.innerHTML =
+      `<div class="row1">` +
+      `<span class="caret">${kids.length
+        ? (collapsed.has(child) ? '▸' : '▾') : '·'}</span>` +
+      `<input type="checkbox" class="pick">` +
+      `<span class="jname" title="joint: ${j.name}\n${parent} → ${child}">` +
+      `${child}</span>` +
+      (isMimic ? `<span class="mimictag">mimic</span>` : '') +
+      `<select class="jtypesel t-${j.jointType}">` +
+      ['revolute', 'continuous', 'prismatic', 'fixed'].map(t =>
+        `<option value="${t}" ${t === j.jointType ? 'selected' : ''}>${t}` +
+        `</option>`).join('') +
+      `</select>` +
+      `<span class="jval">${isMov ? fmt(Number(j.angle)) : ''}</span>` +
+      `<button class="eye${hiddenLinks.has(child) ? ' off' : ''}" ` +
+      `title="show/hide this link">👁</button>` +
+      `<button class="mkroot" title="make this link the root ` +
+      `(re-roots the tree + rebuilds)">⌂</button>` +
+      `</div>` +
+      (isMov && !isMimic
+        ? `<input type="range" min="${lo}" max="${hi}" step="0.01" ` +
+          `value="${Number(j.angle)}">` : '');
+    const slider = row.querySelector('input[type=range]');
+    if (slider) {
+      slider.addEventListener('input', () =>
+        viewer.setJointValue(j.name, parseFloat(slider.value)));
+    }
+    const rec = { joint: j, row, parent, child, origType: j.jointType,
+                  typeSel: row.querySelector('.jtypesel'),
+                  pick: row.querySelector('.pick'),
+                  slider, val: row.querySelector('.jval') };
+    rec.typeSel.addEventListener('change', () => markChange(rec));
+    row.querySelector('.mkroot').addEventListener('click',
+      () => reRoot(child));
+    row.classList.toggle('hiddenlink', hiddenLinks.has(child));
+    row.querySelector('.eye').addEventListener('click', ev => {
+      ev.stopPropagation();
+      toggleLinkVisible(child, row);
+    });
+    // clicking the link NAME selects it (same as clicking the part in 3D)
+    row.querySelector('.jname').style.cursor = 'pointer';
+    row.querySelector('.jname').addEventListener('click',
+      () => selectLink(child));
+    row.addEventListener('mouseenter', () => {
+      highlightJoint(j.name, true);
+      highlightLink(child, true);
+    });
+    row.addEventListener('mouseleave', () => {
+      highlightJoint(j.name, false);
+      highlightLink(child, false);
+    });
+    rows.set(j.name, rec);
+    jointsEl.appendChild(row);
+    const caret = row.querySelector('.caret');
+    if (kids.length) {
+      caret.style.cursor = 'pointer';
+      caret.addEventListener('click', () => {
+        collapsed.has(child) ? collapsed.delete(child)
+                             : collapsed.add(child);
+        buildJointRows(robot);            // re-render with new fold state
+      });
+    }
+    if (!collapsed.has(child)) {
+      for (const k of kids) { jointRow(k, depth + 1); }
+    }
+  }
+
+  for (const rootName of roots.sort()) {
+    const head = document.createElement('div');
+    head.className = 'joint root';
+    head.innerHTML = `<div class="row1"><span class="caret">⌂</span>` +
+      `<span class="jname" style="color:#fff;font-weight:bold;` +
+      `cursor:pointer" title="root link">${rootName}</span>` +
+      `<span class="rootcomp" style="color:#6b7480;font-size:10px;` +
+      `overflow:hidden;text-overflow:ellipsis;white-space:nowrap">` +
+      `${rootBaseName && rootName === 'base_link'
+        ? '= ' + rootBaseName : ''}</span>` +
+      `<span class="jtype" style="background:#2d4a35;color:#8fd99f">root` +
+      `</span>` +
+      `<button class="eye${hiddenLinks.has(rootName) ? ' off' : ''}" ` +
+      `title="show/hide this link">👁</button></div>`;
+    head.classList.toggle('hiddenlink', hiddenLinks.has(rootName));
+    head.querySelector('.eye').addEventListener('click', ev => {
+      ev.stopPropagation();
+      toggleLinkVisible(rootName, head);
+    });
+    head.querySelector('.jname').addEventListener('click',
+      () => selectLink(rootName));
+    head.addEventListener('mouseenter',
+      () => highlightLink(rootName, true));
+    head.addEventListener('mouseleave',
+      () => highlightLink(rootName, false));
+    jointsEl.appendChild(head);
+    for (const j of byParent.get(rootName) ?? []) { jointRow(j, 1); }
+  }
+  return movable;
+}
+
+viewer.addEventListener('angle-change', e => {
+  const rec = rows.get(e.detail);
+  if (rec && rec.slider) {
+    rec.slider.value = Number(rec.joint.angle);
+    rec.val.textContent = fmt(Number(rec.joint.angle));
+  }
+});
+
+// ---- joint axis markers: depth-test OFF so they shine through the meshes;
+// children of the joint Object3D, so they follow FK for free ---------------
+const AXIS_COLORS = { revolute: 0xff5050, continuous: 0xffa050,
+                      prismatic: 0x4090ff, mimic: 0xb38cff };
+const axisMarkers = new Map();   // joint name -> {mesh, baseColor}
+
+// bounding box of ONE link's own meshes (stop at nested joints, so a serial
+// chain doesn't inflate the box) -- used to size each axis to its own link
+function ownLinkBox(link, out) {
+  if (!link) { return out; }
+  for (const c of link.children) {
+    if (c.isURDFJoint || c.type === 'URDFJoint') { continue; }
+    if (c.isMesh && c.geometry) {
+      if (!c.geometry.boundingBox) { c.geometry.computeBoundingBox(); }
+      const b = c.geometry.boundingBox.clone()
+        .applyMatrix4(c.matrixWorld);
+      out.union(b);
+    }
+    ownLinkBox(c, out);
+  }
+  return out;
+}
+
+// remembered axis directions per joint name, surviving rebuilds: lets us
+// show a GHOST of "where the axis would be" after a joint is set to fixed
+const axisMemory = new Map();    // joint name -> [x,y,z] (joint-local)
+
+function makeAxisMesh(j, axis, { ghost = false } = {}) {
+  // span of the CHILD link's meshes along the axis line, in joint space:
+  // the marker should pierce the mesh and poke out on both ends
+  const childLink = j.children.find(c => c.isURDFLink
+                                         || c.type === 'URDFLink');
+  const box = ownLinkBox(childLink, new THREE.Box3());
+  let tMin = -0.025, tMax = 0.025, girth = 0.05;
+  if (!box.isEmpty()) {
+    const inv = j.matrixWorld.clone().invert();
+    tMin = Infinity; tMax = -Infinity;
+    for (const xi of ['min', 'max']) {
+      for (const yi of ['min', 'max']) {
+        for (const zi of ['min', 'max']) {
+          const corner = new THREE.Vector3(
+            box[xi].x, box[yi].y, box[zi].z).applyMatrix4(inv);
+          const t = corner.dot(axis);
+          tMin = Math.min(tMin, t);
+          tMax = Math.max(tMax, t);
+        }
+      }
+    }
+    girth = box.getSize(new THREE.Vector3()).length();
+  }
+  const margin = Math.max((tMax - tMin) * 0.18, 0.008);
+  const len = (tMax - tMin) + 2 * margin;
+  const mid = (tMax + tMin) / 2;
+  const r = Math.min(Math.max(girth * 0.012, 0.0008), 0.004);
+  const color = ghost ? 0xdddd66
+    : (AXIS_COLORS[j.mimicJoint ? 'mimic' : j.jointType] ?? 0xcccccc);
+  const geo = new THREE.CylinderGeometry(r, r, len, 12);
+  const mat = new THREE.MeshBasicMaterial({
+    color, depthTest: false, transparent: true,
+    opacity: ghost ? 0.55 : 0.85 });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 999;            // draw after everything (always visible)
+  markHelper(mesh);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), axis);
+  mesh.position.copy(axis.clone().multiplyScalar(mid));
+  j.add(mesh);
+  return { mesh, baseColor: color, ghost };
+}
+
+function addAxisMarkers(robot) {
+  axisMarkers.forEach(m => m.mesh.removeFromParent());
+  axisMarkers.clear();
+  robot.updateMatrixWorld(true);
+  let ghosts = 0;
+  for (const j of Object.values(robot.joints)) {
+    if (j.jointType !== 'fixed' && j.axis) {
+      axisMemory.set(j.name, j.axis.toArray());
+      axisMarkers.set(j.name, makeAxisMesh(j, j.axis.clone().normalize()));
+      continue;
+    }
+    // fixed: ghost axis from this session's memory, or from an <axis> tag
+    // the URDF may still carry
+    let a = axisMemory.get(j.name);
+    if (!a && j.urdfNode) {
+      const el = [...j.urdfNode.children]
+        .find(e => e.tagName === 'axis');
+      if (el) { a = el.getAttribute('xyz').split(/\s+/).map(Number); }
+    }
+    if (a) {
+      const m = makeAxisMesh(
+        j, new THREE.Vector3(...a).normalize(), { ghost: true });
+      m.mesh.visible = false;        // only shown while hovering the row
+      axisMarkers.set(j.name, m);
+      ghosts += 1;
+    }
+  }
+  setAxesVisible(axesOn());
+  log(`${axisMarkers.size - ghosts} joint axes drawn, sized per link ` +
+      `(red=revolute orange=continuous blue=prismatic purple=mimic)`
+      + (ghosts ? `; ${ghosts} ghost axes on fixed joints (hover to see)`
+                : ''), 'ok');
+}
+
+const axesBtn = document.getElementById('axes');
+const originBtn = document.getElementById('origin');
+const axesOn = () => axesBtn.classList.contains('active');
+const originOn = () => originBtn.classList.contains('active');
+
+function setAxesVisible(on) {
+  axisMarkers.forEach(m => { m.mesh.visible = on && !m.ghost; });
+  viewer.redraw();
+}
+axesBtn.addEventListener('click', () => {
+  setAxesVisible(axesBtn.classList.toggle('active'));
+});
+
+// ---- RGB triads (red=X green=Y blue=Z) -----------------------------------
+function makeTriad(len, r) {
+  const triad = new THREE.Group();
+  const DIRS = [[[1, 0, 0], 0xe53935], [[0, 1, 0], 0x43a047],
+                [[0, 0, 1], 0x1e88e5]];
+  for (const [d, color] of DIRS) {
+    const dir = new THREE.Vector3(...d);
+    const mat = new THREE.MeshBasicMaterial({
+      color, depthTest: false, transparent: true, opacity: 0.95 });
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(r, r, len, 10), mat);
+    shaft.position.copy(dir.clone().multiplyScalar(len / 2));
+    shaft.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    shaft.renderOrder = 998;
+    markHelper(shaft);
+    const tip = new THREE.Mesh(
+      new THREE.CylinderGeometry(0, r * 3, len * 0.14, 12), mat);
+    tip.position.copy(dir.clone().multiplyScalar(len * 1.07));
+    tip.quaternion.copy(shaft.quaternion);
+    tip.renderOrder = 998;
+    markHelper(tip);
+    triad.add(shaft, tip);
+  }
+  return triad;
+}
+
+let originTriad = null;
+
+function addOriginTriad(robot) {
+  if (originTriad) { originTriad.removeFromParent(); originTriad = null; }
+  const box = robotBox();
+  const diag = box ? box.getSize(new THREE.Vector3()).length() : 0.3;
+  originTriad = makeTriad(Math.max(diag * 0.32, 0.04),
+                          Math.max(diag * 0.0035, 0.0008));
+  robot.add(originTriad);           // root-link frame, follows the model
+  originTriad.visible = originOn();
+}
+
+// ---- TF view: a small triad on EVERY link + parent->child lines, with the
+// meshes dimmed (rviz-style) so the frame tree is point-at-able ------------
+const tfBtn = document.getElementById('tf');
+const tfOn = () => tfBtn.classList.contains('active');
+let tfNodes = [];
+const dimmedMats = new Map();   // material -> original {transparent,opacity}
+
+function buildTF(robot) {
+  tfNodes.forEach(o => o.removeFromParent());
+  tfNodes = [];
+  const box = robotBox();
+  const diag = box ? box.getSize(new THREE.Vector3()).length() : 0.3;
+  const len = Math.max(diag * 0.045, 0.012);
+  const r = Math.max(diag * 0.0014, 0.0004);
+  const rootName = (() => {       // the link that is never a child
+    const kids = new Set(Object.values(robot.joints).map(j =>
+      [...(j.urdfNode?.children ?? [])]
+        .find(el => el.tagName === 'child')?.getAttribute('link')));
+    return Object.keys(robot.links).find(n => !kids.has(n));
+  })();
+  for (const [name, link] of Object.entries(robot.links)) {
+    // the ROOT frame is the origin of the whole TF tree: draw it 2.5x
+    const big = name === rootName;
+    const t = makeTriad(len * (big ? 2.5 : 1), r * (big ? 2 : 1));
+    link.add(t);
+    tfNodes.push(t);
+  }
+  // parent -> child connectors WITH direction (cone at the child end),
+  // so the tree visibly flows outward from the root
+  const lineMat = new THREE.LineBasicMaterial({
+    color: 0xbababa, depthTest: false, transparent: true, opacity: 0.8 });
+  const coneMat = new THREE.MeshBasicMaterial({
+    color: 0xffd24d, depthTest: false, transparent: true, opacity: 0.9 });
+  for (const j of Object.values(robot.joints)) {
+    if (!j.parent?.isURDFLink) { continue; }
+    const to = j.position.clone();
+    const d = to.length();
+    if (d < 1e-6) { continue; }   // coincident frames: nothing to draw
+    const geo = new THREE.BufferGeometry().setFromPoints(
+      [new THREE.Vector3(0, 0, 0), to]);
+    const line = new THREE.Line(geo, lineMat);
+    line.renderOrder = 997;
+    markHelper(line);
+    j.parent.add(line);
+    tfNodes.push(line);
+    const cone = new THREE.Mesh(
+      new THREE.CylinderGeometry(0, r * 3.2, Math.min(d * 0.25, len * 0.5),
+                                 10), coneMat);
+    const dir = to.clone().normalize();
+    cone.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    cone.position.copy(to.clone().sub(
+      dir.clone().multiplyScalar(Math.min(d * 0.125, len * 0.25))));
+    cone.renderOrder = 997;
+    markHelper(cone);
+    j.parent.add(cone);
+    tfNodes.push(cone);
+  }
+}
+
+function undimAll() {
+  // materials are SHARED with the mesh memory cache, so a dim that is not
+  // restored survives every reload as a permanently dark part -- always
+  // restore before clearing
+  dimmedMats.forEach((orig, m) => {
+    m.transparent = orig.t;
+    m.opacity = orig.o;
+  });
+  dimmedMats.clear();
+}
+
+function setTF(on) {
+  if (on && !tfNodes.length && viewer.robot) { buildTF(viewer.robot); }
+  tfNodes.forEach(o => { o.visible = on; });
+  if (on) {
+    viewer.robot?.traverse(c => {
+      if (c.isMesh && !c.userData.cad2rcMarker && c.material
+          && !dimmedMats.has(c.material)) {
+        dimmedMats.set(c.material, { t: c.material.transparent,
+                                     o: c.material.opacity });
+        c.material.transparent = true;
+        c.material.opacity = 0.22;
+      }
+    });
+  } else {
+    undimAll();
+  }
+  viewer.redraw();
+}
+tfBtn.addEventListener('click', () => setTF(tfBtn.classList.toggle('active')));
+originBtn.addEventListener('click', () => {
+  const on = originBtn.classList.toggle('active');
+  if (originTriad) { originTriad.visible = on; }
+  viewer.redraw();
+});
+document.getElementById('axes').addEventListener('change',
+  e => setAxesVisible(e.target.checked));
+
+// link tinting: hover = amber glow, selected = cyan glow.  The ORIGINAL
+// material is CLONED and given an emissive boost, so the part's own
+// colours and shading stay visible (a flat replacement read as black)
+const tintClones = new Map();   // original material -> {hov, sel, col}
+const savedMats = new Map();    // mesh -> original material
+let selectedLink = null;
+let collisionLinks = new Set(); // links in a NEW (non-rest) self-collision
+
+const TINT_GLOW = { sel: 0x0e5d80, hov: 0x7a5500, col: 0x8a0e0e };
+const TINT_FLAT = { sel: 0x55d6ff, hov: 0xffc94d, col: 0xff3030 };
+
+function _tintedClone(orig, kind) {
+  let entry = tintClones.get(orig);
+  if (!entry) { entry = {}; tintClones.set(orig, entry); }
+  if (!entry[kind]) {
+    const m = orig.clone();
+    if ('emissive' in m) {
+      m.emissive = new THREE.Color(TINT_GLOW[kind]);
+      m.emissiveIntensity = kind === 'col' ? 1.4 : 1.0;
+    } else {                      // e.g. MeshBasicMaterial: blend the color
+      m.color = m.color.clone().lerp(
+        new THREE.Color(TINT_FLAT[kind]), kind === 'col' ? 0.65 : 0.5);
+    }
+    entry[kind] = m;
+  }
+  return entry[kind];
+}
+
+// the tint a link should wear when neither hovered nor freshly (de)selected:
+// collision red wins over the selection blue
+function baseTint(name) {
+  return collisionLinks.has(name) ? 'col'
+       : (name === selectedLink ? 'sel' : null);
+}
+
+function _tintLink(linkName, kind) {   // kind: 'hov' | 'sel' | null
+  const link = viewer.robot?.links?.[linkName];
+  if (!link) { return; }
+  (function walk(node) {
+    for (const c of node.children) {
+      if (c.isURDFJoint) { continue; }     // own meshes only, not subtree
+      if (c.isMesh && !c.userData.cad2rcMarker) {
+        // the element's drag-hover keeps the pre-hover material in
+        // __origMaterial and restores it on mouseout.  While that dance is
+        // in progress, OUR tint must read/write __origMaterial (not
+        // c.material) or the true original gets lost and the tint sticks
+        // forever after deselect (the classic select -> hover -> Esc bug)
+        const hovering = c.__origMaterial !== undefined;
+        if (kind) {
+          if (hovering) {
+            if (!savedMats.has(c)) { savedMats.set(c, c.__origMaterial); }
+            c.__origMaterial = _tintedClone(savedMats.get(c), kind);
+          } else if (c.material !== viewer.highlightMaterial) {
+            if (!savedMats.has(c)) { savedMats.set(c, c.material); }
+            c.material = _tintedClone(savedMats.get(c), kind);
+          }
+        } else if (savedMats.has(c)) {
+          const orig = savedMats.get(c);
+          if (hovering) {
+            c.__origMaterial = orig;        // element restores it for us
+          } else if (c.material !== viewer.highlightMaterial) {
+            c.material = orig;
+          }
+          savedMats.delete(c);
+        }
+      }
+      walk(c);
+    }
+  })(link);
+  viewer.redraw();
+}
+
+// hover tint, but never repaint over the selection
+function highlightLink(linkName, on) {
+  if (linkName === selectedLink) { return; }
+  _tintLink(linkName, on ? 'hov' : baseTint(linkName));
+}
+
+// ---- live self-collision: NEW contacts (not present at the rest pose)
+// turn the offending links red.  The hull model lives server-side
+// (autoinit.SelfCollision); we POST the joint angles, debounced.
+let colReady = false, colBusy = false, colQueued = false;
+let lastActiveJoint = null;    // joint most recently moved (drag/slider)
+const colstatEl = document.getElementById('colstat');
+
+function applyCollision(links, pairs) {
+  for (const n of collisionLinks) {
+    if (!links.has(n)) {
+      _tintLink(n, n === selectedLink ? 'sel' : null);
+    }
+  }
+  for (const n of links) {
+    if (!collisionLinks.has(n)) { _tintLink(n, 'col'); }
+  }
+  collisionLinks = links;
+  if (pairs.length) {
+    // "this angle collides": name the joint being moved + its angle
+    const j = lastActiveJoint && viewer.robot?.joints?.[lastActiveJoint];
+    let at = '';
+    if (j) {
+      const deg = Number(j.angle) * 180 / Math.PI;
+      const u = j.jointType === 'prismatic'
+        ? `${(Number(j.angle) * 1000).toFixed(1)} mm`
+        : `${deg.toFixed(1)}°`;
+      at = `${lastActiveJoint} = ${u} → `;
+    }
+    colstatEl.textContent = '⚠ ' + at + 'collision: ' +
+      pairs.map(p => p.join(' × ')).join(',  ');
+    colstatEl.style.display = 'block';
+  } else {
+    colstatEl.style.display = 'none';
+  }
+}
+
+async function collisionCheck() {
+  if (!colReady || !viewer.robot) { return; }
+  if (colBusy) { colQueued = true; return; }
+  colBusy = true;
+  try {
+    const angles = {};
+    for (const [n, j] of Object.entries(viewer.robot.joints)) {
+      if (j.jointType !== 'fixed') { angles[n] = Number(j.angle); }
+    }
+    const r = await (await fetch('/api/collision', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ angles }) })).json();
+    if (r.ready) { applyCollision(new Set(r.links), r.pairs); }
+  } catch { /* transient; next angle change retries */ }
+  colBusy = false;
+  if (colQueued) { colQueued = false; collisionCheck(); }
+}
+
+// NOT debounced: a smooth drag fires angle-change ~60x/s, and a trailing
+// debounce would reset every frame and never run until the drag STOPPED
+// (that was the "collision feels slow / only shows after release" bug).
+// colBusy/colQueued instead coalesce the burst down to the query rate
+// (~30/s, one request in flight + one queued) so it updates live.
+function scheduleCollision(e) {
+  if (e?.detail) { lastActiveJoint = e.detail; }   // joint name (drag/slider)
+  collisionCheck();
+}
+viewer.addEventListener('angle-change', scheduleCollision);
+
+let colPoll = 0;
+async function initCollision() {
+  colReady = false;
+  clearTimeout(colPoll);
+  applyCollision(new Set(), []);
+  if (dropMode) { return; }       // server has no matching model to query
+  try {
+    const r = await (await fetch('/api/collision/init')).json();
+    if (r.error) { log(`collision model: ${r.error}`, 'wrn'); return; }
+    if (!r.ready) { colPoll = setTimeout(initCollision, 2000); return; }
+    colReady = true;
+    log(`collision model ready — ${r.baseline} rest-pose contact pairs ` +
+        'form the ignored baseline', 'ok');
+    collisionCheck();
+  } catch { /* server gone; harmless */ }
+}
+
+// ---- per-link visibility (the 👁 buttons) --------------------------------
+const hiddenLinks = new Set();
+
+function applyLinkVisibility(name) {
+  const link = viewer.robot?.links?.[name];
+  if (!link) { return; }
+  const vis = !hiddenLinks.has(name);
+  (function walk(n) {                     // own visuals only, not subtree
+    for (const c of n.children) {
+      if (c.isURDFJoint || c.userData.cad2rcMarker) { continue; }
+      c.visible = vis;
+      // three.js raycasts HIT invisible meshes: a hidden cover would still
+      // grab drags (the element disables orbit while "hovering" its joint)
+      // and steal clicks -- so hidden meshes go raycast-invisible too
+      if (c.isMesh) {
+        if (vis) { delete c.raycast; }
+        else { c.raycast = () => {}; }
+      }
+      walk(c);
+    }
+  })(link);
+  viewer.redraw();
+}
+
+function toggleLinkVisible(name, row) {
+  op('eye', { link: name, hide: !hiddenLinks.has(name) });
+  hiddenLinks.has(name) ? hiddenLinks.delete(name) : hiddenLinks.add(name);
+  applyLinkVisibility(name);
+  row?.classList.toggle('hiddenlink', hiddenLinks.has(name));
+  row?.querySelector('.eye')?.classList.toggle('off',
+                                               hiddenLinks.has(name));
+}
+
+// ---- selection visuals: link frame triad + centre-of-mass marker --------
+let selVis = null;
+
+function parseInertial(link) {
+  const inert = [...(link.urdfNode?.children ?? [])]
+    .find(e => e.tagName === 'inertial');
+  if (!inert) { return null; }
+  const get = tag => [...inert.children].find(e => e.tagName === tag);
+  const num = (el, attr, d) => el ? parseFloat(el.getAttribute(attr) ?? d)
+                                  : d;
+  const org = get('origin');
+  return {
+    mass: num(get('mass'), 'value', 0),
+    com: org ? org.getAttribute('xyz').split(/\s+/).map(Number) : [0, 0, 0],
+    inertia: get('inertia')
+      ? Object.fromEntries(['ixx', 'ixy', 'ixz', 'iyy', 'iyz', 'izz']
+          .map(k => [k, parseFloat(get('inertia').getAttribute(k) ?? 0)]))
+      : null,
+  };
+}
+
+function showSelectionVisuals(name) {
+  selVis?.removeFromParent();
+  selVis = null;
+  const link = viewer.robot?.links?.[name];
+  if (!link) { return; }
+  const box = ownLinkBox(link, new THREE.Box3());
+  const diag = box.isEmpty() ? 0.05
+    : box.getSize(new THREE.Vector3()).length();
+  const g = new THREE.Group();
+  g.add(makeTriad(Math.max(diag * 0.55, 0.025),
+                  Math.max(diag * 0.006, 0.0008)));
+  const inert = parseInertial(link);
+  if (inert && inert.mass > 0) {
+    const com = new THREE.Mesh(
+      new THREE.SphereGeometry(Math.max(diag * 0.035, 0.002), 16, 12),
+      new THREE.MeshBasicMaterial({ color: 0xff4dd2, depthTest: false,
+                                    transparent: true, opacity: 0.9 }));
+    com.position.set(...inert.com);
+    com.renderOrder = 999;
+    g.add(com);
+  }
+  markHelper(g);
+  link.add(g);                        // link frame: follows FK
+  selVis = g;
+  viewer.redraw();
+}
+
+function fillLinkInfo(name) {
+  const el = document.getElementById('linkinfo');
+  const link = viewer.robot?.links?.[name];
+  if (!link) { el.style.display = 'none'; return; }
+  const j = link.parent?.isURDFJoint ? link.parent : null;
+  const box = ownLinkBox(link, new THREE.Box3());
+  const size = box.isEmpty() ? null : box.getSize(new THREE.Vector3());
+  let tris = 0, mat = null, meshFile = null;
+  (function walk(n) {
+    for (const c of n.children) {
+      if (c.isURDFJoint || c.userData.cad2rcMarker) { continue; }
+      if (c.isMesh) {
+        const idx = c.geometry.index;
+        tris += (idx ? idx.count : c.geometry.attributes.position.count) / 3;
+        if (!mat) { mat = c.__origMaterial ?? c.material; }
+      }
+      walk(c);
+    }
+  })(link);
+  const vis = [...(link.urdfNode?.children ?? [])]
+    .find(e => e.tagName === 'visual');
+  meshFile = vis?.querySelector('mesh')?.getAttribute('filename')
+    ?.split('/').pop() ?? '(none)';
+  const inert = parseInertial(link);
+  const mm = v => (v * 1000).toFixed(1);
+  const rowsHtml = [];
+  const add = (k, v) => rowsHtml.push(`<tr><td>${k}</td><td>${v}</td></tr>`);
+  if (j) {
+    const lim = j.jointType === 'fixed' ? ''
+      : ` [${Number(j.limit.lower).toFixed(2)} … ` +
+        `${Number(j.limit.upper).toFixed(2)}]`;
+    add('parent joint', `${j.jointType}${lim}` +
+        (j.axis ? ` axis=(${[...j.axis.toArray()]
+          .map(x => x.toFixed(2)).join(', ')})` : ''));
+  } else {
+    add('parent joint', '(root link)');
+  }
+  if (size) {
+    add('bbox', `${mm(size.x)} × ${mm(size.y)} × ${mm(size.z)} mm`);
+  }
+  if (inert) {
+    add('mass', inert.mass >= 0.1
+      ? `${inert.mass.toFixed(3)} kg` : `${(inert.mass * 1000).toFixed(1)} g`);
+    add('CoM 🟣', `(${inert.com.map(mm).join(', ')}) mm`);
+    if (inert.inertia) {
+      const ii = inert.inertia;
+      add('inertia', `ixx=${ii.ixx.toExponential(2)} ` +
+          `iyy=${ii.iyy.toExponential(2)} izz=${ii.izz.toExponential(2)}`);
+    }
+  }
+  const c = mat?.color?.getHexString?.();
+  add('color', (c ? `<span class="sw" style="background:#${c}"></span> ` +
+                    `#${c}` : '(n/a)'));
+  // SolidWorks material + density (with web override), editable below
+  const meta = compMeta[name];
+  const matTxt = meta?.override
+    ? `${meta.override} kg/m³ <span style="color:#e8c468">(override)</span>`
+    : meta?.material
+      ? `${meta.material}${meta.density
+          ? ` · ${meta.density.toFixed(0)} kg/m³` : ''}`
+      : meta ? '(SWで未設定)' : '(再抽出で取得)';
+  add('material', matTxt);
+  add('mesh', `${meshFile} · ${Math.round(tris)} tris`);
+  rowsHtml.push(
+    `<tr><td>set 材質</td><td><select id="li_mat" style="width:100%;` +
+    `background:#15171a;color:#ddd;border:1px solid #444;` +
+    `border-radius:3px;font-size:11px">` +
+    `<option value="">— 密度を上書き —</option>` +
+    `<option value="">SW値に戻す (上書き解除)</option>` +
+    ['PLA 1240', 'ABS 1040', 'PETG 1270', 'ナイロン 1140', 'POM 1410',
+     'FR4基板 1850', 'アルミ6061 2700', '鉄/鋼 7850', 'チタン 4500',
+     'カスタム…'].map(s =>
+      `<option value="${s.split(' ').pop()}">${s}</option>`).join('') +
+    `</select></td></tr>`);
+  el.innerHTML = `<h2>🔎 ${name}</h2><table>${rowsHtml.join('')}</table>`;
+  const sel = el.querySelector('#li_mat');
+  sel.addEventListener('change', async () => {
+    let d = sel.value;
+    if (sel.selectedIndex === 1) { d = null; }            // remove override
+    else if (sel.options[sel.selectedIndex].text.startsWith('カスタム')) {
+      d = prompt('密度 (kg/m³):');
+      if (!d) { sel.selectedIndex = 0; return; }
+    } else if (!d) { return; }
+    op('setMaterial', { link: name, density: d });
+    log(`setting density of ${name} -> ${d ?? '(SW値)'} + rebuilding …`);
+    try {
+      const resp = await fetch('/api/set_material', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ link: name,
+                               density: d ? Number(d) : null }) });
+      const r = await resp.json();
+      if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+      log('density updated ✓ (mass/inertia rebuilt)', 'ok');
+      loadRobot(currentInfo, { keepPose: true });
+      refreshHistory();
+      const reselect = name;
+      setTimeout(() => selectLink(reselect), 1500);
+    } catch (e) {
+      log(`set material failed: ${e.message ?? e}`, 'err');
+    }
+  });
+  el.style.display = 'block';   // '' would fall back to the stylesheet's
+                                // display:none and never show
+}
+
+function selectLink(linkName) {
+  op('select', { link: linkName });
+  if (linkName && boxSelected.size) { clearBoxSelection(); }  // single replaces box
+  const prev = selectedLink;
+  selectedLink = linkName;
+  if (prev) { _tintLink(prev, baseTint(prev)); }
+  const bar = document.getElementById('selbar');
+  if (linkName) {
+    _tintLink(linkName, baseTint(linkName));   // red survives selection
+    statusEl.textContent = `selected: ${linkName}`;
+    document.getElementById('selname').textContent = linkName;
+    document.getElementById('seleye').classList.toggle(
+      'off', hiddenLinks.has(linkName));
+    bar.style.display = 'flex';
+    showSelectionVisuals(linkName);
+    fillLinkInfo(linkName);
+    const rec = [...rows.values()].find(r => r.child === linkName);
+    rec?.row.scrollIntoView({ block: 'nearest' });
+  } else {
+    bar.style.display = 'none';
+    selVis?.removeFromParent();
+    selVis = null;
+    document.getElementById('linkinfo').style.display = 'none';
+    viewer.redraw();
+  }
+}
+document.getElementById('selroot').addEventListener('click', () => {
+  if (selectedLink) { const l = selectedLink; selectLink(null); reRoot(l); }
+});
+document.getElementById('seldesel').addEventListener('click',
+  () => selectLink(null));
+document.getElementById('seleye').addEventListener('click', () => {
+  if (!selectedLink) { return; }
+  const rec = [...rows.values()].find(r => r.child === selectedLink);
+  toggleLinkVisible(selectedLink, rec?.row);
+  document.getElementById('seleye').classList.toggle(
+    'off', hiddenLinks.has(selectedLink));
+});
+
+// 🗑 = REALLY remove from the built URDF (yaml exclude:), not just hide
+async function setExclude(body, what) {
+  op('exclude', body);
+  log(`${what} + rebuilding …`);
+  try {
+    const resp = await fetch('/api/set_exclude', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log(`URDF exclude list now: ${r.excluded.length} item(s) ✓ (Ctrl+Z`
+        + ` で復元可)`, 'ok');
+    loadRobot(currentInfo, { keepPose: true });
+    refreshHistory();
+  } catch (e) {
+    log(`exclude failed: ${e.message ?? e}`, 'err');
+  }
+}
+document.getElementById('selexclude').addEventListener('click', () => {
+  if (!selectedLink || !currentInfo) { return; }
+  const comp = compMeta[selectedLink]?.name ?? selectedLink;
+  const l = selectedLink;
+  selectLink(null);
+  setExclude({ name: comp, on: true }, `excluding ${l} from the URDF`);
+});
+document.getElementById('exclchip').addEventListener('click', () =>
+  setExclude({ clear: true }, 'restoring all excluded components'));
+
+function highlightJoint(name, on) {
+  const m = axisMarkers.get(name);
+  if (m && m.ghost) {
+    // fixed joint: reveal the would-be axis while hovering
+    m.mesh.visible = on;
+    m.mesh.material.color.set(on ? 0xffe93d : m.baseColor);
+    m.mesh.scale.set(on ? 2.0 : 1, 1, on ? 2.0 : 1);
+  } else if (m) {
+    // show the axis while hovering even when the global toggle is off
+    m.mesh.visible = on ? true : axesOn();
+    m.mesh.material.color.set(on ? 0xffe93d : m.baseColor);
+    m.mesh.material.opacity = on ? 1.0 : 0.85;
+    m.mesh.scale.set(on ? 2.4 : 1, 1, on ? 2.4 : 1);
+  }
+  const rec = rows.get(name);
+  if (rec) {
+    rec.row.style.outline = on ? '1px solid #ffe93d' : '';
+    if (on) { rec.row.scrollIntoView({ block: 'nearest' }); }
+  }
+  viewer.redraw();
+}
+// hovering the MODEL highlights the row + axis ...
+viewer.addEventListener('joint-mouseover',
+  e => highlightJoint(e.detail, true));
+viewer.addEventListener('joint-mouseout',
+  e => highlightJoint(e.detail, false));
+
+// bulk select / set
+document.getElementById('selall').addEventListener('change', e => {
+  rows.forEach(r => { r.pick.checked = e.target.checked; });
+});
+document.getElementById('bulkset').addEventListener('click', () => {
+  const t = document.getElementById('bulktype').value;
+  let n = 0;
+  rows.forEach(r => {
+    if (r.pick.checked) { r.typeSel.value = t; markChange(r); n += 1; }
+  });
+  log(n ? `${n} joints staged as "${t}" — press Apply`
+        : 'no joints selected (use the checkboxes / select-all)', 'wrn');
+});
+
+// apply -> patch joints.yaml + rebuild + reload
+applyBtn.addEventListener('click', async () => {
+  if (!pending.size || !currentInfo) { return; }
+  const changes = [...pending.values()];
+  applyBtn.disabled = true;
+  log(`applying ${changes.length} type change(s) + rebuilding URDF …`);
+  statusEl.textContent = '⏳ rebuilding URDF …';
+  try {
+    const resp = await fetch('/api/set_types', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ changes }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    if (r.missed?.length) {
+      log(`not found in joints.yaml: ${r.missed.join(', ')}`, 'wrn');
+    }
+    if (!r.applied?.length) {
+      log('NO change matched joints.yaml — nothing was rebuilt ' +
+          '(joint naming mismatch; see missed list above)', 'err');
+      refreshApply();
+      return;
+    }
+    log(`rebuilt ✓ (${r.applied.length} change(s)) — reloading (meshes ` +
+        `come from cache, pose+camera kept)`, 'ok');
+    loadRobot(currentInfo, { keepPose: true });
+    refreshHistory();
+  } catch (e) {
+    log(`apply failed: ${e.message ?? e}`, 'err');
+    refreshApply();
+  }
+});
+
+// ---- 🛠 auto joint limits via the self-collision sweep -------------------
+const autolimitsBtn = document.getElementById('autolimits');
+autolimitsBtn.addEventListener('click', async () => {
+  if (!currentInfo || dropMode) {
+    log('auto-limits needs a server package (open via 📄/📁, not drop)',
+        'wrn');
+    return;
+  }
+  autolimitsBtn.disabled = true;
+  op('autoLimits', {});
+  log('self-collision limit sweep (coarse scan + binary search) — '
+      + 'this takes a few seconds …');
+  // ONE blocking request, no progress polling: polling during the CPU-bound
+  // sweep thrashes the server's GIL and balloons it ~20x (8s -> 200s).
+  showLoadbar('関節リミットを探索中 …', { indet: true });
+  try {
+    const resp0 = await fetch('/api/auto_limits');
+    const data = await resp0.json();
+    if (!resp0.ok || data.error) { throw new Error(data.error ?? resp0.status); }
+    const results = data.results || [];
+    const limited = results.filter(r => !r.continuous);
+    const cont = results.filter(r => r.continuous);
+    log(`sweep done: ${limited.length} joint(s) get limits, ` +
+        `${cont.length} stay continuous — applying …`, 'ok');
+    if (!results.length) {
+      log('no rotational joints to limit', 'wrn');
+      hideLoadbar();
+      autolimitsBtn.disabled = false;
+      return;
+    }
+    showLoadbar('リミットを書き込み・再ビルド中 …', { indet: true });
+    const resp = await fetch('/api/set_limits', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ limits: results }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    if (r.missed?.length) {
+      log(`not matched in joints.yaml: ${r.missed.join(', ')}`, 'wrn');
+    }
+    log(`applied limits to ${r.applied.length} joint(s) ✓ — reloading ` +
+        '(Ctrl+Z で元に戻せます)', 'ok');
+    loadRobot(currentInfo, { keepPose: true });
+    refreshHistory();
+  } catch (e) {
+    hideLoadbar();
+    log(`auto-limits failed: ${e.message ?? e}`, 'err');
+  } finally {
+    autolimitsBtn.disabled = false;
+  }
+});
+
+// ---- camera: bbox helpers, SolidWorks-style view presets, auto-fit ------
+function robotBox() {
+  // bbox of the actual MODEL: visible meshes only, helpers excluded
+  // (axis markers / triads poke far outside the geometry and were
+  // inflating every camera fit and the grid pitch)
+  const robot = viewer.robot;
+  if (!robot) { return null; }
+  robot.updateMatrixWorld(true);
+  const box = new THREE.Box3();
+  const b = new THREE.Box3();
+  robot.traverse(c => {
+    if (c.isMesh && !c.userData.cad2rcMarker && c.visible && c.geometry) {
+      if (!c.geometry.boundingBox) { c.geometry.computeBoundingBox(); }
+      b.copy(c.geometry.boundingBox).applyMatrix4(c.matrixWorld);
+      box.union(b);
+    }
+  });
+  return box.isEmpty() ? null : box;
+}
+
+// up="Z" rotates the world so URDF (x,y,z) renders as three (x, z, -y)
+const U2T = v => new THREE.Vector3(v[0], v[2], -v[1]);
+const VIEWS = {
+  front:  [1, 0, 0], back: [-1, 0, 0],
+  right:  [0, 1, 0], left: [0, -1, 0],
+  top:    [0, 0, 1], bottom: [0, 0, -1],
+  iso:    [1, -1, 0.8],
+};
+
+// ⌖ origin: the WORLD origin is fixed (grid lives there); this moves the
+// whole CAD so the current base_link frame coincides with it
+function seatModel() {
+  if (!viewer.robot) { return; }
+  const pose = rootDelta.clone().invert();
+  pose.decompose(viewer.robot.position, viewer.robot.quaternion,
+                 viewer.robot.scale);
+  viewer.robot.scale.set(1, 1, 1);
+  viewer.robot.updateMatrixWorld(true);
+  viewer.controls.target.set(0, 0, 0);   // look at the (fixed) origin
+  viewer.controls.update();
+  viewer.redraw();
+  log('base_link を世界原点に合わせました ⌖', 'ok');
+}
+document.getElementById('vorigin').addEventListener('click', seatModel);
+
+function setView(name) {
+  const box = robotBox();
+  if (!box) { return; }
+  const center = box.getCenter(new THREE.Vector3());
+  const diag = box.getSize(new THREE.Vector3()).length();
+  const dir = U2T(VIEWS[name]).normalize();
+  // distance that actually FILLS the screen: fit the extent along the
+  // camera's UP axis to the vertical FOV and the extent along its RIGHT
+  // axis to the horizontal FOV, plus the depth toward the camera
+  const upVec = name === 'top' ? new THREE.Vector3(0, 0, -1)
+    : name === 'bottom' ? new THREE.Vector3(0, 0, 1)
+    : new THREE.Vector3(0, 1, 0);
+  const right = new THREE.Vector3().crossVectors(dir, upVec).normalize();
+  const upOrtho = new THREE.Vector3().crossVectors(right, dir).normalize();
+  let rUp = 0, rRight = 0, rPar = 0;
+  const corner = new THREE.Vector3();
+  for (const xi of ['min', 'max']) {
+    for (const yi of ['min', 'max']) {
+      for (const zi of ['min', 'max']) {
+        corner.set(box[xi].x, box[yi].y, box[zi].z).sub(center);
+        rPar = Math.max(rPar, corner.dot(dir));
+        rUp = Math.max(rUp, Math.abs(corner.dot(upOrtho)));
+        rRight = Math.max(rRight, Math.abs(corner.dot(right)));
+      }
+    }
+  }
+  const tanV = Math.tan((viewer.camera.fov * Math.PI / 180) / 2);
+  const tanH = tanV * viewer.camera.aspect;
+  const dist = Math.max(
+    Math.max(rUp / tanV, rRight / tanH) * 1.08 + rPar, 0.1);
+  viewer.camera.position.copy(center.clone().add(dir.multiplyScalar(dist)));
+  // looking straight down/up: keep "front" toward the screen bottom
+  viewer.camera.up.set(0, 1, 0);
+  if (name === 'top') { viewer.camera.up.set(0, 0, -1); }
+  if (name === 'bottom') { viewer.camera.up.set(0, 0, 1); }
+  viewer.camera.near = Math.max(diag / 100, 0.001);
+  viewer.camera.far = Math.max(diag * 100, 50);
+  viewer.camera.updateProjectionMatrix();
+  viewer.controls.target.copy(center);
+  viewer.controls.update();
+  viewer.redraw();
+}
+document.querySelectorAll('#views button[data-v]').forEach(b =>
+  b.addEventListener('click', () => setView(b.dataset.v)));
+// ---- re-root: shared by the tree's ⌂ buttons and the 3D hover R key -----
+async function reRoot(link) {
+  op('reRoot', { link });
+  if (!currentInfo) {
+    log('root change needs a server-side package (not a drop)', 'wrn');
+    return;
+  }
+  log(`re-rooting at ${link} + rebuilding …`);
+  statusEl.textContent = '⏳ re-rooting …';
+  try {
+    const resp = await fetch('/api/set_base', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ link }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log(`root is now ${r.base} (${r.flipped} edges re-rooted) ✓`, 'ok');
+    loadRobot(currentInfo, { keepPose: true, followCamera: true });
+    refreshHistory();
+  } catch (e) {
+    log(`re-root failed: ${e.message ?? e}`, 'err');
+  }
+}
+
+// ---- 3D hover: name the link under the cursor, R = make it root,
+// double-click = jump to its row in the tree -------------------------------
+const hovertip = document.getElementById('hovertip');
+const raycaster = new THREE.Raycaster();
+let hoveredLink = null;
+
+function pickHit(ev) {
+  if (!viewer.robot) { return null; }
+  const rect = viewer.getBoundingClientRect();
+  raycaster.setFromCamera({
+    x: ((ev.clientX - rect.left) / rect.width) * 2 - 1,
+    y: -((ev.clientY - rect.top) / rect.height) * 2 + 1 }, viewer.camera);
+  const hit = raycaster.intersectObject(viewer.robot, true)
+    .find(h => h.object.isMesh && !h.object.userData.cad2rcMarker);
+  if (!hit) { return null; }
+  let n = hit.object;
+  while (n && !n.isURDFLink) { n = n.parent; }
+  return { link: n?.name || null, hit };
+}
+
+function pickLink(ev) {
+  return pickHit(ev)?.link ?? null;
+}
+
+// ---- ⊕ align mode: hover highlights the PLANAR FACE under the cursor
+// (triangles with the same normal on the same plane -- a B-rep-less
+// approximation of SolidWorks face picking); click puts the root origin
+// at the FACE CENTROID with +Z along the face normal ---------------------
+const alignBtn = document.getElementById('alignmode');
+const alignOn = () => alignBtn.classList.contains('active');
+const faceMat = new THREE.MeshBasicMaterial({
+  color: 0xffe93d, transparent: true, opacity: 0.55,
+  depthTest: false, side: THREE.DoubleSide });
+let faceOverlay = null;          // {mesh, centroidLocal, normalLocal, host}
+
+function clearFaceOverlay() {
+  faceOverlay?.mesh.removeFromParent();
+  faceOverlay = null;
+}
+
+function showFaceOverlay(hit) {
+  clearFaceOverlay();
+  const host = hit.object;
+  const geo = host.geometry;
+  const pos = geo.attributes.position;
+  const idx = geo.index;
+  const n = hit.face.normal.clone().normalize();   // host-local
+  const pLocal = host.worldToLocal(hit.point.clone());
+  const planeD = pLocal.dot(n);
+  const triCount = idx ? idx.count / 3 : pos.count / 3;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(),
+        c = new THREE.Vector3(), tn = new THREE.Vector3(),
+        e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+  const verts = [];
+  let area = 0;
+  const cx = new THREE.Vector3();
+  for (let t = 0; t < triCount; t++) {
+    const i0 = idx ? idx.getX(3 * t) : 3 * t;
+    const i1 = idx ? idx.getX(3 * t + 1) : 3 * t + 1;
+    const i2 = idx ? idx.getX(3 * t + 2) : 3 * t + 2;
+    a.fromBufferAttribute(pos, i0);
+    b.fromBufferAttribute(pos, i1);
+    c.fromBufferAttribute(pos, i2);
+    e1.copy(b).sub(a);
+    e2.copy(c).sub(a);
+    tn.copy(e1).cross(e2);
+    const triArea2 = tn.length();
+    if (triArea2 < 1e-14) { continue; }
+    tn.divideScalar(triArea2);
+    if (tn.dot(n) < 0.999) { continue; }           // same orientation
+    if (Math.abs(a.dot(n) - planeD) > 3e-4) { continue; }  // same plane
+    verts.push(a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z);
+    const w = triArea2 / 2;
+    area += w;
+    cx.addScaledVector(a, w / 3).addScaledVector(b, w / 3)
+      .addScaledVector(c, w / 3);
+  }
+  if (!verts.length) { return; }
+  cx.divideScalar(area);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  const m = new THREE.Mesh(g, faceMat);
+  m.renderOrder = 996;
+  markHelper(m);
+  host.add(m);                     // same local frame as the host mesh
+  faceOverlay = { mesh: m, centroidLocal: cx.clone(),
+                  normalLocal: n.clone(), host, area };
+  viewer.redraw();
+}
+
+alignBtn.addEventListener('click', () => {
+  const on = alignBtn.classList.toggle('active');
+  if (on) {
+    log('align mode: hover highlights the face; click = root origin at ' +
+        'the FACE CENTER, +Z along its normal; Esc to cancel', 'wrn');
+  } else {
+    clearFaceOverlay();
+  }
+});
+
+async function alignRootTo(hit) {
+  op('align');
+  if (!currentInfo) {
+    log('align needs a server-side package (not a drop)', 'wrn');
+    return;
+  }
+  // prefer the detected face (centroid + plane normal); fall back to the
+  // raw hit triangle
+  let wPoint, nWorld;
+  if (faceOverlay) {
+    wPoint = faceOverlay.host.localToWorld(
+      faceOverlay.centroidLocal.clone());
+    nWorld = faceOverlay.normalLocal.clone()
+      .transformDirection(faceOverlay.host.matrixWorld);
+    log(`face center used (area ${(faceOverlay.area * 1e6).toFixed(0)} mm²)`);
+  } else {
+    wPoint = hit.point.clone();
+    nWorld = hit.face.normal.clone()
+      .transformDirection(hit.object.matrixWorld);
+  }
+  clearFaceOverlay();
+  // robot-local = LOAD-time root frame; convert into the CURRENT root
+  // frame (in-place edits move the frame without reloading the URDF)
+  const inv = rootDelta.clone().invert();
+  const pLocal = viewer.robot.worldToLocal(wPoint).applyMatrix4(inv);
+  const qInv = viewer.robot.getWorldQuaternion(
+    new THREE.Quaternion()).invert();
+  const nLocal = nWorld.applyQuaternion(qInv)
+    .transformDirection(inv).normalize();
+  log(`aligning root: origin=(${pLocal.x.toFixed(4)}, ` +
+      `${pLocal.y.toFixed(4)}, ${pLocal.z.toFixed(4)}) ` +
+      `+Z=(${nLocal.x.toFixed(2)}, ${nLocal.y.toFixed(2)}, ` +
+      `${nLocal.z.toFixed(2)}) + rebuilding …`);
+  statusEl.textContent = '⏳ aligning root frame …';
+  try {
+    const resp = await fetch('/api/set_root_pose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ xyz: pLocal.toArray(),
+                             zdir: nLocal.toArray() }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log('root frame aligned ✓ (root_rpy/root_xyz written to joints.yaml)',
+        'ok');
+    applyRootPose(r.rpy, r.xyz);     // in-place: no reload, no flash
+    refreshHistory();
+  } catch (e) {
+    log(`align failed: ${e.message ?? e}`, 'err');
+  }
+}
+
+// clicking the view moves keyboard focus to it (so R works even after
+// typing in the path box) and a no-drag click selects the link
+viewer.setAttribute('tabindex', '-1');
+let downAt = null;
+viewer.addEventListener('pointerdown', ev => {
+  viewer.focus();
+  downAt = [ev.clientX, ev.clientY];
+});
+viewer.addEventListener('pointerup', ev => {
+  if (!downAt) { return; }
+  const moved = Math.hypot(ev.clientX - downAt[0], ev.clientY - downAt[1]);
+  downAt = null;
+  if (moved > 8 || ev.button !== 0) { return; }    // it was a drag/orbit
+  if (alignOn()) {
+    const ph = pickHit(ev);
+    alignBtn.classList.remove('active');
+    if (ph?.hit?.face) { alignRootTo(ph.hit); }
+    else { log('align cancelled (no face under the cursor)', 'wrn'); }
+    return;
+  }
+  const link = pickLink(ev);
+  if (link) { selectLink(link); }
+  else { selectLink(null); }       // empty space: always clear selection
+});
+
+let lastPick = 0;
+viewer.addEventListener('pointermove', ev => {
+  if (ev.buttons) {                       // orbiting/dragging: no tooltip
+    hovertip.style.display = 'none';
+    return;
+  }
+  const now = performance.now();
+  if (now - lastPick < 60) { return; }    // throttle the raycast
+  lastPick = now;
+  if (alignOn()) {                        // face-pick mode: no link tint
+    const ph = pickHit(ev);
+    if (ph?.hit?.face) {
+      showFaceOverlay(ph.hit);
+      const rect = viewer.getBoundingClientRect();
+      hovertip.innerHTML = `${ph.link} — <span class="key">click</span> ` +
+        `align root to this face (origin = face center)`;
+      hovertip.style.left = (ev.clientX - rect.left + 14) + 'px';
+      hovertip.style.top = (ev.clientY - rect.top + 18) + 'px';
+      hovertip.style.display = 'block';
+    } else {
+      clearFaceOverlay();
+      hovertip.style.display = 'none';
+    }
+    return;
+  }
+  // 3D hover highlighting is the ELEMENT's job (its drag-hover tints the
+  // movable subtree); we only track the link name for the tooltip / R key
+  const link = pickLink(ev);
+  hoveredLink = link;
+  if (link) {
+    const rect = viewer.getBoundingClientRect();
+    hovertip.innerHTML = link === selectedLink
+      ? `✓ ${link} selected — <span class="key">R</span> make root`
+      : `${link} — <span class="key">click</span> select, ` +
+        `<span class="key">dbl-click</span> tree, ` +
+        `<span class="key">Shift+drag</span> 範囲選択`;
+    hovertip.style.left = (ev.clientX - rect.left + 14) + 'px';
+    hovertip.style.top = (ev.clientY - rect.top + 18) + 'px';
+    hovertip.style.display = 'block';
+  } else {
+    hovertip.style.display = 'none';
+  }
+});
+viewer.addEventListener('pointerleave', () => {
+  if (hoveredLink) { highlightLink(hoveredLink, false); hoveredLink = null; }
+  hovertip.style.display = 'none';
+});
+
+// ---- Shift+drag box-select -> bulk joint-type change (Blender-style) -------
+// The plain drag is orbit / joint-manipulation, so box-select is Shift+drag.
+const boxselEl = document.getElementById('boxsel');
+const bulkbarEl = document.getElementById('bulkbar');
+let boxing = null;                 // {x0, y0} while dragging the rectangle
+let boxSelected = new Set();       // link names picked by the box
+
+function drawBox(x, y) {
+  const r = viewer.getBoundingClientRect();
+  boxselEl.style.left = (Math.min(boxing.x0, x) - r.left) + 'px';
+  boxselEl.style.top = (Math.min(boxing.y0, y) - r.top) + 'px';
+  boxselEl.style.width = Math.abs(x - boxing.x0) + 'px';
+  boxselEl.style.height = Math.abs(y - boxing.y0) + 'px';
+}
+// capture phase: intercept BEFORE OrbitControls / the joint manipulator
+viewer.addEventListener('pointerdown', ev => {
+  if (!ev.shiftKey || ev.button !== 0 || !viewer.robot) { return; }
+  ev.preventDefault();
+  ev.stopImmediatePropagation();
+  viewer.controls.enabled = false;
+  if (viewer.dragControls) { viewer.dragControls.enabled = false; }
+  boxing = { x0: ev.clientX, y0: ev.clientY };
+  drawBox(ev.clientX, ev.clientY);
+  boxselEl.style.display = 'block';
+}, true);
+window.addEventListener('pointermove', ev => {
+  if (boxing) { drawBox(ev.clientX, ev.clientY); }
+});
+window.addEventListener('pointerup', ev => {
+  if (!boxing) { return; }
+  const { x0, y0 } = boxing;
+  boxing = null;
+  boxselEl.style.display = 'none';
+  viewer.controls.enabled = true;
+  if (viewer.dragControls) { viewer.dragControls.enabled = true; }
+  if (Math.abs(ev.clientX - x0) < 4 && Math.abs(ev.clientY - y0) < 4) { return; }
+  selectLinksInBox({ l: Math.min(x0, ev.clientX), r: Math.max(x0, ev.clientX),
+                     t: Math.min(y0, ev.clientY), b: Math.max(y0, ev.clientY) });
+});
+
+// a link is selected if the centroid of its OWN meshes projects inside the box
+function selectLinksInBox(rect) {
+  clearBoxSelection();
+  selectLink(null);                          // box-select replaces single-sel
+  const r = viewer.getBoundingClientRect();
+  viewer.robot.updateMatrixWorld(true);
+  const v = new THREE.Vector3();
+  for (const [name, link] of Object.entries(viewer.robot.links)) {
+    const box = ownLinkBox(link, new THREE.Box3());
+    if (box.isEmpty()) { continue; }
+    box.getCenter(v).project(viewer.camera);
+    if (v.z < -1 || v.z > 1) { continue; }   // behind the camera
+    const sx = r.left + (v.x * 0.5 + 0.5) * r.width;
+    const sy = r.top + (-v.y * 0.5 + 0.5) * r.height;
+    if (sx >= rect.l && sx <= rect.r && sy >= rect.t && sy <= rect.b) {
+      boxSelected.add(name);
+    }
+  }
+  for (const n of boxSelected) { _tintLink(n, 'sel'); }
+  op('boxSelect', { n: boxSelected.size });
+  if (boxSelected.size) {
+    document.getElementById('bulkcount').textContent =
+      `${boxSelected.size} 個のリンクを選択`;
+    bulkbarEl.style.display = 'flex';
+    log(`box-select: ${boxSelected.size} links — 一括で type を設定できます`);
+  } else {
+    bulkbarEl.style.display = 'none';
+    log('box-select: 範囲内にリンクなし', 'wrn');
+  }
+}
+
+function clearBoxSelection() {
+  for (const n of boxSelected) {
+    if (n !== selectedLink) { _tintLink(n, baseTint(n)); }
+  }
+  boxSelected = new Set();
+  bulkbarEl.style.display = 'none';
+}
+document.getElementById('bulkclose').addEventListener('click', clearBoxSelection);
+
+// apply one joint type to every box-selected link's controlling joint
+async function bulkSetType(type) {
+  const links = [...boxSelected];
+  if (!links.length || !currentInfo) { return; }
+  bulkbarEl.querySelectorAll('button').forEach(b => b.disabled = true);
+  log(`一括設定: ${links.length} links → ${type} …`);
+  statusEl.textContent = '⏳ rebuilding URDF …';
+  try {
+    const resp = await fetch('/api/set_types', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ changes: links.map(c => ({ child: c, type })) }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log(`一括設定 ✓ — ${r.applied?.length ?? 0} 件適用` +
+        (r.missed?.length ? ` (${r.missed.length} 件は対象外)` : '') +
+        ' — reloading (Ctrl+Z で戻せます)', 'ok');
+    clearBoxSelection();
+    loadRobot(currentInfo, { keepPose: true });
+    refreshHistory();
+  } catch (e) {
+    log(`一括設定 failed: ${e.message ?? e}`, 'err');
+  } finally {
+    bulkbarEl.querySelectorAll('button').forEach(b => b.disabled = false);
+  }
+}
+bulkbarEl.querySelectorAll('button[data-bt]').forEach(b =>
+  b.addEventListener('click', () => bulkSetType(b.dataset.bt)));
+window.addEventListener('keydown', ev => {
+  if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) {
+    return;                       // typing in a field, not a command
+  }
+  const target = selectedLink ?? hoveredLink;
+  if ((ev.key === 'r' || ev.key === 'R') && target) {
+    reRoot(target);
+    selectLink(null);
+  } else if (ev.key === 'Escape') {
+    selectLink(null);              // also dismisses a stale selection bar
+    clearBoxSelection();
+    alignBtn.classList.remove('active');
+    clearFaceOverlay();
+  }
+});
+viewer.addEventListener('dblclick', () => {
+  if (!hoveredLink) { return; }
+  const rec = [...rows.values()].find(r => r.child === hoveredLink);
+  if (rec) {
+    rec.row.scrollIntoView({ block: 'center' });
+    rec.row.style.outline = '2px solid #ffe93d';
+    setTimeout(() => { rec.row.style.outline = ''; }, 1200);
+  }
+});
+
+function fitView() {
+  const box = robotBox();
+  if (!box) {
+    log('bounding box is EMPTY — meshes attached but no geometry?', 'err');
+    return;
+  }
+  const size = box.getSize(new THREE.Vector3());
+  log(`robot bbox: ${size.x.toFixed(3)} × ${size.y.toFixed(3)} × ` +
+      `${size.z.toFixed(3)} m`);
+  if (size.length() > 100) {
+    log('bbox is >100 m — mesh units look wrong (mm leaking through?)',
+        'wrn');
+  }
+  const diag = size.length();
+  viewer.controls.minDistance = Math.min(0.25, diag / 5);
+  setView('iso');
+  log('camera fitted ✓', 'ok');
+}
+
+// ---- ground grid with a "nice" pitch chosen from the model size ---------
+const gridBtn = document.getElementById('grid');
+const gridCap = document.getElementById('gridcap');
+let gridObj = null;
+let gridPitch = null;            // metres; null = auto from model size
+
+const fmtPitch = c => c >= 1 ? `${c.toFixed(0)} m`
+                             : `${(c * 1000).toFixed(0)} mm`;
+{
+  const opt = document.createElement('option');
+  opt.value = 'auto';
+  opt.textContent = 'auto';
+  gridCap.appendChild(opt);
+  for (const mm of [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000]) {
+    const o = document.createElement('option');
+    o.value = String(mm);
+    o.textContent = `${mm} mm`;
+    gridCap.appendChild(o);
+  }
+}
+gridCap.addEventListener('change', () => {
+  gridPitch = gridCap.value === 'auto' ? null : Number(gridCap.value) / 1000;
+  buildGrid();
+});
+
+function buildGrid() {
+  gridObj?.removeFromParent();
+  gridObj = null;
+  const box = robotBox();
+  const diag = box ? box.getSize(new THREE.Vector3()).length() : 0.3;
+  const raw = diag / 12;
+  const pow = 10 ** Math.floor(Math.log10(raw));
+  const autoCell = [1, 2, 5, 10].map(m => m * pow).find(v => v >= raw)
+                   ?? 10 * pow;
+  const cell = gridPitch ?? autoCell;
+  const ext = cell * 30;
+  const g = new THREE.Group();
+  const minor = new THREE.GridHelper(ext, 30, 0x7d8590, 0xaab0b8);
+  const major = new THREE.GridHelper(ext, 3, 0x4a5560, 0x6b7480);
+  for (const h of [minor, major]) {
+    h.material.transparent = true;
+    h.material.opacity = h === major ? 0.8 : 0.45;
+    markHelper(h);
+    g.add(h);
+  }
+  viewer.scene.add(g);              // three Y-up scene: y=0 == urdf Z=0
+  gridObj = g;
+  gridObj.visible = gridBtn.classList.contains('active');
+  gridCap.querySelector('option[value="auto"]').textContent =
+    `auto (${fmtPitch(autoCell)})`;
+  gridCap.value = gridPitch ? String(gridPitch * 1000) : 'auto';
+  gridCap.style.display = gridObj.visible ? '' : 'none';
+  viewer.redraw();
+}
+gridBtn.addEventListener('click', () => {
+  const on = gridBtn.classList.toggle('active');
+  if (gridObj) { gridObj.visible = on; }
+  gridCap.style.display = on ? '' : 'none';
+  viewer.redraw();
+});
+
+viewer.addEventListener('urdf-processed', () => {
+  const n = buildJointRows(viewer.robot);
+  log(`URDF parsed ✓ — ${Object.keys(viewer.robot.links).length} links, ` +
+      `${n} movable joints`, 'ok');
+});
+let pendingRestore = null;   // {angles} saved across an edit-rebuild reload
+let loadCover = null;        // visual clone shown while the URDF reloads,
+                             // so re-root / type edits never flash blank
+
+function removeLoadCover() {
+  if (loadCover) {
+    loadCover.removeFromParent();
+    loadCover = null;
+    viewer.redraw();
+  }
+}
+
+viewer.addEventListener('geometry-loaded', () => {
+  hideLoadbar();
+  document.getElementById('loadbackdrop').style.display = 'none';  // new model in
+  log('all meshes loaded ✓', 'ok');
+  const restore = pendingRestore;
+  pendingRestore = null;
+  requestAnimationFrame(() => {
+    addAxisMarkers(viewer.robot);
+    addOriginTriad(viewer.robot);
+    buildGrid();
+    hiddenLinks.forEach(n => applyLinkVisibility(n));
+    tfNodes = [];                  // old robot's TF nodes died with it
+    undimAll();                    // restore shared (cached) materials!
+    collisionLinks = new Set();    // fresh meshes wear no stale red
+    initCollision();
+    if (tfOn()) { setTF(true); }
+    if (restore) {
+      // joint edit reload: keep the camera, put the pose back
+      let n = 0;
+      for (const [name, v] of Object.entries(restore.angles)) {
+        const j = viewer.robot.joints[name];
+        if (j && j.jointType !== 'fixed' && !j.mimicJoint) {
+          viewer.setJointValue(name, v);
+          n += 1;
+        }
+      }
+      if (restore.linkWorlds) {
+        // the model jumped in scene space (re-root / root frame change):
+        // move the CAMERA by the same rigid transform so the view looks
+        // unchanged.  Any link present before and after gives it to us.
+        viewer.robot.updateMatrixWorld(true);
+        for (const [name, oldW] of restore.linkWorlds) {
+          // 'base_link' names a DIFFERENT physical link after a re-root
+          if (name === 'base_link') { continue; }
+          const l = viewer.robot.links[name];
+          if (!l) { continue; }
+          const S = l.matrixWorld.clone()
+            .multiply(oldW.clone().invert());
+          viewer.camera.position.applyMatrix4(S);
+          viewer.controls.target.applyMatrix4(S);
+          const R = new THREE.Matrix4().extractRotation(S);
+          viewer.camera.up.transformDirection(R);
+          viewer.camera.updateProjectionMatrix();
+          viewer.controls.update();
+          log('camera followed the model ✓', 'ok');
+          break;
+        }
+      }
+      buildJointRows(viewer.robot);
+      removeLoadCover();           // new robot is in place: drop the ghost
+      viewer.redraw();
+      log(`pose restored (${n} joints)`, 'ok');
+    } else {
+      removeLoadCover();
+      fitView();
+    }
+  });
+  statusEl.textContent =
+    `${Object.keys(viewer.robot.links).length} links · ` +
+    `${buildJointRows(viewer.robot)} movable joints · meshes ` +
+    `${meshStats.done}/${meshStats.want}` +
+    (meshStats.fail ? ` (${meshStats.fail} failed)` : ' ✓');
+});
+viewer.addEventListener('urdf-error', e => {
+  removeLoadCover();
+  hideLoadbar();
+  document.getElementById('loadbackdrop').style.display = 'none';
+  log(`URDF error: ${e.detail ?? '(see console)'}`, 'err');
+});
+
+document.getElementById('reset').addEventListener('click', () => {
+  for (const j of Object.values(viewer.robot?.joints ?? {})) {
+    if (j.jointType !== 'fixed' && !j.mimicJoint) {
+      viewer.setJointValue(j.name, 0);
+    }
+  }
+});
+
+// ---- loading entry points -----------------------------------------------
+function loadRobot(info, { drop = false, keepPose = false,
+                           followCamera = false } = {}) {
+  op('loadRobot', { name: info?.name, keepPose, drop });
+  document.getElementById('emptyprompt').style.display = 'none';
+  if ((keepPose || followCamera) && viewer.robot) {
+    const angles = {};
+    for (const [n, j] of Object.entries(viewer.robot.joints)) {
+      if (j.jointType !== 'fixed' && !j.mimicJoint) {
+        angles[n] = Number(j.angle);
+      }
+    }
+    let linkWorlds = null;
+    if (followCamera) {
+      viewer.robot.updateMatrixWorld(true);
+      linkWorlds = new Map();
+      for (const [n, l] of Object.entries(viewer.robot.links)) {
+        linkWorlds.set(n, l.matrixWorld.clone());
+      }
+    }
+    pendingRestore = { angles, linkWorlds };
+  }
+  dropMode = drop;
+  if (!drop) { viewer.urlModifierFunc = null; currentInfo = info; }
+  else { currentInfo = null; }
+  // cover the reload gap with a display-only clone of the current robot
+  // (same world pose -> the swap is pixel-invisible); geometry/materials
+  // are shared so this costs milliseconds
+  removeLoadCover();
+  if (!drop && viewer.robot?.parent && keepPose) {
+    loadCover = viewer.robot.clone(true);
+    loadCover.traverse(c => { c.raycast = () => {}; });
+    viewer.robot.parent.add(loadCover);
+  }
+  meshStats.want = meshStats.done = meshStats.fail = 0;
+  jointsEl.innerHTML = '';
+  rows.clear();
+  pending.clear();
+  savedMats.clear();              // old robot's meshes are discarded anyway
+  selectedLink = null;
+  selVis = null;                  // died with the old robot
+  clearFaceOverlay();
+  document.getElementById('selbar').style.display = 'none';
+  document.getElementById('linkinfo').style.display = 'none';
+  refreshApply();
+  document.getElementById('title').textContent = info.name;
+  document.title = `${info.name} — cad2rc`;
+  if (!drop) {
+    refreshRootBox({ resetBaseline: true });
+    refreshCompMeta();
+  }
+  statusEl.textContent = 'loading URDF …';
+  log(`loading URDF ${info.urdf} …`);
+  // centre bar only when the load is actually noticeable (300 ms grace:
+  // cached edit-reloads finish before it ever appears)
+  showLoadbar(`${info.name} を読み込み中 …`, { indet: true, delay: 300 });
+  // cache-bust so a rebuilt URDF is never served stale by the browser
+  viewer.urdf = drop ? info.urdf : info.urdf + '?v=' + Date.now();
+}
+
+// ---- root frame box: +-90 deg buttons + numeric rpy(deg)/xyz(mm) --------
+// Root-frame edits NEVER reload the robot: the model's internal geometry is
+// unchanged, so we re-pose the robot object so its local frame IS the new
+// root frame, and move the camera by the same delta -- on screen the model
+// stays pixel-fixed and only the origin triad / frame lines move.  The
+// server rebuild (persisting the URDF) happens in the background.
+const D2R = Math.PI / 180;
+let rootAtLoad = new THREE.Matrix4();   // yaml root offset when URDF loaded
+let rootDelta = new THREE.Matrix4();    // load frame -> CURRENT root frame
+
+function rootMat(rpy, xyz) {
+  // URDF semantics: rotate, then translate in the rotated frame
+  const m = new THREE.Matrix4().makeRotationFromEuler(
+    new THREE.Euler(rpy[0], rpy[1], rpy[2], 'ZYX'));
+  const t = new THREE.Vector3(...xyz)
+    .applyMatrix4(new THREE.Matrix4().extractRotation(m));
+  m.setPosition(t);
+  return m;
+}
+
+function setRootFields(rpy, xyz) {
+  ['r_r', 'r_p', 'r_y'].forEach((id, i) => {
+    document.getElementById(id).value = (rpy[i] / D2R).toFixed(1);
+  });
+  ['r_x', 'r_yy', 'r_z'].forEach((id, i) => {
+    document.getElementById(id).value = (xyz[i] * 1000).toFixed(1);
+  });
+}
+
+async function refreshRootBox({ resetBaseline = false } = {}) {
+  try {
+    const r = await (await fetch('/api/root_pose')).json();
+    if (r.error) { return; }
+    setRootFields(r.rpy, r.xyz);
+    rootBaseName = r.base ?? null;
+    const rc = document.querySelector('.joint.root .rootcomp');
+    if (rc) {
+      rc.textContent = rootBaseName ? `= ${rootBaseName}` : '';
+    }
+    if (resetBaseline) {
+      rootAtLoad = rootMat(r.rpy, r.xyz);
+      rootDelta.identity();
+    }
+  } catch { /* no package yet */ }
+}
+
+function applyRootPose(rpy, xyz) {
+  // model and camera stay EXACTLY where they are; only the origin triad
+  // jumps to where the new root frame sits relative to the geometry
+  rootDelta = rootAtLoad.clone().invert().multiply(rootMat(rpy, xyz));
+  if (originTriad) {
+    rootDelta.decompose(originTriad.position, originTriad.quaternion,
+                        originTriad.scale);
+    originTriad.scale.set(1, 1, 1);
+    viewer.redraw();
+  }
+  setRootFields(rpy, xyz);
+}
+
+async function postRootPose(body, what) {
+  op('rootPose', { what });
+  if (!currentInfo) {
+    log('root frame editing needs a server-side package', 'wrn');
+    return;
+  }
+  log(`${what} …`);
+  try {
+    const resp = await fetch('/api/set_root_pose', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    applyRootPose(r.rpy, r.xyz);     // in-place: no reload, no flash
+    refreshHistory();
+    log('root frame updated ✓ (no reload needed)', 'ok');
+    statusEl.textContent = 'root frame updated';
+  } catch (e) {
+    log(`root frame update failed: ${e.message ?? e}`, 'err');
+  }
+}
+
+document.querySelectorAll('#rootbox .rot').forEach(b =>
+  b.addEventListener('click', () => {
+    const rpy = [0, 0, 0];
+    rpy[Number(b.dataset.ax)] = Number(b.dataset.s) * Math.PI / 2;
+    postRootPose({ rpy }, `rotating root ${b.textContent}`);
+  }));
+// origin snaps: bbox point (in the CURRENT root frame) -> translation-only
+// root_xyz update via the same no-reload path as align
+function bboxLocal() {
+  const box = robotBox();
+  if (!box || !viewer.robot) { return null; }
+  const min = new THREE.Vector3(Infinity, Infinity, Infinity);
+  const max = min.clone().negate();
+  const corner = new THREE.Vector3();
+  const inv = rootDelta.clone().invert();
+  for (const xi of ['min', 'max']) {
+    for (const yi of ['min', 'max']) {
+      for (const zi of ['min', 'max']) {
+        corner.set(box[xi].x, box[yi].y, box[zi].z);
+        viewer.robot.worldToLocal(corner).applyMatrix4(inv);
+        min.min(corner);
+        max.max(corner);
+      }
+    }
+  }
+  return { min, max,
+           center: min.clone().add(max).multiplyScalar(0.5) };
+}
+document.getElementById('snapground').addEventListener('click', () => {
+  const b = bboxLocal();
+  if (!b) { return; }
+  postRootPose({ xyz: [b.center.x, b.center.y, b.min.z] },
+               'snapping origin to the model bottom centre');
+});
+document.getElementById('snapcenter').addEventListener('click', () => {
+  const b = bboxLocal();
+  if (!b) { return; }
+  postRootPose({ xyz: b.center.toArray() },
+               'snapping origin to the bbox centre');
+});
+document.getElementById('snapreset').addEventListener('click', () => {
+  postRootPose({ absolute: { rpy: [0, 0, 0], xyz: [0, 0, 0] } },
+               'resetting the root frame');
+});
+
+// numeric fields apply LIVE (Enter / focus-out), no Set button needed
+function applyRootFields() {
+  const deg = id => (parseFloat(document.getElementById(id).value) || 0);
+  postRootPose({ absolute: {
+    rpy: [deg('r_r') * D2R, deg('r_p') * D2R, deg('r_y') * D2R],
+    xyz: [deg('r_x') / 1000, deg('r_yy') / 1000, deg('r_z') / 1000] } },
+    'setting root frame numerically');
+}
+['r_r', 'r_p', 'r_y', 'r_x', 'r_yy', 'r_z'].forEach(id =>
+  document.getElementById(id).addEventListener('change', applyRootFields));
+
+// ---- undo / redo (server-side yaml snapshots) ----------------------------
+const undoBtn = document.getElementById('undo');
+const redoBtn = document.getElementById('redo');
+
+async function refreshHistory() {
+  try {
+    const h = await (await fetch('/api/history')).json();
+    undoBtn.disabled = !h.undo?.length;
+    redoBtn.disabled = !h.redo?.length;
+    undoBtn.title = h.undo?.length
+      ? `undo: ${h.undo[h.undo.length - 1]} (Ctrl+Z)` : 'undo (Ctrl+Z)';
+    redoBtn.title = h.redo?.length
+      ? `redo: ${h.redo[h.redo.length - 1]} (Ctrl+Y)` : 'redo (Ctrl+Y)';
+  } catch { /* no package yet */ }
+}
+
+async function doHistory(which) {
+  op(which);
+  if (!currentInfo) { return; }
+  try {
+    const resp = await fetch('/api/' + which, { method: 'POST' });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log(`${which}: ${r.label} ✓`, 'ok');
+    loadRobot(currentInfo, { keepPose: true });
+    refreshRootBox();
+    refreshHistory();
+  } catch (e) {
+    log(`${which} failed: ${e.message ?? e}`, 'wrn');
+  }
+}
+undoBtn.addEventListener('click', () => doHistory('undo'));
+redoBtn.addEventListener('click', () => doHistory('redo'));
+window.addEventListener('keydown', ev => {
+  if (/INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName)) {
+    return;
+  }
+  if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey
+      && ev.key.toLowerCase() === 'z') {
+    ev.preventDefault();
+    doHistory('undo');
+  } else if ((ev.ctrlKey || ev.metaKey)
+             && (ev.key.toLowerCase() === 'y'
+                 || (ev.shiftKey && ev.key.toLowerCase() === 'z'))) {
+    ev.preventDefault();
+    doHistory('redo');
+  }
+});
+
+// ---- export box ----------------------------------------------------------
+document.getElementById('regbtn').addEventListener('click', async () => {
+  const dir = document.getElementById('regdir').value.trim();
+  if (!dir) {
+    log('enter the robot-compiler registry dir (its --urdf-dir)', 'wrn');
+    return;
+  }
+  localStorage.setItem('cad2rc_regdir', dir);
+  log(`registering module to ${dir} …`);
+  try {
+    const resp = await fetch('/api/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dir }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log(`registered ✓ -> ${r.registered} (robot-compiler will pick it up ` +
+        `on its next scan)`, 'ok');
+  } catch (e) {
+    log(`register failed: ${e.message ?? e}`, 'err');
+  }
+});
+document.getElementById('regdir').value =
+  localStorage.getItem('cad2rc_regdir') ?? '';
+
+async function openServerPath(p) {
+  log(`/api/open ${p}`);
+  const resp = await fetch('/api/open?path=' + encodeURIComponent(p));
+  const info = await resp.json();
+  if (!resp.ok || info.error) {
+    log(`open failed: ${info.error ?? resp.status}`, 'err');
+    return;
+  }
+  loadRobot(info);
+}
+
+// elapsed seconds -> readable "45秒" / "1分23秒" (the user asked for seconds,
+// not "0.2 min")
+function fmtSecs(s) {
+  s = Math.round(s);
+  return s < 60 ? `${s}秒`
+                : `${Math.floor(s / 60)}分${String(s % 60).padStart(2, '0')}秒`;
+}
+// put the loadbar back into the indeterminate (sweeping) state
+function loadbarIndet() {
+  loadbarEl.classList.add('indet');
+  loadbarEl.querySelector('.lb-fill').style.width = '30%';
+}
+// map an extract log line to a short Japanese phase label
+function extractPhase(line) {
+  if (/starting SolidWorks/.test(line)) return 'SolidWorks を起動中';
+  if (/reusing the warm/.test(line))    return 'SolidWorks セッション再利用';
+  if (/opening copy|loading the assembly/.test(line)) return 'アセンブリ読込中';
+  if (/components.*mate|reading components/.test(line)) return '部品・メイト解析中';
+  if (/sub-assembly internal mesh/.test(line)) return 'サブアセンブリのメッシュ出力中';
+  if (/reading sub-assembly/.test(line)) return 'サブアセンブリ解析中';
+  if (/full assembly mesh/.test(line))   return '全体メッシュ出力中';
+  if (/saving graph/.test(line))         return 'graph.json 保存中';
+  if (/model from graph|build/.test(line)) return 'URDF 生成中';
+  return '抽出中';
+}
+
+// SolidWorks extraction: start the job, stream its progress into the log
+async function extractFlow(p) {
+  log(`requesting SolidWorks extraction: ${p}`, 'wrn');
+  statusEl.textContent = '⏳ SolidWorks から抽出中 …';
+  const resp = await fetch('/api/extract?path=' + encodeURIComponent(p));
+  const r = await resp.json();
+  if (!resp.ok || r.error) {
+    log(`extract failed to start: ${r.error ?? resp.status}`, 'err');
+    return;
+  }
+  log('extraction started (SolidWorks runs hidden) …');
+  showLoadbar('SolidWorks から抽出中 …', { indet: true });
+  const t0 = performance.now();
+  let seen = 0;
+  const poll = setInterval(async () => {
+    let st;
+    try {
+      st = await (await fetch('/api/extract/status')).json();
+    } catch { return; }
+    for (; seen < st.log.length; seen++) { log(`  ${st.log[seen]}`); }
+    const elapsed = (performance.now() - t0) / 1000;       // seconds
+
+    if (!st.running) {
+      clearInterval(poll);
+      if (st.error) {
+        hideLoadbar();
+        document.getElementById('loadbackdrop').style.display = 'none';
+        log(`extraction FAILED: ${st.error}`, 'err');
+        return;
+      }
+      log(`extraction finished in ${fmtSecs(elapsed)} ✓`, 'ok');
+      openServerPath(st.package);   // its own loadbar takes over
+      return;
+    }
+
+    const lines = st.log;
+    const lastReal = [...lines].reverse()
+      .find(l => !l.startsWith('... still')) ?? '';
+    const heartbeat = [...lines].reverse()
+      .find(l => l.startsWith('... still'));
+    const alive = heartbeat &&
+      heartbeat.match(/(\d+) SolidWorks process/);
+    statusEl.textContent = `⏳ 抽出中 … ${fmtSecs(elapsed)}`;
+
+    // B: determinate bar while exporting the per-link meshes (the bulk)
+    const mesh = lastReal.match(/exporting mesh (\d+)\/(\d+)/);
+    if (mesh) {
+      const i = +mesh[1], n = +mesh[2];
+      const name = lastReal.split(': ').slice(-1)[0] ?? '';
+      updateLoadbar(i / n, `メッシュ ${i}/${n}  ${name}`.slice(0, 64),
+                    `メッシュ出力中 — ${fmtSecs(elapsed)}`);
+      return;
+    }
+    // C: cold-start reassurance -- "starting SolidWorks" can be ~30 s of
+    // silence; show that it's alive (heartbeat process count) so it never
+    // looks frozen
+    loadbarIndet();
+    if (/starting SolidWorks/.test(lastReal)) {
+      const sub = alive
+        ? `SolidWorks 稼働中 ✓ (${alive[1]} プロセス) — 初回は約30秒`
+        : '初回は SolidWorks の起動に約30秒かかります';
+      updateLoadbar(null, sub, `SolidWorks を起動中 … ${fmtSecs(elapsed)}`);
+      return;
+    }
+    // other phases: indeterminate with a phase label + elapsed
+    const aliveTxt = alive ? `  · SolidWorks稼働中 ✓` : '';
+    updateLoadbar(null, `${fmtSecs(elapsed)} 経過${aliveTxt}`,
+                  `${extractPhase(lastReal)} …`);
+  }, 1000);
+}
+
+function openAny(p) {
+  if (p.toLowerCase().endsWith('.sldasm')) { extractFlow(p); }
+  else { openServerPath(p); }
+}
+// ---- 📁 server-side file browser (the OS dialog can't give us a path) ---
+const fsmodal = document.getElementById('fsmodal');
+let fsCur = '';
+
+async function fsShow(path) {
+  const r = await (await fetch(
+    '/api/fs?path=' + encodeURIComponent(path ?? ''))).json();
+  if (r.error) { log(`📁 ${r.error}`, 'err'); return; }
+  fsCur = r.path;
+  document.getElementById('fspath').textContent = r.path || '(ドライブ選択)';
+  document.getElementById('fsup').disabled = !r.parent && !r.path;
+  document.getElementById('fsup').dataset.parent = r.parent ?? '';
+  const list = document.getElementById('fslist');
+  list.innerHTML = '';
+  const row = (icon, name, cb, hint) => {
+    const d = document.createElement('div');
+    d.textContent = `${icon} ${name}${hint ? '   ' + hint : ''}`;
+    d.style.cssText = 'padding:3px 6px;border-radius:3px;cursor:pointer;' +
+                      'white-space:nowrap;overflow:hidden;' +
+                      'text-overflow:ellipsis';
+    d.addEventListener('mouseenter', () => d.style.background = '#2a3340');
+    d.addEventListener('mouseleave', () => d.style.background = '');
+    d.addEventListener('click', cb);
+    list.appendChild(d);
+  };
+  for (const dir of r.dirs) {
+    if (dir.package) {
+      row('📦', dir.name, () => { fsmodal.style.display = 'none';
+                                  openServerPath(dir.path); },
+          '(パッケージ — クリックで開く)');
+    } else {
+      row('📁', dir.name, () => fsShow(dir.path));
+    }
+  }
+  for (const f of r.files) {
+    row(f.name.toLowerCase().endsWith('.sldasm') ? '🔧' : '🤖', f.name,
+        () => { fsmodal.style.display = 'none'; openAny(f.path); });
+  }
+  if (!r.dirs.length && !r.files.length) {
+    row('·', '(空、または対象ファイルなし)', () => {});
+  }
+  fsmodal.style.display = 'flex';
+}
+document.getElementById('fsbrowse').addEventListener('click',
+  () => fsShow(fsCur || ''));
+
+// ---- OS-native open dialogs (hidden file inputs, robot-compiler style).
+// The browser hides real paths, so picked files go through the SAME flow
+// as drag&drop: .sldasm -> fingerprint locate, package folder -> blob URLs.
+const openFileInput = document.getElementById('openfileinput');
+const openFolderInput = document.getElementById('openfolderinput');
+document.getElementById('openfile').addEventListener('click', () => {
+  openFileInput.value = ''; openFileInput.click();
+});
+document.getElementById('openfolder').addEventListener('click', () => {
+  openFolderInput.value = ''; openFolderInput.click();
+});
+openFileInput.addEventListener('change', () => {
+  const files = {};
+  [...openFileInput.files].forEach(f => { files['/' + f.name] = f; });
+  if (Object.keys(files).length) { handleDrop(files); }
+});
+openFolderInput.addEventListener('change', () => {
+  const files = {};
+  [...openFolderInput.files].forEach(
+    f => { files['/' + (f.webkitRelativePath || f.name)] = f; });
+  if (Object.keys(files).length) { handleDrop(files); }
+});
+document.getElementById('fsclose').addEventListener('click',
+  () => { fsmodal.style.display = 'none'; });
+document.getElementById('fsup').addEventListener('click', ev =>
+  fsShow(ev.target.dataset.parent || ''));
+
+// ---- drag & drop: package folder OR a .sldasm ---------------------------
+function dataTransferToFiles(dt) {
+  const files = {};
+  function recurse(item) {
+    if (item.isFile) {
+      return new Promise(res =>
+        item.file(f => { files[item.fullPath] = f; res(); }));
+    }
+    const reader = item.createReader();
+    return new Promise(res => {
+      const ps = [];
+      (function next() {
+        reader.readEntries(es => {
+          if (!es.length) { Promise.all(ps).then(res); return; }
+          es.forEach(e => ps.push(recurse(e)));
+          next();
+        });
+      })();
+    });
+  }
+  const items = [...(dt.items || [])]
+    .map(i => i.webkitGetAsEntry?.()).filter(Boolean);
+  if (items.length) {
+    return Promise.all(items.map(recurse)).then(() => files);
+  }
+  [...dt.files].forEach(f => { files['/' + f.name] = f; });
+  return Promise.resolve(files);
+}
+
+const cleanPath = p => p.replace(/\\/g, '/').split('/').reduce((a, el) => {
+  if (el === '..') { a.pop(); } else if (el !== '.' && el !== '') { a.push(el); }
+  return a;
+}, []).join('/');
+
+async function handleDrop(files) {
+  const names = Object.keys(files);
+  log(`dropped ${names.length} files`);
+  const urdfPath = names.find(n => n.toLowerCase().endsWith('.urdf'));
+  if (!urdfPath) {
+    const sld = names.find(n => n.toLowerCase().endsWith('.sldasm'));
+    if (sld) { return locateAndExtract(sld, files[sld]); }
+    log('no .urdf (or .sldasm) in the drop', 'err');
+    return;
+  }
+  const blobs = new Map();
+  for (const n of names) {
+    const f = files[n];
+    if (n.toLowerCase().endsWith('.3dxml')) {
+      log(`converting ${n.split('/').pop()} via /api/convert …`);
+      const resp = await fetch('/api/convert', { method: 'POST', body: f });
+      if (!resp.ok) {
+        log(`convert failed (${resp.status}) for ${n}`, 'err');
+        continue;
+      }
+      blobs.set(cleanPath(n), URL.createObjectURL(await resp.blob()));
+    } else {
+      blobs.set(cleanPath(n), URL.createObjectURL(f));
+    }
+  }
+  log(`3DXML conversions done ✓ (${blobs.size} files ready)`, 'ok');
+  viewer.urlModifierFunc = url => {
+    const cleaned = cleanPath(url);
+    for (const [name, blob] of blobs) {
+      const len = Math.min(name.length, cleaned.length);
+      if (cleaned.slice(-len) === name.slice(-len)) { return blob; }
+    }
+    return url;
+  };
+  const name = urdfPath.split('/').pop().replace(/\.urdf$/i, '');
+  loadRobot({ name: name + ' (dropped)', urdf: cleanPath(urdfPath) },
+            { drop: true });
+}
+
+// full-viewer dim shown while a NEW assembly is being located/extracted, so
+// the old model is hidden (the screen reads as "loading something new") and
+// there's always a visible spinner -- the drop/locate used to look frozen.
+const loadBackdrop = document.getElementById('loadbackdrop');
+function showLoadOverlay(text) {
+  loadBackdrop.style.display = 'block';
+  showLoadbar(text, { indet: true });
+}
+function hideLoadOverlay() {
+  loadBackdrop.style.display = 'none';
+  hideLoadbar();
+}
+
+// dropped .sldasm: fingerprint (basename+size) -> server finds the real path
+async function locateAndExtract(droppedPath, file) {
+  const name = droppedPath.split('/').pop();
+  log(`locating "${name}" (${file.size} B) on disk …`);
+  showLoadOverlay(`「${name}」をディスク上で検索中 …`);
+  let r;
+  try {
+    const resp = await fetch(`/api/locate?name=${encodeURIComponent(name)}` +
+                             `&size=${file.size}`);
+    r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+  } catch (e) {
+    hideLoadOverlay();
+    log(`locate failed: ${e.message ?? e}`, 'err');
+    return;
+  }
+  const hits = r.hits ?? [];
+  const exact = hits.filter(h => h.size_match);
+  if (exact.length === 1) {
+    log(`found on disk: ${exact[0].path}`, 'ok');
+    extractFlow(exact[0].path);            // keeps the overlay; shows progress
+    return;
+  }
+  if (hits.length === 0) {
+    hideLoadOverlay();
+    log(r.building
+        ? 'file index is still building (first run walks the CAD shares, ' +
+          'a few minutes) — try the drop again shortly, or use 🗄'
+        : 'not found on this machine — open it via the 🗄 server browser ' +
+          'instead', 'wrn');
+    return;
+  }
+  // multiple candidates: a prominent centered picker (the dim stays behind it)
+  log(`${hits.length} candidate file(s) — pick one`, 'wrn');
+  hideLoadbar();                           // pause the spinner while we wait
+  showCandidatePicker(name, hits);
+}
+
+function showCandidatePicker(name, hits) {
+  const ov = document.createElement('div');
+  ov.style.cssText = 'position:absolute;inset:0;z-index:9;display:flex;' +
+    'align-items:center;justify-content:center';
+  const card = document.createElement('div');
+  card.style.cssText = 'background:#1c2228;border:1px solid #456;' +
+    'border-radius:8px;padding:16px 18px;max-width:82%;color:#dde;' +
+    'box-shadow:0 8px 30px #000a';
+  card.innerHTML =
+    `<div style="font-size:14px;margin-bottom:3px">「${name}」が複数見つかりました</div>` +
+    `<div style="font-size:11px;color:#8a93a3;margin-bottom:10px">` +
+    `読み込むファイルを選んでください(≡ = ドロップしたものと同じサイズ)</div>`;
+  for (const h of hits) {
+    const b = document.createElement('button');
+    b.style.cssText = 'display:block;width:100%;margin:3px 0;text-align:left;' +
+      'font-size:12px;padding:7px 9px';
+    b.textContent = (h.size_match ? '≡ ' : '≠ ') + h.path +
+                    (h.size_match ? '' : `  (${h.size} B)`);
+    b.title = h.size_match ? '同じサイズ' : '同名・別サイズ(旧版?)';
+    b.addEventListener('click', () => {
+      ov.remove();
+      showLoadbar(`「${name}」を抽出準備中 …`, { indet: true });
+      extractFlow(h.path);
+    });
+    card.appendChild(b);
+  }
+  const cancel = document.createElement('button');
+  cancel.textContent = 'キャンセル';
+  cancel.style.cssText = 'margin-top:10px;font-size:11px';
+  cancel.addEventListener('click', () => { ov.remove(); hideLoadOverlay(); });
+  card.appendChild(cancel);
+  ov.appendChild(card);
+  loadBackdrop.parentElement.appendChild(ov);
+}
+
+let dragDepth = 0;
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('dragenter', e => {
+  e.preventDefault();
+  if (++dragDepth === 1) { document.body.classList.add('dragging'); }
+});
+document.addEventListener('dragleave', () => {
+  if (--dragDepth <= 0) {
+    dragDepth = 0;
+    document.body.classList.remove('dragging');
+  }
+});
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  dragDepth = 0;
+  document.body.classList.remove('dragging');
+  dataTransferToFiles(e.dataTransfer).then(handleDrop)
+    .catch(err => log(`drop failed: ${err.message ?? err}`, 'err'));
+});
+
+// ---- kick off -----------------------------------------------------------
+// live SolidWorks session: only attachable when THIS SERVER was started
+// from the user's own terminal (same login session); otherwise we show why
+(async () => {
+  try {
+    const st = await (await fetch('/api/swstatus')).json();
+    const el = document.getElementById('swstat');
+    const btn = document.getElementById('useactive');
+    if (st.active_assembly) {
+      btn.style.display = '';
+      btn.title = st.active_assembly;
+      el.textContent = (st.dirty
+        ? '⚠️ unsaved changes — press Ctrl+S in SolidWorks first; ' : '') +
+        'open: ' + st.active_assembly.split(/[\\/]/).pop();
+      btn.addEventListener('click', () => {
+        if (st.dirty) {
+          log('the assembly has UNSAVED changes — extraction reads the ' +
+              'saved file; press Ctrl+S in SolidWorks first', 'wrn');
+        }
+        extractFlow(st.active_assembly);
+      });
+    } else if (st.running && !st.attachable) {
+      el.textContent = '🟡 SolidWorks is running but not visible from this ' +
+        'server (start the server from your own terminal to auto-detect ' +
+        'the open assembly)';
+    } else if (!st.running) {
+      el.textContent = '⚪ SolidWorks not running — extraction starts a ' +
+        'hidden instance automatically';
+    }
+  } catch { /* status is best-effort */ }
+})();
+
+// ---- diagnostic dump: full session state, for the 🐞 button and for
+// driving/inspecting the page from tests via window.cad2rc ----------------
+function cad2rcDump() {
+  const v = viewer;
+  const rect = v.getBoundingClientRect();
+  const eaters = [];
+  for (const fx of [0.15, 0.5, 0.85]) {
+    for (const fy of [0.15, 0.5, 0.85]) {
+      const el = document.elementFromPoint(
+        rect.left + rect.width * fx, rect.top + rect.height * fy);
+      eaters.push(el ? (el.id || el.tagName) : null);
+    }
+  }
+  let elementHover = 0;
+  v.robot?.traverse(c => {
+    if (c.__origMaterial !== undefined) { elementHover++; }
+  });
+  return {
+    when: new Date().toISOString(),
+    package: currentInfo?.name ?? null,
+    selected: selectedLink,
+    hidden: [...hiddenLinks],
+    controlsEnabled: v.controls?.enabled,
+    dragManipulating: v.dragControls?.manipulating?.name ?? null,
+    dragHovered: v.dragControls?.hovered?.name ?? null,
+    coverPresent: !!loadCover,
+    savedMats: savedMats.size,
+    elementHoverMeshes: elementHover,
+    links: Object.keys(v.robot?.links ?? {}).length,
+    eventEaters: eaters,           // what HTML sits over the viewport
+    align: alignOn(), tf: tfOn(), axes: axesOn(),
+    pendingChanges: pending.size,
+    logTail: [...document.querySelectorAll('#log div')]
+      .slice(-15).map(d => d.textContent),
+    oplog: oplog.slice(-80),
+  };
+}
+
+window.cad2rc = {
+  dump: cad2rcDump,
+  collision: () => ({ ready: colReady, links: [...collisionLinks] }),
+  extractFlow: p => extractFlow(p),     // for E2E (fetch is mocked there)
+  locateAndExtract: (p, sz) => locateAndExtract(p, { size: sz }),
+  boxSelect: rect => selectLinksInBox(rect ??
+    { l: -1e9, t: -1e9, r: 1e9, b: 1e9 }),   // no rect => everything on screen
+  boxSelected: () => [...boxSelected],
+  bulkType: t => bulkSetType(t),
+  select: n => selectLink(n),
+  reRoot: l => reRoot(l),
+  undo: () => doHistory('undo'),
+  redo: () => doHistory('redo'),
+  report: async () => {
+    const d = cad2rcDump();
+    try {
+      await fetch('/api/client_log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(d) });
+      log('🐞 diagnostic report sent (server: _client_report.json)', 'ok');
+    } catch (e) {
+      log(`🐞 report failed: ${e.message}`, 'err');
+    }
+    return d;
+  },
+};
+document.getElementById('bug').addEventListener('click',
+  () => window.cad2rc.report());
+
+const info = await (await fetch('/api/info')).json();
+if (info.urdf) { loadRobot(info); }
+else {
+  statusEl.textContent = 'pick a package (or drag&drop)';
+  document.getElementById('emptyprompt').style.display = 'block';
+  log('no package open yet — open via 📄/📁/🗄 or drop a folder/.sldasm',
+      'wrn');
+}
+</script>
+</body>
+</html>

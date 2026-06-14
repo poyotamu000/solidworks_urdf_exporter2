@@ -1,0 +1,12 @@
+{
+  "name": "cad2rc-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser E2E for the cad2rc web editor (needs the webserver running on :8090 and system Chrome)",
+  "scripts": {
+    "test": "node run.mjs"
+  },
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}
