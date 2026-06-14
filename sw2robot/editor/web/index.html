@@ -662,14 +662,16 @@ let rootBaseName = null;        // which COMPONENT is base_link right now
 // ---- rename a joint / link (dbl-click in tree/panel, or the ≣ 改名 list) ----
 async function doRename(kind, oldName, newName) {
   newName = (newName || '').trim();
-  if (!newName || newName === oldName) { return false; }
+  if (newName === oldName) { return false; }   // unchanged
+  const reset = newName === '';                // empty -> back to default name
   try {
     const resp = await fetch('/api/rename', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind, old: oldName, new: newName }) });
     const r = await resp.json();
     if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
-    log(`改名 ${kind}: ${oldName} → ${newName}`, 'ok');
+    log(reset ? `${kind} 名をデフォルトに戻しました: ${oldName}`
+              : `改名 ${kind}: ${oldName} → ${newName}`, 'ok');
     refreshHistory();
     // a link rename invalidates the current selection (its name changed); clear
     // it so the reload doesn't reference a link that no longer exists
@@ -677,14 +679,35 @@ async function doRename(kind, oldName, newName) {
     loadRobot(currentInfo, { keepPose: true });   // rebuild with the new name
     return true;
   } catch (e) {
-    log(`改名失敗: ${e.message ?? e}`, 'err');
+    log(`${reset ? 'リセット' : '改名'}失敗: ${e.message ?? e}`, 'err');
     return false;
+  }
+}
+
+// revert ALL joint/link names to their defaults (one rebuild)
+async function resetAllNames() {
+  if (!currentInfo) { return; }
+  if (!confirm('すべての joint 名・link 名をデフォルトに戻しますか？')) { return; }
+  try {
+    const resp = await fetch('/api/reset_names', { method: 'POST' });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log('すべての名前をデフォルトに戻しました', 'ok');
+    refreshHistory();
+    selectLink(null);
+    document.getElementById('renamelist')?.remove();
+    loadRobot(currentInfo, { keepPose: true });
+  } catch (e) {
+    log(`リセット失敗: ${e.message ?? e}`, 'err');
   }
 }
 
 // double-click a name span -> edit it in place -> Enter commits, Esc cancels
 function attachInlineRename(el, kind, getOld) {
   el.classList.add('renamable');
+  if (!el.title) {
+    el.title = 'ダブルクリックで改名（空にして Enter でデフォルト名に戻す）';
+  }
   let editing = false, commit = true, oldVal = '';
   el.addEventListener('dblclick', ev => {
     ev.preventDefault(); ev.stopPropagation();
@@ -706,8 +729,9 @@ function attachInlineRename(el, kind, getOld) {
     editing = false;
     el.contentEditable = 'false';
     const v = el.textContent.trim();
-    el.textContent = oldVal;          // revert; a successful rename reloads
-    if (commit && v) { doRename(kind, oldVal, v); }
+    el.textContent = oldVal;          // revert; a successful (re)name reloads
+    // empty -> reset to default; same value -> no-op
+    if (commit && v !== oldVal) { doRename(kind, oldVal, v); }
   });
 }
 
@@ -721,36 +745,44 @@ function openRenameList() {
   ov.id = 'renamelist';
   const card = document.createElement('div');
   card.className = 'card';
+  const ttl = '空にして Enter でデフォルト名に戻す';
   let html =
     '<div style="font-size:14px;margin-bottom:2px;color:#9fe0a8">' +
     '関節名・リンク名の改名</div>' +
     '<div style="font-size:11px;color:#8a93a3;margin-bottom:8px">' +
-    '値を編集して Enter（英数字と _、先頭は数字不可）</div>' +
+    '値を編集して Enter（英数字と _、先頭は数字不可）・空にするとデフォルトに戻る' +
+    '</div>' +
     '<table class="rntable"><thead><tr><th>joint 名</th><th>parent</th>' +
     '<th>child link 名</th><th>type</th></tr></thead><tbody>';
   for (const j of Object.values(viewer.robot.joints)) {
     const c = linkOf(j, 'child');
     html +=
-      `<tr><td><input class="rn-input" data-kind="joint" ` +
+      `<tr><td><input class="rn-input" data-kind="joint" title="${ttl}" ` +
       `data-old="${j.name}" value="${j.name}"></td>` +
       `<td style="color:#8a93a3">${linkOf(j, 'parent')}</td>` +
-      `<td><input class="rn-input" data-kind="link" ` +
+      `<td><input class="rn-input" data-kind="link" title="${ttl}" ` +
       `data-old="${c}" value="${c}"></td>` +
       `<td style="color:#9dc4ff">${j.jointType}</td></tr>`;
   }
   html += '</tbody></table>';
   card.innerHTML = html;
+  const bar = document.createElement('div');
+  bar.style.cssText = 'display:flex;gap:8px;margin-top:10px';
+  const resetAll = document.createElement('button');
+  resetAll.textContent = '↺ 全デフォルト名に戻す';
+  resetAll.title = 'すべての joint 名・link 名を元の名前に戻す';
+  resetAll.addEventListener('click', resetAllNames);
   const close = document.createElement('button');
   close.textContent = '閉じる';
-  close.style.cssText = 'margin-top:10px';
   close.addEventListener('click', () => ov.remove());
-  card.appendChild(close);
+  bar.append(resetAll, close);
+  card.appendChild(bar);
   ov.appendChild(card);
   card.querySelectorAll('.rn-input').forEach(inp => {
     inp.addEventListener('change', async () => {
       const v = inp.value.trim(), old = inp.dataset.old;
-      if (!v || v === old) { return; }
-      // a successful rename reloads the whole robot, so close the list
+      if (v === old) { return; }       // unchanged; empty -> reset to default
+      // a successful (re)name reloads the whole robot, so close the list
       if (await doRename(inp.dataset.kind, old, v)) { ov.remove(); }
       else { inp.value = old; }
     });

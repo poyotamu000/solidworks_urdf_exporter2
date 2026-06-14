@@ -69,3 +69,21 @@ def test_webserver_yaml_helpers():
     # joints list survives the prepended map
     assert "child:  b" in t3 and "base: foo" in t3
     assert "root_link_name: r" in w._set_root_link_name(txt, "r")
+
+
+def test_webserver_reset_helpers():
+    from sw2robot.editor import webserver as w
+    t = ("link_names:\n  a: foo\n  b: bar\njoint_names:\n  x__y: jj\n"
+         "base: z\njoints:\n  - parent: a\n    child: b\n")
+    # remove one entry -> the other survives, the joints list is intact
+    t1 = w._remove_yaml_map_entry(t, "link_names", "a")
+    assert w._names_inverse(t1, "link_names") == {"bar": "b"}
+    assert "child: b" in t1
+    # removing the last entry drops the whole block
+    t2 = w._remove_yaml_map_entry("link_names:\n  a: foo\nbase: z\n",
+                                  "link_names", "a")
+    assert "link_names" not in t2 and "base: z" in t2
+    # remove a whole block / clear the root override
+    assert "joint_names" not in w._remove_yaml_block(t, "joint_names")
+    assert "link_names" in w._remove_yaml_block(t, "joint_names")
+    assert w._clear_root_link_name("root_link_name: rr\nbase: z\n") == "base: z\n"

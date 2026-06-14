@@ -348,6 +348,31 @@ def _set_root_link_name(txt, value):
     return f"root_link_name: {value}\n" + txt
 
 
+def _clear_root_link_name(txt):
+    """Drop the active ``root_link_name:`` override so the root reverts to the
+    build default (``base_link``).  Leaves any commented template line."""
+    return re.sub(r"(?m)^root_link_name:.*$\n?", "", txt)
+
+
+def _remove_yaml_map_entry(txt, mapkey, key):
+    """Remove ``mapkey: {key: ...}`` from joints.yaml text (reverting that one
+    name to its default); drop the whole block if it becomes empty."""
+    block = re.compile(r"(?m)^" + re.escape(mapkey) + r":\n((?:[ \t]+\S.*\n?)*)")
+    m = block.search(txt)
+    if not m:
+        return txt
+    body = re.sub(r"(?m)^[ \t]+" + re.escape(key) + r":.*\n?", "", m.group(1))
+    if body.strip():
+        return txt[:m.start()] + f"{mapkey}:\n{body}" + txt[m.end():]
+    return txt[:m.start()] + txt[m.end():]
+
+
+def _remove_yaml_block(txt, mapkey):
+    """Remove an entire ``mapkey:`` block (reset every name under it)."""
+    return re.sub(r"(?m)^" + re.escape(mapkey) + r":\n(?:[ \t]+\S.*\n?)*", "",
+                  txt)
+
+
 def _urdf_names(pkg_dir, urdf_rel, tag):
     """Current ``<link>``/``<joint>`` names in the served URDF (the source of
     truth for what's on screen), for the rename collision check + root detect."""
@@ -1358,11 +1383,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 new = (body.get("new") or "").strip()
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
-                if kind not in ("link", "joint") or not old or not new:
+                # an empty `new` means "reset this name to its default"
+                reset = (new == "")
+                if kind not in ("link", "joint") or not old:
                     return self._send_json(
-                        {"error": "kind ('link'|'joint'), old, new required"},
-                        400)
-                if not _VALID_NAME.match(new):
+                        {"error": "kind ('link'|'joint') and old required"}, 400)
+                if not reset and not _VALID_NAME.match(new):
                     return self._send_json(
                         {"error": f"invalid name '{new}' -- letters / digits / "
                                   f"underscore, not starting with a digit"}, 400)
@@ -1376,7 +1402,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 cur = _urdf_names(cls.pkg_dir, cls.urdf_rel, tag)
                 if old not in cur:
                     return self._send_json({"error": f"no {kind} '{old}'"}, 400)
-                if new in cur and new != old:
+                if not reset and new in cur and new != old:
                     return self._send_json(
                         {"error": f"'{new}' already names another {kind}"}, 400)
                 if old == new:
@@ -1384,14 +1410,24 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         {"ok": True, "kind": kind, "old": old, "new": new})
                 with open(yml, encoding="utf-8") as f:
                     txt = f.read()
-                _snapshot(cls.pkg_dir, yml, f"rename {kind} {old}->{new}")
-                if kind == "link" \
-                        and old == _urdf_root_link(cls.pkg_dir, cls.urdf_rel):
-                    txt = _set_root_link_name(txt, new)   # root's display name
+                is_root = (kind == "link"
+                           and old == _urdf_root_link(cls.pkg_dir, cls.urdf_rel))
+                if reset:
+                    _snapshot(cls.pkg_dir, yml, f"reset {kind} name {old}")
+                    if is_root:
+                        txt = _clear_root_link_name(txt)
+                    else:
+                        mapkey = "link_names" if kind == "link" else "joint_names"
+                        key = _names_inverse(txt, mapkey).get(old, old)
+                        txt = _remove_yaml_map_entry(txt, mapkey, key)
                 else:
-                    mapkey = "link_names" if kind == "link" else "joint_names"
-                    key = _names_inverse(txt, mapkey).get(old, old)
-                    txt = _upsert_yaml_map(txt, mapkey, key, new)
+                    _snapshot(cls.pkg_dir, yml, f"rename {kind} {old}->{new}")
+                    if is_root:
+                        txt = _set_root_link_name(txt, new)   # root display name
+                    else:
+                        mapkey = "link_names" if kind == "link" else "joint_names"
+                        key = _names_inverse(txt, mapkey).get(old, old)
+                        txt = _upsert_yaml_map(txt, mapkey, key, new)
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
                 from sw2robot.exporter.export import build
@@ -1400,9 +1436,41 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
-                print(f"[sw2robot.web] rename {kind}: {old} -> {new}")
+                print(f"[sw2robot.web] "
+                      f"{'reset' if reset else 'rename'} {kind}: {old}"
+                      f"{'' if reset else ' -> ' + new}")
                 return self._send_json(
                     {"ok": True, "kind": kind, "old": old, "new": new})
+            if parsed.path == "/api/reset_names":
+                # drop ALL rename overlays -> every link/joint back to default
+                cls = type(self)
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                pkg = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
+                yml = os.path.join(cls.pkg_dir, pkg + ".joints.yaml")
+                if not os.path.exists(yml):
+                    return self._send_json({"error": "joints.yaml not found"},
+                                           400)
+                with open(yml, encoding="utf-8") as f:
+                    txt = f.read()
+                # only the rename overlays -- root_link_name is also a module
+                # config (the base_link input port), so a renamed root is reset
+                # individually, not wiped here
+                if not re.search(r"(?m)^(link_names|joint_names):", txt):
+                    return self._send_json({"ok": True, "reset": 0})
+                _snapshot(cls.pkg_dir, yml, "reset all names")
+                txt = _remove_yaml_block(txt, "link_names")
+                txt = _remove_yaml_block(txt, "joint_names")
+                with open(yml, "w", encoding="utf-8") as f:
+                    f.write(txt)
+                from sw2robot.exporter.export import build
+                try:
+                    build(cls.pkg_dir, config_path=yml)
+                except Exception as e:
+                    return self._send_json(
+                        {"error": f"rebuild failed: {e}"}, 500)
+                print("[sw2robot.web] reset all names to default")
+                return self._send_json({"ok": True})
             if parsed.path in ("/api/undo", "/api/redo"):
                 cls = type(self)
                 if not cls.pkg_dir:
