@@ -11,7 +11,8 @@ query is ~1-2 ms (the raw CAD mesh is ~200 ms); the baseline is computed with th
 same hulls, so hull-induced static overlaps cancel out.
 
 This module needs skrobot (FK) + trimesh + python-fcl (the ``[ui]`` extra).
-It is UI-independent: ``cad2rc.ui`` calls it, and so can a headless script.
+It is UI-independent: ``sw2robot.cad2rc.ui`` calls it, and so can a headless
+script.
 """
 
 from __future__ import annotations

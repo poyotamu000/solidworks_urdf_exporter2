@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-import cad2rc.core as c
+import sw2robot.cad2rc.core as c
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CACHE = REPO_ROOT / "output" / "feetech_hand"
@@ -25,8 +25,8 @@ CACHE = REPO_ROOT / "output" / "feetech_hand"
 
 def _rc_config_available() -> bool:
     try:
-        from cad2rc._vendor.rc_config.export import export_all_configs  # noqa: F401
-        from cad2rc._vendor.rc_config.urdf_parser import parse_urdf_content  # noqa: F401
+        from sw2robot.cad2rc._vendor.rc_config.export import export_all_configs  # noqa: F401
+        from sw2robot.cad2rc._vendor.rc_config.urdf_parser import parse_urdf_content  # noqa: F401
     except Exception:
         return False
     return True

@@ -1,12 +1,12 @@
-"""Serve sw2urdf module packages to the urdf-loaders web viewer.
+"""Serve sw2robot.sw2urdf module packages to the urdf-loaders web viewer.
 
-    uv run python -m cad2rc.webserver [package_dir] [--root output] [--port 8090]
+    uv run python -m sw2robot.cad2rc.webserver [package_dir] [--root output] [--port 8090]
 
-Prototype of the cad2rc web View: a static gkjohnson/urdf-loaders page
-(``cad2rc/web/``) + this tiny stdlib server.
+Prototype of the sw2robot.cad2rc web View: a static gkjohnson/urdf-loaders page
+(``sw2robot/cad2rc/web/``) + this tiny stdlib server.
 
 Routes
-    /                     the viewer page (cad2rc/web/index.html)
+    /                     the viewer page (sw2robot/cad2rc/web/index.html)
     /api/info             current module: {"name", "urdf"}
     /api/list             packages under --root: [{"name", "path"}, ...]
     /api/open?path=P      switch the served package (package dir, a dir with
@@ -20,7 +20,7 @@ Routes
 Single-user LOCAL tool by design: /api/open accepts arbitrary local paths on
 purpose (that's the file picker), so never expose this server beyond
 localhost.  No third-party server deps; mesh conversion reuses trimesh which
-sw2urdf already requires.
+sw2robot.sw2urdf already requires.
 """
 import argparse
 import io
@@ -36,6 +36,8 @@ import time
 import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+PACKAGE_ROOT = os.path.dirname(HERE)
+PROJECT_ROOT = os.path.dirname(PACKAGE_ROOT)
 WEB_DIR = os.path.join(HERE, "web")
 
 _CTYPES = {
@@ -139,7 +141,7 @@ _DEFAULT_CAD_ROOTS = [
 ]
 _SKIP_DIRS = {"backup", "backups", "old", "_old", "bak", "trash", ".git",
               "sandbox"}
-_INDEX_FILE = os.path.join(os.path.dirname(HERE), "_sldasm_index.json")
+_INDEX_FILE = os.path.join(PROJECT_ROOT, "_sldasm_index.json")
 _INDEX_MAX_AGE_S = 24 * 3600
 _index = {"byname": {}, "building": False, "count": 0}
 
@@ -225,14 +227,14 @@ def _locate_sldasm(name, size=None):
             consider(p)
     except Exception:
         pass
-    root = os.path.dirname(HERE)
+    root = PROJECT_ROOT
     out_dir = os.path.join(root, "output")
     if os.path.isdir(out_dir):                  # extracted packages know
         for d in os.listdir(out_dir):           # their own source path
             g = os.path.join(out_dir, d, "graph.json")
             if os.path.exists(g):
                 try:
-                    from sw2urdf.state import GraphState
+                    from sw2robot.sw2urdf.state import GraphState
                     consider(GraphState.load(g).source_assembly or "")
                 except Exception:
                     pass
@@ -353,7 +355,7 @@ _sw = {"sess": None}
 def _warm_sw(progress):
     sess = _sw["sess"]
     if sess is not None:
-        from sw2urdf.swcom import safe_prop
+        from sw2robot.sw2urdf.swcom import safe_prop
         progress("checking the warm SolidWorks session (an idle session "
                  "can take a moment to respond) ...")
         t0 = time.time()
@@ -384,7 +386,7 @@ def _keepalive_loop():
     full relaunch on the next extraction (~20 s) and leaves the old
     process behind as a zombie.  Declare death only after 3 consecutive
     failures, and then try to shut the process down for real."""
-    from sw2urdf.swcom import safe_prop
+    from sw2robot.sw2urdf.swcom import safe_prop
     fails = 0
     while True:
         time.sleep(60)
@@ -472,7 +474,7 @@ def _run_extract(sldasm):
                  f"(the original is never modified)")
         sw = _warm_sw(progress)
         if sw is None:
-            from sw2urdf.swcom import SolidWorks
+            from sw2robot.sw2urdf.swcom import SolidWorks
             progress("starting SolidWorks (this can take a minute; later "
                      "extractions reuse this session) ...")
             sw = SolidWorks(visible=False)
@@ -566,10 +568,10 @@ def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg):
     _t0 = time.time()
     try:
         p = subprocess.run(
-            [sys.executable, "-m", "cad2rc._autolimits_cli",
+            [sys.executable, "-m", "sw2robot.cad2rc._autolimits_cli",
              urdf, str(step_deg), str(max_deg)],
             capture_output=True, text=True, timeout=900,
-            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            cwd=PROJECT_ROOT)
     except subprocess.TimeoutExpired:
         return None, "sweep timed out"
     if p.returncode != 0:
@@ -696,7 +698,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 cls = type(self)
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
-                from sw2urdf.state import GraphState
+                from sw2robot.sw2urdf.state import GraphState
                 gs = GraphState.load(
                     os.path.join(cls.pkg_dir, "graph.json"))
                 name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
@@ -918,7 +920,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         and query.get("glb") == ["1"]:
                     return self._send_file(_convert_3dxml_to_glb(full))
                 return self._send_file(full)
-            # other static assets from cad2rc/web/
+            # other static assets from sw2robot/cad2rc/web/
             full = self._resolve(WEB_DIR, path)
             if full and os.path.isfile(full):
                 return self._send_file(full)
@@ -987,7 +989,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     _snapshot(cls.pkg_dir, yml, f"auto limits x{len(applied)}")
                     with open(yml, "w", encoding="utf-8") as f:
                         f.write(txt)
-                    from sw2urdf.export import build
+                    from sw2robot.sw2urdf.export import build
                     try:
                         build(cls.pkg_dir, config_path=yml)
                     except Exception as e:
@@ -1034,7 +1036,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                               f"joint type x{len(applied)}")
                     with open(yml, "w", encoding="utf-8") as f:
                         f.write(txt)
-                    from sw2urdf.export import build
+                    from sw2robot.sw2urdf.export import build
                     try:
                         build(cls.pkg_dir, config_path=yml)
                     except Exception as e:
@@ -1104,7 +1106,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 _snapshot(cls.pkg_dir, yml, f"re-root to {new_root}")
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
-                from sw2urdf.export import build
+                from sw2robot.sw2urdf.export import build
                 try:
                     build(cls.pkg_dir, config_path=yml)
                 except Exception as e:
@@ -1129,7 +1131,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         {"error": "joints.yaml not found"}, 400)
                 import re
                 import numpy as np
-                from sw2urdf.geometry import (matrix_from_rpy,
+                from sw2robot.sw2urdf.geometry import (matrix_from_rpy,
                                               matrix_to_xyz_rpy)
                 with open(yml, encoding="utf-8") as f:
                     txt = f.read()
@@ -1190,7 +1192,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 _snapshot(cls.pkg_dir, yml, "root frame change")
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
-                from sw2urdf.export import build
+                from sw2robot.sw2urdf.export import build
                 try:
                     build(cls.pkg_dir, config_path=yml)
                 except Exception as e:
@@ -1203,8 +1205,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if parsed.path == "/api/client_log":
                 n = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(n) or b"{}")
-                out = os.path.join(os.path.dirname(HERE),
-                                   "_client_report.json")
+                out = os.path.join(PROJECT_ROOT, "_client_report.json")
                 with open(out, "w", encoding="utf-8") as f:
                     json.dump(body, f, ensure_ascii=False, indent=1)
                 print(f"[cad2rc.web] CLIENT REPORT -> {out}")
@@ -1248,7 +1249,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     else (new + txt)
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
-                from sw2urdf.export import build
+                from sw2robot.sw2urdf.export import build
                 try:
                     build(cls.pkg_dir, config_path=yml)
                 except Exception as e:
@@ -1290,7 +1291,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f"densities:\n{block}" + txt
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
-                from sw2urdf.export import build
+                from sw2robot.sw2urdf.export import build
                 try:
                     build(cls.pkg_dir, config_path=yml)
                 except Exception as e:
@@ -1318,7 +1319,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     pass
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(snap)
-                from sw2urdf.export import build
+                from sw2robot.sw2urdf.export import build
                 try:
                     build(cls.pkg_dir, config_path=yml)
                 except Exception as e:
