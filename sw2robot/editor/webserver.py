@@ -1501,21 +1501,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._send_json(
                     {"done": src, "label": label,
                      "undo": len(h["undo"]), "redo": len(h["redo"])})
-            if parsed.path == "/api/register":
-                cls = type(self)
-                n = int(self.headers.get("Content-Length", 0))
-                body = json.loads(self.rfile.read(n) or b"{}")
-                reg = body.get("dir")
-                if not cls.pkg_dir or not reg:
-                    return self._send_json(
-                        {"error": "no package open / no registry dir"}, 400)
-                from . import core
-                state = core.load_module(
-                    os.path.join(cls.pkg_dir, cls.urdf_rel),
-                    package_dir=cls.pkg_dir)
-                dst = core.register_module(state, reg)
-                print(f"[sw2robot.web] registered -> {dst}")
-                return self._send_json({"registered": str(dst)})
             if parsed.path == "/api/convert":
                 n = int(self.headers.get("Content-Length", 0))
                 if not (0 < n < 200 * 1024 * 1024):

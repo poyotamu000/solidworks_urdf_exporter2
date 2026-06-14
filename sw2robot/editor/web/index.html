@@ -387,12 +387,6 @@ URLs, visual = colour COLLADA .dae, collision = .stl (loads in RViz/Gazebo)">
           <button title="uniform .glb meshes (colour kept) for three.js /
 skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
       </div>
-      <div style="display:flex;gap:4px;margin-top:5px;align-items:center">
-        <input type="text" id="regdir" placeholder="robot-compiler registry dir"
-               style="flex:1;background:#15171a;color:#ddd;
-                      border:1px solid #444;border-radius:3px;padding:3px">
-        <button id="regbtn">Register</button>
-      </div>
     </div>
     <div id="hint">left-drag: 視点回転 · right-drag: pan · wheel: zoom ·
       クリックでリンク選択 · 関節はパネルのスライダーで操作
@@ -2840,30 +2834,6 @@ window.addEventListener('keydown', ev => {
 });
 
 // ---- export box ----------------------------------------------------------
-document.getElementById('regbtn').addEventListener('click', async () => {
-  const dir = document.getElementById('regdir').value.trim();
-  if (!dir) {
-    log('enter the robot-compiler registry dir (its --urdf-dir)', 'wrn');
-    return;
-  }
-  localStorage.setItem('sw2robot_regdir', dir);
-  log(`registering module to ${dir} …`);
-  try {
-    const resp = await fetch('/api/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ dir }) });
-    const r = await resp.json();
-    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
-    log(`registered ✓ -> ${r.registered} (robot-compiler will pick it up ` +
-        `on its next scan)`, 'ok');
-  } catch (e) {
-    log(`register failed: ${e.message ?? e}`, 'err');
-  }
-});
-document.getElementById('regdir').value =
-  localStorage.getItem('sw2robot_regdir') ?? '';
-
 async function openServerPath(p) {
   log(`/api/open ${p}`);
   const resp = await fetch('/api/open?path=' + encodeURIComponent(p));
