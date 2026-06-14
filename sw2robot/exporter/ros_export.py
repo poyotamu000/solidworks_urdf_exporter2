@@ -8,8 +8,10 @@ and ROS tooling expects ``package://<pkg>/...`` URLs.
 This module produces a SEPARATE file set -- it never touches the working package --
 named ``<robot_name>_description`` with:
 
-* COLLADA ``.dae`` meshes (metres, colours preserved -- unlike STL), and
-* ``package://<robot_name>_description/meshes/<link>.dae`` references in the URDF,
+* ``<visual>`` meshes as COLLADA ``.dae`` (metres, colours preserved -- unlike STL),
+* ``<collision>`` meshes as plain ``.stl`` (lighter, no colour -- the usual ROS
+  collision convention),
+* ``package://<robot_name>_description/meshes/<link>.{dae,stl}`` references, and
 * a ``package.xml`` / ``CMakeLists.txt`` whose package name is that same
   ``<robot_name>_description``.
 
@@ -20,19 +22,20 @@ zip it in memory and the CLI can write it to disk.
 from __future__ import annotations
 
 import os
-import re
+import xml.etree.ElementTree as ET
 
 from .urdf_writer import CMAKELISTS, PACKAGE_XML
 
-# mesh references in the URDF: <mesh filename="..."/> (quotes/spacing preserved)
-_MESH_RE = re.compile(r'(<mesh\b[^>]*\bfilename\s*=\s*)(["\'])([^"\']+)(\2)')
 # extensions we convert; anything else (already .dae/.stl, abs URLs) is left alone
 _CONVERTIBLE = (".3dxml", ".glb")
+# mesh format per URDF context: detailed colour mesh for display, plain STL for
+# collision checking
+_CTX_FMT = (("visual", "dae"), ("collision", "stl"))
 
 
-def _mesh_to_dae_bytes(src):
-    """Load a ``.3dxml`` (mm) or ``.glb`` (m) mesh and return COLLADA (.dae) bytes
-    in metres, flattening any scene to material-coloured geometry."""
+def _load_mesh_metres(src):
+    """Load a ``.3dxml`` (mm) or ``.glb`` (m) mesh, flatten any scene to a single
+    geometry, and return it pinned to metres."""
     import trimesh
 
     loaded = trimesh.load(src)
@@ -52,11 +55,24 @@ def _mesh_to_dae_bytes(src):
     # the 'mm' units tag survives apply_scale; leaving it makes unit-aware
     # loaders shrink the mesh 1000x, so pin it to metres
     mesh.units = "meter"
-    meshes = _collada_meshes(mesh)
+    return mesh
+
+
+def _mesh_to_dae_bytes(src):
+    """COLLADA (.dae) bytes in metres, with colours baked into materials."""
+    meshes = _collada_meshes(_load_mesh_metres(src))
     if len(meshes) == 1:
         return meshes[0].export(file_type="dae")
     from trimesh.exchange.dae import export_collada
     return export_collada(meshes)
+
+
+def _mesh_to_stl_bytes(src):
+    """STL bytes in metres (colour is dropped -- collision geometry needs none)."""
+    return _load_mesh_metres(src).export(file_type="stl")
+
+
+_CONVERT = {"dae": _mesh_to_dae_bytes, "stl": _mesh_to_stl_bytes}
 
 
 def _collada_meshes(mesh):
@@ -95,9 +111,10 @@ def _collada_meshes(mesh):
 
 
 def _resolve_mesh(pkg_dir, ref):
-    """Absolute path of a URDF mesh ref's source file, or None if it is not one
-    of our convertible meshes / cannot be found."""
-    if "://" in ref:
+    """``(base, source_path, ext)`` for a URDF mesh ref, or ``(None, ...)`` when it
+    is not one of our convertible meshes; ``source_path`` is None if the file is
+    missing."""
+    if not ref or "://" in ref:
         return None, None, None
     base, ext = os.path.splitext(os.path.basename(ref))
     if ext.lower() not in _CONVERTIBLE:
@@ -119,44 +136,52 @@ def _resolve_mesh(pkg_dir, ref):
 
 def build_ros_description(pkg_dir, robot_name, email="auto@example.com"):
     """``pkg_dir`` (a built package) -> ``[(arcname, bytes), ...]`` for a portable
-    ``<robot_name>_description`` ROS package (package:// + colour .dae).
+    ``<robot_name>_description`` ROS package: ``<visual>`` -> colour ``.dae``,
+    ``<collision>`` -> plain ``.stl``, all behind ``package://`` URLs.
 
     Reads the on-disk ``urdf/<robot_name>.urdf`` (which already carries the
-    editor's applied edits), so the export reflects whatever the working package
-    currently is.  Meshes that fail to convert abort the export before any
-    package/zip entries are emitted, avoiding a half-rewritten ROS package."""
+    editor's applied edits).  A missing/unconvertible mesh aborts the export
+    before any entries are emitted, so a half-rewritten ROS package never ships."""
     pkg = f"{robot_name}_description"
     urdf_path = os.path.join(pkg_dir, "urdf", robot_name + ".urdf")
-    with open(urdf_path, encoding="utf-8") as f:
-        urdf = f.read()
+    root = ET.parse(urdf_path).getroot()
 
     files = []
-    done = {}          # base -> "<pkg>/meshes/<base>.dae"  (instances share a mesh)
+    done = {}          # (base, fmt) -> arcname  (instances + visual/collision share)
     errors = []
 
-    def _repl(match):
-        ref = match.group(3)
-        base, src, _ext = _resolve_mesh(pkg_dir, ref)
-        if base is None:                       # not a convertible mesh ref
-            return match.group(0)
-        if base not in done:
-            if src is None:
-                errors.append(f"no source mesh for '{base}'")
-                return match.group(0)
-            try:
-                data = _mesh_to_dae_bytes(src)
-            except Exception as e:             # noqa: BLE001 -- report, don't die
-                errors.append(f"{base}: dae convert failed ({e!r})")
-                return match.group(0)
-            arc = f"{pkg}/meshes/{base}.dae"
-            files.append((arc, data))
-            done[base] = arc
-        return (f'{match.group(1)}{match.group(2)}'
-                f'package://{pkg}/meshes/{base}.dae{match.group(2)}')
+    def _emit(base, src, fmt):
+        if (base, fmt) in done:
+            return
+        try:
+            data = _CONVERT[fmt](src)
+        except Exception as e:             # noqa: BLE001 -- report, don't die
+            errors.append(f"{base}: {fmt} convert failed ({e!r})")
+            return
+        arc = f"{pkg}/meshes/{base}.{fmt}"
+        files.append((arc, data))
+        done[(base, fmt)] = arc
 
-    new_urdf = _MESH_RE.sub(_repl, urdf)
+    for link in root.findall("link"):
+        for ctx, fmt in _CTX_FMT:
+            for block in link.findall(ctx):
+                for mesh in block.iter("mesh"):
+                    base, src, _ext = _resolve_mesh(pkg_dir, mesh.get("filename"))
+                    if base is None:
+                        continue           # not a convertible ref -- leave as-is
+                    if src is None:
+                        errors.append(f"no source mesh for '{base}'")
+                        continue
+                    _emit(base, src, fmt)
+                    mesh.set("filename",
+                             f"package://{pkg}/meshes/{base}.{fmt}")
+
     if errors:
         raise RuntimeError("ROS description export failed: " + "; ".join(errors))
+
+    new_urdf = '<?xml version="1.0"?>\n' + ET.tostring(root, encoding="unicode")
+    if not new_urdf.endswith("\n"):
+        new_urdf += "\n"
     files.append((f"{pkg}/urdf/{robot_name}.urdf", new_urdf.encode("utf-8")))
     files.append((f"{pkg}/package.xml",
                   PACKAGE_XML.format(name=pkg, email=email).encode("utf-8")))

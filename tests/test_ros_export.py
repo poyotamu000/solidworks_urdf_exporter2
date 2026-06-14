@@ -69,12 +69,16 @@ def test_build_ros_description_layout(tmp_path):
     assert "fing_description/package.xml" in arcs
     assert "fing_description/CMakeLists.txt" in arcs
     assert "fing_description/urdf/fing.urdf" in arcs
-    assert "fing_description/meshes/part.dae" in arcs
+    assert "fing_description/meshes/part.dae" in arcs       # visual
+    assert "fing_description/meshes/part.stl" in arcs       # collision
 
     urdf = files["fing_description/urdf/fing.urdf"].decode()
-    refs = re.findall(r'filename\s*=\s*["\']([^"\']+)["\']', urdf)
-    assert refs and all(
-        r == "package://fing_description/meshes/part.dae" for r in refs)
+    import xml.etree.ElementTree as ET
+    link = ET.fromstring(urdf).find("link")
+    vis = link.find("visual").find(".//mesh").get("filename")
+    col = link.find("collision").find(".//mesh").get("filename")
+    assert vis == "package://fing_description/meshes/part.dae"
+    assert col == "package://fing_description/meshes/part.stl"
     assert ".3dxml" not in urdf and "../meshes" not in urdf
 
     pxml = files["fing_description/package.xml"].decode()
@@ -82,10 +86,10 @@ def test_build_ros_description_layout(tmp_path):
     cmake = files["fing_description/CMakeLists.txt"].decode()
     assert "project(fing_description)" in cmake
 
-    # every emitted .dae is a real, loadable mesh
+    # every emitted mesh is real + loadable (colour .dae visual, .stl collision)
     for arc, data in files.items():
-        if arc.endswith(".dae"):
-            m = trimesh.load(io.BytesIO(data), file_type="dae")
+        if arc.endswith((".dae", ".stl")):
+            m = trimesh.load(io.BytesIO(data), file_type=arc.rsplit(".", 1)[1])
             m = m.dump(concatenate=True) if isinstance(m, trimesh.Scene) else m
             assert len(m.faces) > 0
 
