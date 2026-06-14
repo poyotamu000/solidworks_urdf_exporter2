@@ -139,8 +139,16 @@ def _port_xml(port, rn=lambda n: n, link_name=None, joint_name=None):
     ])
 
 
-def write_urdf(model, urdf_path, ros_pkg=None, density=_inertia.DEFAULT_DENSITY):
+def write_urdf(model, urdf_path, ros_pkg=None, density=_inertia.DEFAULT_DENSITY,
+               link_overrides=None, joint_overrides=None):
+    """Write the URDF.  ``link_overrides`` / ``joint_overrides`` map a COMPONENT
+    link name / joint name to a user-chosen display name (from the editor's
+    rename feature); they are applied before safe_name + collision suffixing, so
+    every reference (parent/child/mimic) follows automatically.  The root link
+    keeps using ``root_link_name``."""
     os.makedirs(os.path.dirname(urdf_path), exist_ok=True)
+    link_overrides = link_overrides or {}
+    joint_overrides = joint_overrides or {}
     # The internal model keeps each component's own link name; the emitted URDF
     # renames the root to the module convention (base_link = input port) so the
     # module loads cleanly in robot-compiler.  Done here (not in the model) so
@@ -162,14 +170,16 @@ def write_urdf(model, urdf_path, ros_pkg=None, density=_inertia.DEFAULT_DENSITY)
     ports = list(getattr(model, "ports", []))
     comp_name_items = [
         (("comp", c.link_name),
-         root_name if c.link_name == model.base_link else c.link_name)
+         root_name if c.link_name == model.base_link
+         else link_overrides.get(c.link_name) or c.link_name)
         for c in model.components]
     comp_name_items.sort(key=lambda item: item[0][1] != model.base_link)
     link_names = _unique_safe(
         comp_name_items
         + [(("port", i), p.name) for i, p in enumerate(ports)])
     joint_names = _unique_safe(
-        [(("joint", j.name), j.name) for j in model.joints]
+        [(("joint", j.name), joint_overrides.get(j.name, j.name))
+         for j in model.joints]
         + [(("port", i), "dummy_joint" + (
             p.name[len("dummy_link"):] if p.name.startswith("dummy_link")
             else "_" + p.name)) for i, p in enumerate(ports)])

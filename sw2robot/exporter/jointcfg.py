@@ -23,6 +23,15 @@ Format::
         # axis_point: [x, y, z]        # optional: override world axis point
         # axis_dir:   [x, y, z]        # optional: override world axis direction
 
+Rename links / joints in the emitted URDF (the web editor writes these when you
+rename in the viewer).  Keyed by the COMPONENT link name / the ``parent__child``
+joint name; the value is the display name (sanitised on write)::
+
+    link_names:
+      fingertip_back_1: distal          # <link name="distal"> + refs follow
+    joint_names:
+      fingertip_front_2__fingertip_back_1: distal_joint
+
 Module interface (robot-compiler / NejiNeji).  The emitted URDF renames the root
 link to ``base_link`` (= input port / ``from_coords``); override or disable::
 

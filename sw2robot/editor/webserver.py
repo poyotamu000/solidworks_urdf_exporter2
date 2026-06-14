@@ -27,6 +27,7 @@ import io
 import json
 import os
 import posixpath
+import re
 import http.server
 import socket
 import socketserver
@@ -290,6 +291,87 @@ def _export_zip(pkg_dir, robot_name, mesh_fmt="dae"):
         for arc, data in build_ros_description(pkg_dir, robot_name, **kwargs):
             z.writestr(arc, data)
     return buf.getvalue()
+
+
+# --- joint/link rename overlay (joints.yaml link_names / joint_names) --------
+_VALID_NAME = re.compile(r"^[A-Za-z_][0-9A-Za-z_]*$")
+
+
+def _names_inverse(yml_txt, mapkey):
+    """``{display name -> stable key}`` for a joints.yaml rename map
+    (``link_names`` / ``joint_names``); empty when the map is absent.  Used to
+    reverse-map an edit request's display name back to the component key the
+    rest of joints.yaml is keyed by."""
+    import yaml as _yaml
+    try:
+        cfg = _yaml.safe_load(yml_txt) or {}
+    except Exception:
+        return {}
+    m = cfg.get(mapkey) or {}
+    return {disp: key for key, disp in m.items() if disp}
+
+
+def _link_names_inverse(yml_txt):
+    inv = _names_inverse(yml_txt, "link_names")
+    import yaml as _yaml
+    try:
+        cfg = _yaml.safe_load(yml_txt) or {}
+    except Exception:
+        return inv
+    base = cfg.get("base")
+    root_name = cfg.get("root_link_name", "base_link")
+    if base and root_name:
+        inv[root_name] = base
+    return inv
+
+
+def _upsert_yaml_map(txt, mapkey, key, value):
+    """Set ``mapkey: {key: value}`` (block style) in joints.yaml text, replacing
+    any existing entry for ``key`` and creating the map if needed."""
+    line = f"  {key}: {value}"
+    block = re.compile(r"(?m)^" + re.escape(mapkey) + r":\n((?:[ \t]+\S.*\n?)*)")
+    m = block.search(txt)
+    if m:
+        body = re.sub(r"(?m)^[ \t]+" + re.escape(key) + r":.*\n?", "",
+                      m.group(1))
+        if body and not body.endswith("\n"):
+            body += "\n"
+        return txt[:m.start()] + f"{mapkey}:\n{body}{line}\n" + txt[m.end():]
+    return f"{mapkey}:\n{line}\n" + txt
+
+
+def _set_root_link_name(txt, value):
+    """Set the top-level ``root_link_name:`` (the root link's display name)."""
+    if re.search(r"(?m)^#?\s*root_link_name:", txt):
+        return re.sub(r"(?m)^#?\s*root_link_name:.*$",
+                      f"root_link_name: {value}", txt, count=1)
+    return f"root_link_name: {value}\n" + txt
+
+
+def _urdf_names(pkg_dir, urdf_rel, tag):
+    """Current ``<link>``/``<joint>`` names in the served URDF (the source of
+    truth for what's on screen), for the rename collision check + root detect."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(os.path.join(pkg_dir, urdf_rel)).getroot()
+    except Exception:
+        return []
+    return [e.get("name") for e in root.findall(tag) if e.get("name")]
+
+
+def _urdf_root_link(pkg_dir, urdf_rel):
+    """The root link name (the link that is never a joint's child)."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.parse(os.path.join(pkg_dir, urdf_rel)).getroot()
+    except Exception:
+        return None
+    children = {j.find("child").get("link") for j in root.findall("joint")
+                if j.find("child") is not None}
+    for ln in root.findall("link"):
+        if ln.get("name") not in children:
+            return ln.get("name")
+    return None
 
 
 def _list_packages(root):
@@ -673,7 +755,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     if os.path.exists(yml) else ""
                 rpy, xyz, z0 = _read_root_pose(txt)
                 xyz = [xyz[0], xyz[1], xyz[2] + z0]
-                import re
                 m = re.search(r"(?m)^base:\s*(\S+)", txt)
                 return self._send_json({"rpy": rpy, "xyz": xyz,
                                         "base": m.group(1) if m else None})
@@ -688,7 +769,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
                 overrides = {}
                 if os.path.exists(yml):
-                    import re
                     txt = open(yml, encoding="utf-8").read()
                     m = re.search(r"(?m)^densities:\n((?:[ \t]+\S+:.*\n)*)",
                                   txt)
@@ -920,7 +1000,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                    for p in ctx["sc"].new_pairs())
                 _t2 = time.time()
                 links = sorted({l for p in pairs for l in p})
-                if os.environ.get("CAD2RC_TIME_COLLISION"):
+                if os.environ.get("SW2ROBOT_TIME_COLLISION"):
                     print(f"[sw2robot.web] /api/collision read={_t1-_t0:.3f}s "
                           f"compute={_t2-_t1:.3f}s", flush=True)
                 return self._send_json({"ready": True, "pairs": pairs,
@@ -939,9 +1019,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         {"error": "joints.yaml not found"}, 400)
                 with open(yml, encoding="utf-8") as f:
                     txt = f.read()
+                linv = _link_names_inverse(txt)   # display -> component
                 applied, missed = [], []
                 for lm in limits:
-                    c = lm.get("child")
+                    c = linv.get(lm.get("child"), lm.get("child"))
                     if not c:
                         continue
                     txt, k = _set_joint_limit(
@@ -976,12 +1057,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         {"error": f"{name}.joints.yaml not found -- this "
                                   f"package predates config templates; "
                                   f"re-extract it once"}, 400)
-                import re
                 with open(yml, encoding="utf-8") as f:
                     txt = f.read()
+                linv = _link_names_inverse(txt)   # display -> component
                 applied, missed = [], []
                 for ch in changes:
                     c, t = ch.get("child"), ch.get("type")
+                    c = linv.get(c, c)
                     if t not in ("fixed", "revolute", "continuous",
                                  "prismatic") or not c:
                         missed.append(ch)
@@ -1023,9 +1105,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if not os.path.exists(yml):
                     return self._send_json(
                         {"error": "joints.yaml not found"}, 400)
-                import re
                 with open(yml, encoding="utf-8") as f:
                     txt = f.read()
+                # a renamed link comes back as its display name -> component
+                new_root = _link_names_inverse(txt).get(new_root, new_root)
                 # a directed joints list must stay a tree rooted at `base:`
                 # or _config_parent_map drops edges.  FIRST compute the
                 # path new_root -> old_root from the original text, THEN
@@ -1093,7 +1176,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if not os.path.exists(yml):
                     return self._send_json(
                         {"error": "joints.yaml not found"}, 400)
-                import re
                 import numpy as np
                 from sw2robot.exporter.geometry import (matrix_from_rpy,
                                               matrix_to_xyz_rpy)
@@ -1193,9 +1275,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if not os.path.exists(yml):
                     return self._send_json(
                         {"error": "joints.yaml not found"}, 400)
-                import re
                 with open(yml, encoding="utf-8") as f:
                     txt = f.read()
+                if name:                       # a renamed link -> component
+                    name = _link_names_inverse(txt).get(name, name)
                 _snapshot(cls.pkg_dir, yml,
                           "restore excluded" if body.get("clear")
                           else f"exclude {str(name)[:30]}")
@@ -1236,9 +1319,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if not os.path.exists(yml):
                     return self._send_json(
                         {"error": "joints.yaml not found"}, 400)
-                import re
                 with open(yml, encoding="utf-8") as f:
                     txt = f.read()
+                link = _link_names_inverse(txt).get(link, link)
                 _snapshot(cls.pkg_dir, yml, f"material of {link[:30]}")
                 m = re.search(r"(?m)^densities:\n((?:[ \t]+\S+:.*\n)*)", txt)
                 block = m.group(1) if m else ""
@@ -1263,6 +1346,63 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         {"error": f"rebuild failed: {e}"}, 500)
                 print(f"[sw2robot.web] set_material: {link} -> {density}")
                 return self._send_json({"link": link, "density": density})
+            if parsed.path == "/api/rename":
+                # rename a link or joint to a user-chosen name.  Stored as a
+                # component->display overlay in joints.yaml (link_names /
+                # joint_names; the root uses root_link_name), applied at build.
+                cls = type(self)
+                n = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(n) or b"{}")
+                kind = body.get("kind")
+                old = (body.get("old") or "").strip()
+                new = (body.get("new") or "").strip()
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                if kind not in ("link", "joint") or not old or not new:
+                    return self._send_json(
+                        {"error": "kind ('link'|'joint'), old, new required"},
+                        400)
+                if not _VALID_NAME.match(new):
+                    return self._send_json(
+                        {"error": f"invalid name '{new}' -- letters / digits / "
+                                  f"underscore, not starting with a digit"}, 400)
+                pkg = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
+                yml = os.path.join(cls.pkg_dir, pkg + ".joints.yaml")
+                if not os.path.exists(yml):
+                    return self._send_json(
+                        {"error": "joints.yaml not found -- re-extract once"},
+                        400)
+                tag = "link" if kind == "link" else "joint"
+                cur = _urdf_names(cls.pkg_dir, cls.urdf_rel, tag)
+                if old not in cur:
+                    return self._send_json({"error": f"no {kind} '{old}'"}, 400)
+                if new in cur and new != old:
+                    return self._send_json(
+                        {"error": f"'{new}' already names another {kind}"}, 400)
+                if old == new:
+                    return self._send_json(
+                        {"ok": True, "kind": kind, "old": old, "new": new})
+                with open(yml, encoding="utf-8") as f:
+                    txt = f.read()
+                _snapshot(cls.pkg_dir, yml, f"rename {kind} {old}->{new}")
+                if kind == "link" \
+                        and old == _urdf_root_link(cls.pkg_dir, cls.urdf_rel):
+                    txt = _set_root_link_name(txt, new)   # root's display name
+                else:
+                    mapkey = "link_names" if kind == "link" else "joint_names"
+                    key = _names_inverse(txt, mapkey).get(old, old)
+                    txt = _upsert_yaml_map(txt, mapkey, key, new)
+                with open(yml, "w", encoding="utf-8") as f:
+                    f.write(txt)
+                from sw2robot.exporter.export import build
+                try:
+                    build(cls.pkg_dir, config_path=yml)
+                except Exception as e:
+                    return self._send_json(
+                        {"error": f"rebuild failed: {e}"}, 500)
+                print(f"[sw2robot.web] rename {kind}: {old} -> {new}")
+                return self._send_json(
+                    {"ok": True, "kind": kind, "old": old, "new": new})
             if parsed.path in ("/api/undo", "/api/redo"):
                 cls = type(self)
                 if not cls.pkg_dir:

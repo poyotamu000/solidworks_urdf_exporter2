@@ -139,6 +139,10 @@ def build(pkg_dir, config_path=None, base_hint=None, exclude=None,
     print(f"      {len(model.components)} links, {len(model.joints)} joints")
 
     urdf_kwargs = {} if density is None else {"density": float(density)}
+    # editor rename overlay: component link/joint name -> user-chosen display name
+    if isinstance(config, dict):
+        urdf_kwargs["link_overrides"] = config.get("link_names") or {}
+        urdf_kwargs["joint_overrides"] = config.get("joint_names") or {}
     # the working URDF keeps URDF-relative mesh paths (our viewer + skrobot
     # auto-limits resolve those); the portable ROS variant is a SEPARATE package
     write_urdf(model, urdf_path, **urdf_kwargs)
