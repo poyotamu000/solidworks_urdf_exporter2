@@ -183,9 +183,9 @@ def write_urdf(model, urdf_path, ros_pkg=None, density=_inertia.DEFAULT_DENSITY,
     joint_names = _unique_safe(
         [(("joint", j.name), joint_overrides.get(j.name, j.name))
          for j in model.joints]
-        + [(("port", i), "dummy_joint" + (
+        + [(("port", i), p.joint_name or ("dummy_joint" + (
             p.name[len("dummy_link"):] if p.name.startswith("dummy_link")
-            else "_" + p.name)) for i, p in enumerate(ports)])
+            else "_" + p.name))) for i, p in enumerate(ports)])
 
     # every emitted link / joint name passes through safe_name, with collision
     # suffixes shared by all references (root remap, ports, parent/child, mimic).

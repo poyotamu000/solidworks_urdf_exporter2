@@ -1816,13 +1816,34 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # reverse-map the on-screen (display) name so resolve_ports'
                 # _match_component finds the tip link
                 comp = _link_names_inverse(txt).get(link, link)
-                xyz = [float(v) for v in (body.get("xyz") or [0, 0, 0])]
+                import math
+
+                def _vec3(v, default):
+                    v = default if v is None else v
+                    try:
+                        v = [float(x) for x in v]
+                    except (TypeError, ValueError):
+                        return None
+                    return v if len(v) == 3 \
+                        and all(math.isfinite(x) for x in v) else None
+
+                xyz = _vec3(body.get("xyz"), [0, 0, 0])
+                if xyz is None:
+                    return self._send_json(
+                        {"error": "xyz must be 3 finite numbers"}, 400)
                 # full orientation: prefer an explicit rpy (the gizmo sends one),
                 # else derive it from the +Z direction (the click-on-face flow)
                 if body.get("rpy") is not None:
-                    rpy = [float(v) for v in body["rpy"]]
+                    rpy = _vec3(body.get("rpy"), None)
+                    if rpy is None:
+                        return self._send_json(
+                            {"error": "rpy must be 3 finite numbers"}, 400)
                 else:
-                    rpy = _zdir_to_rpy(body.get("zdir") or [0, 0, 1])
+                    zdir = _vec3(body.get("zdir"), [0, 0, 1])
+                    if zdir is None:
+                        return self._send_json(
+                            {"error": "zdir must be 3 finite numbers"}, 400)
+                    rpy = _zdir_to_rpy(zdir)
                 # optional user-chosen names for the dummy_link + its fixed joint
                 pname = (body.get("name") or "").strip()
                 jname = (body.get("joint_name") or "").strip()

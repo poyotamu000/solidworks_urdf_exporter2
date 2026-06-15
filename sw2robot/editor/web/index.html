@@ -2863,58 +2863,6 @@ async function alignRootTo(hit) {
   }
 }
 
-async function addPortAt(ph) {
-  op('add_port');
-  if (!currentInfo) {
-    log(t('port.needPkg'), 'wrn');
-    return;
-  }
-  // recompute the face overlay from THIS click: the hover that drew it is
-  // throttled, so a quick move+click could otherwise place the port at the
-  // previously-hovered face while parenting it to the newly clicked link
-  if (ph.hit?.face) { showFaceOverlay(ph.hit); }
-  // same face center + normal extraction as alignRootTo
-  let wPoint, nWorld;
-  if (faceOverlay) {
-    wPoint = faceOverlay.host.localToWorld(faceOverlay.centroidLocal.clone());
-    nWorld = faceOverlay.normalLocal.clone()
-      .transformDirection(faceOverlay.host.matrixWorld);
-  } else {
-    wPoint = ph.hit.point.clone();
-    nWorld = ph.hit.face.normal.clone()
-      .transformDirection(ph.hit.object.matrixWorld);
-  }
-  clearFaceOverlay();
-  // the port hangs off the CLICKED link, so resolve the point/normal in THAT
-  // link's frame (its matrixWorld already reflects the current pose; a rebuild
-  // reproduces the same link-relative frame -- no rootDelta juggling needed)
-  const lo = viewer.robot.links[ph.link];
-  if (!lo) { log(t('port.linkNotFound', { link: ph.link }), 'err'); return; }
-  lo.updateMatrixWorld(true);
-  const pLocal = lo.worldToLocal(wPoint.clone());
-  const nLocal = nWorld.clone()
-    .applyQuaternion(lo.getWorldQuaternion(new THREE.Quaternion()).invert())
-    .normalize();
-  log(t('port.adding', { link: ph.link,
-    origin: `${pLocal.x.toFixed(4)}, ${pLocal.y.toFixed(4)}, ${pLocal.z.toFixed(4)}`,
-    zdir: `${nLocal.x.toFixed(2)}, ${nLocal.y.toFixed(2)}, ${nLocal.z.toFixed(2)}` }));
-  statusEl.textContent = t('port.status');
-  try {
-    const resp = await fetch('/api/add_port', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ link: ph.link, xyz: pLocal.toArray(),
-                             zdir: nLocal.toArray() }) });
-    const r = await resp.json();
-    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
-    log(t('port.added', { parent: r.parent }), 'ok');
-    loadRobot(currentInfo, { keepPose: true });   // the dummy_link needs a rebuild
-    refreshHistory();
-  } catch (e) {
-    log(t('port.addFail', { e: e.message ?? e }), 'err');
-  }
-}
-
 async function removePort(name) {
   op('remove_port');
   if (!currentInfo) { return; }
@@ -3191,9 +3139,13 @@ function ecApplyPanelToFrame() {
 // typing in the path box) and a no-drag click selects the link
 viewer.setAttribute('tabindex', '-1');
 let downAt = null;
+let ecDownOnGizmo = false;        // did this press start on a gizmo handle?
 viewer.addEventListener('pointerdown', ev => {
   viewer.focus();
   downAt = [ev.clientX, ev.clientY];
+  // capture it NOW: TransformControls may clear .axis/.dragging before our
+  // bubbling pointerup runs, so a no-drag handle click would otherwise re-fit
+  ecDownOnGizmo = !!(ecTool && (ecTool.tc.dragging || ecTool.tc.axis));
 });
 viewer.addEventListener('pointerup', ev => {
   if (!downAt) { return; }
@@ -3209,7 +3161,7 @@ viewer.addEventListener('pointerup', ev => {
   }
   if (ecTool) {                                    // a placement session is open
     // clicking the gizmo itself (a handle) is for editing -- don't re-fit then
-    if (ecTool.tc.dragging || ecTool.tc.axis) { return; }
+    if (ecDownOnGizmo || ecTool.tc.dragging) { return; }
     // clicking a FACE re-fits the frame to it (origin = face centre, +Z =
     // normal), just like the align tool; vertex if vertex-snap is armed
     const ph = pickHit(ev);
@@ -3621,6 +3573,7 @@ document.getElementById('reset').addEventListener('click', () => {
 function loadRobot(info, { drop = false, keepPose = false,
                            followCamera = false } = {}) {
   op('loadRobot', { name: info?.name, keepPose, drop });
+  cancelEndcoords();        // a rebuild invalidates any open placement session
   document.getElementById('emptyprompt').style.display = 'none';
   if ((keepPose || followCamera) && viewer.robot) {
     const angles = {};
