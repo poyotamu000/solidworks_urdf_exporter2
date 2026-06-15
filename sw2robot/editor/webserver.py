@@ -1258,7 +1258,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                    phase="loading")
                 pkg, rel = cls.pkg_dir, cls.urdf_rel
 
-                def _job():
+                # NB: must NOT be named `_job` -- that shadows the module-global
+                # `_job` (the extraction job) across this whole method and breaks
+                # the /api/extract* handlers with an UnboundLocalError.
+                def _sweep_job():
                     try:
                         results, err = _run_auto_limits(pkg, rel, step, mx)
                     except Exception as e:           # never leave it "running"
@@ -1267,7 +1270,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         _limjob.update(results=results, error=err,
                                        running=False)
 
-                threading.Thread(target=_job, daemon=True).start()
+                threading.Thread(target=_sweep_job, daemon=True).start()
                 return self._send_json({"started": True})
             if path == "/api/auto_limits/status":
                 with _limjob_lock:
