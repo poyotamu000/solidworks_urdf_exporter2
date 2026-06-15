@@ -49,13 +49,21 @@ def _fast_urdf(urdf):
     return tmp, True
 
 
+def _emit(**ev):
+    """One progress event as a JSON line on STDERR (stdout is reserved for the
+    final results JSON the caller parses).  The webserver reads these live to
+    drive the UI's per-joint progress bar."""
+    sys.stderr.write(json.dumps(ev) + "\n")
+    sys.stderr.flush()
+
+
 def main():
     urdf, step_deg, max_deg = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
-    import trimesh
     from skrobot.models.urdf import RobotModelFromURDF
 
     from sw2robot.editor import autoinit
 
+    _emit(event="loading")                    # model load is the slow first ~2 s
     load_urdf, is_tmp = _fast_urdf(urdf)
     try:
         robot = RobotModelFromURDF(urdf_file=load_urdf)
@@ -65,19 +73,20 @@ def main():
                 os.remove(load_urdf)
             except OSError:
                 pass
-    meshes = {}
-    for l in robot.link_list:
-        vm = getattr(l, "visual_mesh", None)
-        ms = (vm if isinstance(vm, (list, tuple)) else [vm]) \
-            if vm is not None else []
-        ms = [m for m in ms if hasattr(m, "vertices") and len(m.vertices)]
-        if ms:
-            meshes[l.name] = (trimesh.util.concatenate(ms)
-                              if len(ms) > 1 else ms[0])
+    meshes = autoinit.link_meshes(robot)
+
+    total = sum(1 for j in robot.joint_list
+                if type(j).__name__ == "RotationalJoint")
+    _emit(event="start", total=total)
+    done = [0]
+
+    def progress(name, _res):
+        done[0] += 1
+        _emit(event="joint", i=done[0], total=total, joint=name)
 
     results = autoinit.sweep_limits(
         robot, meshes, step_deg=step_deg, max_deg=max_deg, margin_deg=2.0,
-        refine=True)
+        refine=True, progress=progress)
     out = [{"child": v["child"], "lower": v["lower"], "upper": v["upper"],
             "continuous": v["continuous"]}
            for v in results.values() if v.get("child")]

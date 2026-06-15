@@ -582,6 +582,9 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     'auto.sweepStart': { en: 'self-collision limit sweep (coarse scan + binary search) — this takes a few seconds …',
                          ja: '自己干渉リミット探索（粗スキャン + 二分探索）— 数秒かかります …' },
     'auto.sweepBar': { en: 'searching joint limits …', ja: '関節リミットを探索中 …' },
+    'auto.sweepLoading': { en: 'loading model …', ja: 'モデルを読み込み中 …' },
+    'auto.sweepProg': { en: a => `joint ${a.n}/${a.total}${a.j ? ' — ' + a.j : ''}`,
+                        ja: a => `関節 ${a.n}/${a.total}${a.j ? ' — ' + a.j : ''}` },
     'auto.sweepDone': { en: a => `sweep done: ${a.l} joint(s) get limits, ${a.c} stay continuous — applying …`,
                         ja: a => `探索完了: ${a.l} 関節にリミット、${a.c} 関節は連続回転のまま — 適用中 …` },
     'auto.noRot': { en: 'no rotational joints to limit', ja: 'リミット対象の回転関節がありません' },
@@ -2399,14 +2402,29 @@ autolimitsBtn.addEventListener('click', async () => {
   autolimitsBtn.disabled = true;
   op('autoLimits', {});
   log(t('auto.sweepStart'));
-  // ONE blocking request, no progress polling: polling during the CPU-bound
-  // sweep thrashes the server's GIL and balloons it ~20x (8s -> 200s).
+  // Start ASYNC, then poll /api/auto_limits/status for per-joint progress.
+  // (Safe now: the sweep runs in a child process, so polling no longer steals
+  // its GIL the way the old in-process sweep did.)
   showLoadbar(t('auto.sweepBar'), { indet: true });
   try {
     const resp0 = await fetch('/api/auto_limits');
     const data = await resp0.json();
     if (!resp0.ok || data.error) { throw new Error(data.error ?? resp0.status); }
-    const results = data.results || [];
+    let st = {};
+    while (true) {
+      await new Promise(r => setTimeout(r, 400));
+      try { st = await (await fetch('/api/auto_limits/status')).json(); }
+      catch { continue; }                       // transient: keep polling
+      if (st.total) {
+        updateLoadbar(st.n / st.total,
+                      t('auto.sweepProg', { n: st.n, total: st.total, j: st.joint }));
+      } else if (st.phase === 'loading') {
+        updateLoadbar(null, null, t('auto.sweepLoading'));
+      }
+      if (st.done) { break; }
+    }
+    if (st.error) { throw new Error(st.error); }
+    const results = st.results || [];
     const limited = results.filter(r => !r.continuous);
     const cont = results.filter(r => r.continuous);
     log(t('auto.sweepDone', { l: limited.length, c: cont.length }), 'ok');

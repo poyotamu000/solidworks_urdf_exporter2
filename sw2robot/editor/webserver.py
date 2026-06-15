@@ -638,30 +638,32 @@ def _zdir_to_rpy(zdir):
     return list(rpy)
 
 
+def _parse_urdf(pkg_dir, urdf_rel):
+    """Parse the served URDF via the editor's one canonical parser
+    (``parse_urdf_content``) -- the same code path ``core.load_module`` uses --
+    so link/joint listing and root-link detection don't drift between the
+    server and the rest of the editor.  Returns the parsed dict or None."""
+    from ._vendor.rc_config.urdf_parser import parse_urdf_content
+    try:
+        with open(os.path.join(pkg_dir, urdf_rel), encoding="utf-8") as f:
+            return parse_urdf_content(f.read())
+    except Exception:
+        return None
+
+
 def _urdf_names(pkg_dir, urdf_rel, tag):
     """Current ``<link>``/``<joint>`` names in the served URDF (the source of
     truth for what's on screen), for the rename collision check + root detect."""
-    import xml.etree.ElementTree as ET
-    try:
-        root = ET.parse(os.path.join(pkg_dir, urdf_rel)).getroot()
-    except Exception:
+    parsed = _parse_urdf(pkg_dir, urdf_rel)
+    if parsed is None:
         return []
-    return [e.get("name") for e in root.findall(tag) if e.get("name")]
+    return [e["name"] for e in parsed["links" if tag == "link" else "joints"]]
 
 
 def _urdf_root_link(pkg_dir, urdf_rel):
     """The root link name (the link that is never a joint's child)."""
-    import xml.etree.ElementTree as ET
-    try:
-        root = ET.parse(os.path.join(pkg_dir, urdf_rel)).getroot()
-    except Exception:
-        return None
-    children = {j.find("child").get("link") for j in root.findall("joint")
-                if j.find("child") is not None}
-    for ln in root.findall("link"):
-        if ln.get("name") not in children:
-            return ln.get("name")
-    return None
+    parsed = _parse_urdf(pkg_dir, urdf_rel)
+    return parsed["root_link"] if parsed else None
 
 
 def _list_packages(root):
@@ -862,21 +864,11 @@ _coll = {"key": None, "ctx": None, "building": False, "error": None}
 def _build_collision(urdf_path, key):
     try:
         import numpy as np
-        import trimesh
         from skrobot.models.urdf import RobotModelFromURDF
 
         from . import autoinit
         robot = RobotModelFromURDF(urdf_file=urdf_path)
-        meshes = {}
-        for l in robot.link_list:
-            vm = getattr(l, "visual_mesh", None)
-            ms = (vm if isinstance(vm, (list, tuple)) else [vm]) \
-                if vm is not None else []
-            ms = [m for m in ms
-                  if hasattr(m, "vertices") and len(m.vertices)]
-            if ms:
-                meshes[l.name] = (trimesh.util.concatenate(ms)
-                                  if len(ms) > 1 else ms[0])
+        meshes = autoinit.link_meshes(robot)
         sc = autoinit.SelfCollision(robot, meshes)
         joints = {}
         for j in robot.joint_list:
@@ -906,7 +898,7 @@ def _build_collision(urdf_path, key):
 # collision lock while it sweeps (it mutates joint angles), so the live drag
 # check pauses for its duration.
 _limjob = {"running": False, "log": [], "error": None, "results": None,
-           "n": 0, "total": 0}
+           "n": 0, "total": 0, "joint": None, "phase": None}
 _limjob_lock = threading.Lock()
 
 
@@ -942,16 +934,67 @@ def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg):
         cwd = PROJECT_ROOT
     cmd += [urdf, str(step_deg), str(max_deg)]
     _t0 = time.time()
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, cwd=cwd)
+
+    # Drain stderr LIVE in a thread: the CLI emits per-joint progress there as
+    # JSON lines (stdout carries only the final results JSON).  Reading it as it
+    # flows both feeds the UI progress bar via _limjob and keeps the pipe from
+    # filling.  Polling is GIL-safe now -- the sweep runs in this child process,
+    # not in a server thread (the whole reason it is a subprocess).
+    def _pump():
+        for line in proc.stderr:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                with _limjob_lock:        # non-JSON (skrobot warnings): keep a tail
+                    _limjob["log"].append(line)
+                    del _limjob["log"][:-50]
+                continue
+            with _limjob_lock:
+                kind = ev.get("event")
+                if kind == "loading":
+                    _limjob["phase"] = "loading"
+                elif kind == "start":
+                    _limjob.update(phase="sweeping", total=ev.get("total", 0),
+                                   n=0)
+                elif kind == "joint":
+                    _limjob.update(n=ev.get("i", 0),
+                                   total=ev.get("total", _limjob["total"]),
+                                   joint=ev.get("joint"))
+
+    pump = threading.Thread(target=_pump, daemon=True)
+    pump.start()
+    # Drain stdout in THIS thread while the pump drains stderr -- both pipes are
+    # read concurrently, so neither can fill and deadlock the child.  A watchdog
+    # enforces the timeout by killing the child (which gives stdout.read() its
+    # EOF); we then always wait() to reap it and join the pump after its stderr
+    # hits EOF, so a stale pump can never bleed into the next job's _limjob.
+    timed_out = {"v": False}
+
+    def _watchdog():
+        timed_out["v"] = True
+        proc.kill()
+
+    timer = threading.Timer(900, _watchdog)
+    timer.start()
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
-                           cwd=cwd)
-    except subprocess.TimeoutExpired:
+        out_txt = proc.stdout.read()
+    finally:
+        timer.cancel()
+        proc.wait()
+        pump.join(timeout=2)
+    if timed_out["v"]:
         return None, "sweep timed out"
-    if p.returncode != 0:
-        tail = (p.stderr or "").strip().splitlines()[-3:]
+    if proc.returncode != 0:
+        with _limjob_lock:
+            tail = _limjob["log"][-3:]
         return None, "sweep failed: " + " | ".join(tail)
     try:
-        out = json.loads(p.stdout)["results"]
+        out = json.loads(out_txt)["results"]
     except Exception as e:
         return None, f"bad sweep output: {e}"
     print(f"[sw2robot.web] auto_limits sweep: {time.time() - _t0:.1f}s "
@@ -1193,25 +1236,50 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         "baseline": (len(_coll["ctx"]["sc"].baseline)
                                      if ready else None)})
             if path == "/api/auto_limits":
-                # SUBPROCESS sweep (avoids the GIL convoy; see
-                # _run_auto_limits).  One job at a time; blocks ~10 s.
+                # SUBPROCESS sweep (avoids the GIL convoy; see _run_auto_limits).
+                # Started ASYNC so the page can poll /api/auto_limits/status for
+                # per-joint progress while it runs (the sweep is in the child
+                # process, so polling no longer thrashes its GIL).  One at a time.
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
+                # parse BEFORE claiming the job, so a bad step/max can't wedge
+                # the "running" flag (no worker would start to clear it)
+                try:
+                    step = float((query.get("step") or ["10"])[0])
+                    mx = float((query.get("max") or ["360"])[0])  # ±2π
+                except ValueError:
+                    return self._send_json({"error": "bad step/max"}, 400)
                 with _limjob_lock:
                     if _limjob["running"]:
                         return self._send_json(
                             {"error": "a limit sweep is already running"}, 409)
-                    _limjob["running"] = True
-                try:
-                    step = float((query.get("step") or ["10"])[0])
-                    mx = float((query.get("max") or ["360"])[0])  # ±2π
-                    results, err = _run_auto_limits(
-                        cls.pkg_dir, cls.urdf_rel, step, mx)
-                finally:
-                    _limjob["running"] = False
-                if err:
-                    return self._send_json({"error": err}, 409)
-                return self._send_json({"results": results})
+                    _limjob.update(running=True, log=[], error=None,
+                                   results=None, n=0, total=0, joint=None,
+                                   phase="loading")
+                pkg, rel = cls.pkg_dir, cls.urdf_rel
+
+                # NB: must NOT be named `_job` -- that shadows the module-global
+                # `_job` (the extraction job) across this whole method and breaks
+                # the /api/extract* handlers with an UnboundLocalError.
+                def _sweep_job():
+                    try:
+                        results, err = _run_auto_limits(pkg, rel, step, mx)
+                    except Exception as e:           # never leave it "running"
+                        results, err = None, f"{type(e).__name__}: {e}"
+                    with _limjob_lock:
+                        _limjob.update(results=results, error=err,
+                                       running=False)
+
+                threading.Thread(target=_sweep_job, daemon=True).start()
+                return self._send_json({"started": True})
+            if path == "/api/auto_limits/status":
+                with _limjob_lock:
+                    return self._send_json(
+                        {"running": _limjob["running"], "n": _limjob["n"],
+                         "total": _limjob["total"], "joint": _limjob["joint"],
+                         "phase": _limjob["phase"], "error": _limjob["error"],
+                         "results": _limjob["results"],
+                         "done": not _limjob["running"]})
             if path == "/api/extract":
                 target = (query.get("path") or [""])[0]
                 target = os.path.abspath(os.path.expanduser(

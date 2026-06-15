@@ -50,20 +50,26 @@ def parse_urdf_content(urdf_content: str) -> dict[str, Any]:
         link_info = _parse_link(link_elem)
         links.append(link_info)
 
-    # Find root link (link that is not a child of any joint)
+    # Find root link (link that is not a child of any joint).  Keep DOCUMENT
+    # ORDER throughout -- a set.pop() here is non-deterministic across runs,
+    # which would make root detection (and the editor's rename/root handling
+    # built on it) flip arbitrarily on a multi-root / disconnected URDF.
     child_links = {j["childLink"] for j in joints}
-    link_names = {link["name"] for link in links}
-    root_links = link_names - child_links
+    root_candidates = [link["name"] for link in links
+                       if link["name"] not in child_links]
 
     root_link = None
-    if len(root_links) == 1:
-        root_link = root_links.pop()
-    elif len(root_links) > 1:
-        # If multiple root candidates, pick the one that's a parent
+    if len(root_candidates) == 1:
+        root_link = root_candidates[0]
+    elif len(root_candidates) > 1:
+        # multiple roots (disconnected / imported URDF): prefer the first
+        # candidate that actually drives a joint (a real kinematic root) over a
+        # stray link with no joints, else just the first -- both in document
+        # order so the choice is stable and identical for every caller
+        # (core.load_module and the webserver's root detection).
         parent_links = {j["parentLink"] for j in joints}
-        candidates = root_links & parent_links
-        if candidates:
-            root_link = candidates.pop()
+        root_link = next((c for c in root_candidates if c in parent_links),
+                         root_candidates[0])
 
     return {
         "joints": joints,
