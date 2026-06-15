@@ -1816,13 +1816,31 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # reverse-map the on-screen (display) name so resolve_ports'
                 # _match_component finds the tip link
                 comp = _link_names_inverse(txt).get(link, link)
-                xyz = body.get("xyz") or [0, 0, 0]
-                rpy = _zdir_to_rpy(body.get("zdir") or [0, 0, 1])
+                xyz = [float(v) for v in (body.get("xyz") or [0, 0, 0])]
+                # full orientation: prefer an explicit rpy (the gizmo sends one),
+                # else derive it from the +Z direction (the click-on-face flow)
+                if body.get("rpy") is not None:
+                    rpy = [float(v) for v in body["rpy"]]
+                else:
+                    rpy = _zdir_to_rpy(body.get("zdir") or [0, 0, 1])
+                # optional user-chosen names for the dummy_link + its fixed joint
+                pname = (body.get("name") or "").strip()
+                jname = (body.get("joint_name") or "").strip()
+                for label, nm in (("name", pname), ("joint_name", jname)):
+                    if nm and not _VALID_NAME.match(nm):
+                        return self._send_json(
+                            {"error": f"invalid {label} '{nm}' -- letters / "
+                                      f"digits / underscore, not starting with a "
+                                      f"digit"}, 400)
                 fmt = lambda v: "[" + ", ".join(f"{x:.6g}" for x in v) + "]"
                 _snapshot(cls.pkg_dir, yml, f"add port on {comp[:30]}")
-                txt = _append_yaml_list_item(txt, "ports", [
-                    f"parent: {_yaml_scalar(comp)}",
-                    f"xyz: {fmt(xyz)}", f"rpy: {fmt(rpy)}"])
+                item = [f"parent: {_yaml_scalar(comp)}",
+                        f"xyz: {fmt(xyz)}", f"rpy: {fmt(rpy)}"]
+                if pname:
+                    item.append(f"name: {_yaml_scalar(pname)}")
+                if jname:
+                    item.append(f"joint_name: {_yaml_scalar(jname)}")
+                txt = _append_yaml_list_item(txt, "ports", item)
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
                 from sw2robot.exporter.export import build
@@ -1832,9 +1850,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
                 print(f"[sw2robot.web] add_port: parent={comp} "
-                      f"xyz={list(xyz)} rpy={rpy}")
+                      f"name={pname or '(auto)'} xyz={xyz} rpy={rpy}")
                 return self._send_json(
-                    {"ok": True, "parent": comp, "xyz": list(xyz), "rpy": rpy})
+                    {"ok": True, "parent": comp, "name": pname,
+                     "xyz": xyz, "rpy": rpy})
             if parsed.path == "/api/remove_port":
                 # drop a previously-added dummy_link port by its emitted name
                 cls = type(self)

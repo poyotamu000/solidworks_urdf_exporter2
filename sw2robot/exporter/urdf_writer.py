@@ -126,9 +126,12 @@ def _port_xml(port, rn=lambda n: n, link_name=None, joint_name=None):
     if link_name is None:
         link_name = rn(port.name)
     if joint_name is None:
-        suffix = port.name[len("dummy_link"):] if port.name.startswith("dummy_link") \
-            else "_" + port.name
-        joint_name = safe_name("dummy_joint" + suffix)
+        if getattr(port, "joint_name", ""):
+            joint_name = safe_name(port.joint_name)
+        else:
+            suffix = port.name[len("dummy_link"):] \
+                if port.name.startswith("dummy_link") else "_" + port.name
+            joint_name = safe_name("dummy_joint" + suffix)
     return "\n".join([
         f'  <link name="{link_name}"/>',
         f'  <joint name="{joint_name}" type="fixed">',
