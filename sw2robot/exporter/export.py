@@ -49,6 +49,17 @@ def _extract_into(sw, assembly_path, pkg_dir, meshes_dir, robot_name, _say):
     _say("reading components + mates ...")
     comps, adjacency, ground = extract_graph(doc, robot_name, assembly_path)
     _say(f"found {len(comps)} components, {len(adjacency)} mate pairs")
+    if not comps:
+        sw.close_doc(doc)
+        raise ValueError(
+            "no usable components -- SolidWorks opened the assembly but every "
+            "component is suppressed or unresolved (see the 'skipped ...' note "
+            "above). This almost always means the .SLDASM's referenced part / "
+            "sub-assembly files could not be found next to it: a lone .SLDASM "
+            "copied into Downloads has no .SLDPRT parts to resolve against. "
+            "Open it from its original folder (with its parts present), or use "
+            "SolidWorks 'Pack and Go' to gather the assembly + all references "
+            "into one folder and point sw2robot at the .SLDASM inside it.")
 
     _say("reading sub-assembly internals ...")
     subgraphs = extract_subgraphs(doc, comps, sw=sw)
