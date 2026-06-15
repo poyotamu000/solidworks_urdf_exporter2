@@ -1,9 +1,12 @@
 name: CI
 
-# Runs on every push to main and on every PR, so problems are caught
-# BEFORE a release tag is cut (the release workflow only runs on a vX.Y.Z
-# tag, so without this the PyInstaller freeze would fail at release time
-# with no earlier warning).
+# Runs on every PR (and on demand), so problems are caught BEFORE a release
+# tag is cut (the release workflow only runs on a vX.Y.Z tag, so without
+# this the PyInstaller freeze would fail at release time with no warning).
+#
+# PR-only on purpose: everything lands via the bump-version PR flow, so a
+# push to main is always a just-tested merge -- re-running CI on that push
+# is pure duplication.  workflow_dispatch is kept for manual main runs.
 #
 #   test        -- the pytest suite (Linux, no SolidWorks needed)
 #   build-check -- freezes the web editor .exe on Windows x64 exactly like
@@ -14,9 +17,8 @@ name: CI
 #                  headless Chrome (guards the browser UI, incl. the i18n).
 
 on:
-  push:
-    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
