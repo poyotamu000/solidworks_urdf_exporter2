@@ -1888,7 +1888,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
-def serve(package_dir=None, root_dir=None, port=8090, cad_roots=None):
+def serve(package_dir=None, root_dir=None, port=8090, cad_roots=None,
+          open_browser=True):
     import atexit
     atexit.register(_shutdown_sw)     # close the warm session on exit
     threading.Thread(target=_keepalive_loop, daemon=True).start()
@@ -1904,7 +1905,14 @@ def serve(package_dir=None, root_dir=None, port=8090, cad_roots=None):
               f"(root: {_Handler.root_dir})")
     httpd = socketserver.ThreadingTCPServer(("", port), _Handler)
     httpd.daemon_threads = True
-    print(f"[sw2robot.web] open http://localhost:{port}")
+    url = f"http://localhost:{port}"
+    print(f"[sw2robot.web] open {url}")
+    # the socket is already bound+listening here, so the page can load the
+    # moment the default browser reaches it
+    if open_browser:
+        import webbrowser
+        threading.Thread(target=webbrowser.open, args=(url,),
+                         daemon=True).start()
     httpd.serve_forever()
 
 
@@ -1927,9 +1935,12 @@ def main():
     ap.add_argument("--cad-roots", nargs="*", default=None,
                     help="directories indexed for drag&drop .sldasm lookup "
                          "(default: KXR + Mechanical Design shares)")
+    ap.add_argument("--no-browser", action="store_true",
+                    help="do not open the editor in the default browser on "
+                         "startup")
     args = ap.parse_args()
     serve(args.package_dir, root_dir=args.root, port=args.port,
-          cad_roots=args.cad_roots)
+          cad_roots=args.cad_roots, open_browser=not args.no_browser)
 
 
 if __name__ == "__main__":
