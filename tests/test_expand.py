@@ -4,12 +4,16 @@ base plate.  Expansion must splice the children in, keep the internal
 revolute, and re-attach the mounting mate to the owning child."""
 import numpy as np
 import pytest
+from test_classify_geo import O, Z, coinc_planes, conc, dup
 
-from sw2robot.exporter.model import from_graph, build_model
-from sw2robot.exporter.state import (GraphState, SubGraph, ComponentState, MateEdge,
-                           MateGeo)
-
-from test_classify_geo import mate, dup, conc, coinc_planes, PLANE, CYL, Z, O
+from sw2robot.exporter.model import build_model, from_graph
+from sw2robot.exporter.state import (
+    ComponentState,
+    GraphState,
+    MateEdge,
+    MateGeo,
+    SubGraph,
+)
 
 
 def _comp(name, link, xyz=(0, 0, 0), sub=False, path=None):
@@ -225,8 +229,9 @@ def test_hidden_components_excluded():
 def test_snap_not_fooled_by_multi_mate_single_instance():
     # ONE cover mated to two boards: hole A on its origin axis (0mm), hole B
     # 20mm away -- legitimate design, must NOT be "corrected"
-    from sw2robot.exporter.model import _warn_unsolved_mates, Component
     import numpy as np
+
+    from sw2robot.exporter.model import Component, _warn_unsolved_mates
     def comp(name, path, xyz):
         w = np.eye(4); w[:3, 3] = xyz
         return Component(name=name, link_name=name.replace("-", "_"),
@@ -249,8 +254,9 @@ def test_snap_not_fooled_by_multi_mate_single_instance():
 
 
 def test_snap_still_fires_for_true_stale_sibling():
-    from sw2robot.exporter.model import _warn_unsolved_mates, Component
     import numpy as np
+
+    from sw2robot.exporter.model import Component, _warn_unsolved_mates
     def comp(name, path, xyz):
         w = np.eye(4); w[:3, 3] = xyz
         return Component(name=name, link_name=name.replace("-", "_"),
@@ -281,8 +287,9 @@ def _adj_rec(mates_):
 def test_loop_locked_hinge_demoted():
     # A-B looks like a hinge, but A-C and B-C are HARD fixed -> the loop
     # locks the hinge (what SolidWorks drag shows)
-    from sw2robot.exporter.model import _auto_parent_map, Component
     import numpy as np
+
+    from sw2robot.exporter.model import Component, _auto_parent_map
     def comp(name, xyz):
         w = np.eye(4); w[:3, 3] = xyz
         return Component(name=name, link_name=name, part_path=None,
@@ -310,8 +317,9 @@ def test_loop_with_offset_fastener_also_locks():
     # the loop edge is a single small fastener on a DIFFERENT axis: two
     # non-collinear axes on one part -> SolidWorks drag cannot rotate it,
     # so the global solve demotes the hinge too
-    from sw2robot.exporter.model import _auto_parent_map, Component
     import numpy as np
+
+    from sw2robot.exporter.model import Component, _auto_parent_map
     def comp(name, xyz):
         w = np.eye(4); w[:3, 3] = xyz
         return Component(name=name, link_name=name, part_path=None,
@@ -337,8 +345,9 @@ def test_loop_with_offset_fastener_also_locks():
 
 def test_isolated_hinge_survives_global_solve():
     # a hinge with NO other path stays movable under the global solve
-    from sw2robot.exporter.model import _auto_parent_map, Component
     import numpy as np
+
+    from sw2robot.exporter.model import Component, _auto_parent_map
     def comp(name, xyz):
         w = np.eye(4); w[:3, 3] = xyz
         return Component(name=name, link_name=name, part_path=None,

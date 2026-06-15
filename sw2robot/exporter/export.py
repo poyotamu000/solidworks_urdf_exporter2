@@ -17,13 +17,19 @@ from __future__ import annotations
 import argparse
 import os
 
-from .swcom import SolidWorks, as_iface
-from .model import (extract_graph, extract_subgraphs, to_graph_state,
-                    capture_deep_worlds, build_model, safe_name)
-from .mesh import export_meshes, export_subgraph_meshes, _SAVE_OPTS
-from .state import GraphState
-from .urdf_writer import write_urdf, write_ros_package
 from . import jointcfg
+from .mesh import _SAVE_OPTS, export_meshes, export_subgraph_meshes
+from .model import (
+    build_model,
+    capture_deep_worlds,
+    extract_graph,
+    extract_subgraphs,
+    safe_name,
+    to_graph_state,
+)
+from .state import GraphState
+from .swcom import SolidWorks, as_iface
+from .urdf_writer import write_ros_package, write_urdf
 
 GRAPH_FILE = "graph.json"
 

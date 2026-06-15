@@ -90,5 +90,5 @@ def write_template(model, path):
 
 
 def load(path):
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}

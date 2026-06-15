@@ -3,7 +3,9 @@
     uv run python -m sw2robot.exporter.extract <assembly.sldasm> [-o OUT] [-n NAME] [--visible]
 """
 from __future__ import annotations
+
 import argparse
+
 from .export import extract
 
 

@@ -23,17 +23,17 @@ localhost.  No third-party server deps; mesh conversion reuses trimesh which
 sw2robot.exporter already requires.
 """
 import argparse
+import http.server
 import io
 import json
 import os
 import posixpath
 import re
-import http.server
 import socket
 import socketserver
 import sys
-import threading
 import tempfile
+import threading
 import time
 import urllib.parse
 
@@ -470,8 +470,7 @@ def _export_zip(pkg_dir, robot_name, mesh_fmt="dae"):
     import io as _io
     import zipfile
 
-    from sw2robot.exporter.ros_export import (GLB_CTX_FMT,
-                                              build_ros_description)
+    from sw2robot.exporter.ros_export import GLB_CTX_FMT, build_ros_description
     kwargs = {"ctx_fmt": GLB_CTX_FMT} if mesh_fmt == "glb" else {}
     buf = _io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
@@ -865,6 +864,7 @@ def _build_collision(urdf_path, key):
         import numpy as np
         import trimesh
         from skrobot.models.urdf import RobotModelFromURDF
+
         from . import autoinit
         robot = RobotModelFromURDF(urdf_file=urdf_path)
         meshes = {}
@@ -1485,8 +1485,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json(
                         {"error": "joints.yaml not found"}, 400)
                 import numpy as np
-                from sw2robot.exporter.geometry import (matrix_from_rpy,
-                                              matrix_to_xyz_rpy)
+
+                from sw2robot.exporter.geometry import (
+                    matrix_from_rpy,
+                    matrix_to_xyz_rpy,
+                )
                 with open(yml, encoding="utf-8") as f:
                     txt = f.read()
                 rpy0, xyz0, z0 = _read_root_pose(txt)

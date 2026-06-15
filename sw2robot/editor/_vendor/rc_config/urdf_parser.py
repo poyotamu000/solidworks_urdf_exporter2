@@ -4,8 +4,8 @@ URDF Parser for configuration page.
 Extracts joint and link information from URDF content.
 """
 
-from typing import Any
 import xml.etree.ElementTree as ET
+from typing import Any
 
 
 def parse_urdf_content(urdf_content: str) -> dict[str, Any]:

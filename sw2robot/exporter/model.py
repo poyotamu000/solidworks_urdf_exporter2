@@ -23,11 +23,15 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .swcom import safe_prop, safe_call, as_iface
-from .geometry import (transform_to_matrix, matrix_to_xyz_rpy,
-                       relative_matrix, frame_at_point, transform_point_dir,
-                       matrix_from_rpy)
-from .state import GraphState, ComponentState, MateEdge, MateGeo, SubGraph
+from .geometry import (
+    frame_at_point,
+    matrix_from_rpy,
+    matrix_to_xyz_rpy,
+    relative_matrix,
+    transform_to_matrix,
+)
+from .state import ComponentState, GraphState, MateEdge, MateGeo, SubGraph
+from .swcom import as_iface, safe_call, safe_prop
 
 MATE_TYPES = {0: "COINCIDENT", 1: "CONCENTRIC", 2: "PERPENDICULAR",
               3: "PARALLEL", 4: "TANGENT", 5: "DISTANCE", 6: "ANGLE",
@@ -815,7 +819,7 @@ def _demote_coaxial_duplicates(edge, adjacency):
         return max(radii) if radii else 0.0
 
     groups = {}
-    for key, (jt, ax, note) in edge.items():
+    for key, (jt, ax, _note) in edge.items():
         if jt not in _MOVABLE_TYPES or ax is None:
             continue
         prefs = {prefix(n) for n in key}
@@ -823,7 +827,7 @@ def _demote_coaxial_duplicates(edge, adjacency):
             continue                      # only inside one expanded instance
         groups.setdefault(next(iter(prefs)), []).append(key)
 
-    for pref, keys in groups.items():
+    for _pref, keys in groups.items():
         keys.sort(key=lambda k: (-radius_of(k), sorted(k)))
         kept = []
         for key in keys:
@@ -924,7 +928,7 @@ def _auto_parent_map(comps, adjacency, base):
             tuple(-x for x in _edge_pref(cur, nb)), nb))
 
     while True:
-        bfs_within(0, [base.name] + sorted(parent_of))
+        bfs_within(0, [base.name, *sorted(parent_of)])
         # attach ONE component over the lowest-tier edge available --
         # picking the BEST such edge (instance affinity, mate richness),
         # then resume rigid expansion from it
@@ -1258,7 +1262,7 @@ def _warn_unsolved_mates(comps, adjacency):
                 if top not in per or off < per[top][0]:
                     per[top] = (off, p, d)
     flagged = {}
-    for sig, per in pattern.items():
+    for _sig, per in pattern.items():
         if len(per) < 2:               # needs at least two DISTINCT instances
             continue
         best = min(off for off, _, _ in per.values())
@@ -1457,7 +1461,7 @@ def from_graph(graph, exclude=None, expand=None, no_expand=None):
         if e.a not in names or e.b not in names:
             continue
         adjacency[frozenset((e.a, e.b))] = _edge_rec(e)
-    ground = set(g for g in graph.ground if g in names)
+    ground = {g for g in graph.ground if g in names}
     _snap_unsolved_mates(comps, adjacency)
     return _expand_subassemblies(graph, comps, adjacency, ground,
                                  expand=expand, no_expand=no_expand)

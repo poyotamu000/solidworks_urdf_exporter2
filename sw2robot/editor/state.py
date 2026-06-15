@@ -7,8 +7,6 @@ REST/WebSocket payload without change.
 
 from __future__ import annotations
 
-from typing import Optional
-
 from pydantic import BaseModel, Field
 
 
@@ -22,22 +20,22 @@ class JointEdit(BaseModel):
     sw2robot.exporter's job (joint-config YAML), not an export-time overlay.
     """
 
-    rename: Optional[str] = None
-    lower: Optional[float] = None
-    upper: Optional[float] = None
-    mimic_joint: Optional[str] = None
+    rename: str | None = None
+    lower: float | None = None
+    upper: float | None = None
+    mimic_joint: str | None = None
     mimic_multiplier: float = 1.0
     mimic_offset: float = 0.0
-    servo_id: Optional[int] = None
+    servo_id: int | None = None
     direction: int = 1            # +1 normal, -1 reversed
     angle_offset: float = 0.0
     # Actuator limits (None = keep the CAD URDF default); effort N*m, velocity rad/s
-    effort: Optional[float] = None
-    velocity: Optional[float] = None
-    servo_model: Optional[str] = None   # e.g. "HLS3606M" (drives profile auto-fill)
+    effort: float | None = None
+    velocity: float | None = None
+    servo_model: str | None = None   # e.g. "HLS3606M" (drives profile auto-fill)
     # CAD-specific edits robot-compiler can't do (axis/type live in the URDF):
     flip_axis: bool = False       # negate the joint's <axis xyz>
-    jtype: Optional[str] = None   # override joint type (revolute/continuous/...)
+    jtype: str | None = None   # override joint type (revolute/continuous/...)
 
 
 class RobotCompilerState(BaseModel):
@@ -52,7 +50,7 @@ class RobotCompilerState(BaseModel):
     package_dir: str
     joints: list[dict] = Field(default_factory=list)
     links: list[dict] = Field(default_factory=list)
-    root_link: Optional[str] = None
+    root_link: str | None = None
     edits: dict[str, JointEdit] = Field(default_factory=dict)
 
     def edit_for(self, joint_name: str) -> JointEdit:

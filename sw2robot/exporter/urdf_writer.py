@@ -79,7 +79,7 @@ def _report_inertia(methods):
 def _link_xml(comp, ros_pkg=None, rn=lambda n: n, mesh_dir=None, density=None):
     lines = [f'  <link name="{rn(comp.link_name)}">']
     if comp.mesh_file:
-        mesh_ref = ("package://%s/%s" % (ros_pkg, comp.mesh_file.replace("\\", "/"))
+        mesh_ref = ("package://{}/{}".format(ros_pkg, comp.mesh_file.replace("\\", "/"))
                     if ros_pkg else "../" + comp.mesh_file.replace("\\", "/"))
         vorigin = (f'      <origin xyz="{_fmt(comp.visual_xyz)}" '
                    f'rpy="{_fmt(comp.visual_rpy)}"/>')
@@ -198,7 +198,7 @@ def write_urdf(model, urdf_path, ros_pkg=None, density=_inertia.DEFAULT_DENSITY,
     # urdf lives at <pkg>/urdf/<name>.urdf -> the package root is two levels up.
     mesh_dir = os.path.dirname(os.path.dirname(os.path.abspath(urdf_path)))
 
-    parts = [f'<?xml version="1.0"?>', f'<robot name="{model.name}">']
+    parts = ['<?xml version="1.0"?>', f'<robot name="{model.name}">']
     methods = {}
     for comp in model.components:
         xml, method = _link_xml(comp, ros_pkg, rn, mesh_dir=mesh_dir,

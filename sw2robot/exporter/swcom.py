@@ -80,6 +80,7 @@ def _load_modules():
 def _makepy_solidworks():
     """Locate sldworks.tlb (+swconst/swpublished) and run makepy on them."""
     import glob
+
     from win32com.client import makepy
     roots = [r"C:\Program Files\SOLIDWORKS Corp",
              r"C:\Program Files (x86)\SOLIDWORKS Corp"]
