@@ -49,9 +49,13 @@ WIN32_HIDDEN = [
     "win32api", "win32con", "win32timezone",
 ]
 
-# the optional ``ui`` extra (live self-collision + auto joint-limit sweep +
-# standalone viser GUI); excluded by default to keep the exe small.
-UI_PACKAGES = ["skrobot", "fcl", "viser"]
+# the optional ``ui`` extra.  The WEB editor's live self-collision + auto
+# joint-limit sweep need skrobot + fcl; only the STANDALONE viser GUI needs
+# viser.  Split so the web exe can bundle just the former (--editor-ui) without
+# dragging in viser's web-client assets.  All excluded by default (small exe).
+EDITOR_UI_PACKAGES = ["skrobot", "fcl"]
+STANDALONE_UI_PACKAGES = ["viser"]
+UI_PACKAGES = EDITOR_UI_PACKAGES + STANDALONE_UI_PACKAGES
 # never needed at runtime -- dropping them shaves size / avoids hook noise
 BASE_EXCLUDES = ["tkinter", "matplotlib", "pytest", "IPython", "notebook",
                  "jupyter", "PyQt5", "PyQt6", "PySide2", "PySide6"]
@@ -102,7 +106,11 @@ def main() -> int:
                     help="emit a folder instead of a single .exe (faster start, "
                          "more reliable for the COM/makepy path)")
     ap.add_argument("--with-ui", action="store_true",
-                    help="bundle the optional ui extra (skrobot/fcl/viser)")
+                    help="bundle the full ui extra (skrobot/fcl/viser)")
+    ap.add_argument("--editor-ui", action="store_true",
+                    help="bundle just skrobot+fcl (web editor's live "
+                         "self-collision + auto joint limits) WITHOUT the "
+                         "standalone viser GUI -- lighter than --with-ui")
     ap.add_argument("--windowed", action="store_true",
                     help="no console window (default keeps the console so the "
                          "server URL / logs are visible)")
@@ -148,6 +156,17 @@ def main() -> int:
         "--collect-all", "trimesh",
         "--collect-all", "pydantic",
         "--collect-all", "pydantic_core",
+        # pycollada ships its COLLADA XSD under collada/resources/*.xml and
+        # reads it via importlib.resources at .dae export time -- without the
+        # DATA files the ROS-package (.dae) export dies with FileNotFoundError
+        "--collect-all", "collada",
+        # trimesh imports these LAZILY for mesh load / convert (3dxml parse,
+        # dae/stl export); PyInstaller's static scan of trimesh misses them, so
+        # a base (no-ui) exe dies with ModuleNotFoundError at export time.  The
+        # ui build gets them transitively via skrobot -- name them so EVERY
+        # build bundles them (their hooks then pull the needed bits).
+        "--collect-all", "networkx",
+        "--collect-all", "scipy",
         "--distpath", os.path.join(ROOT, "dist"),
         "--workpath", os.path.join(build_dir, "work"),
         "--specpath", build_dir,
@@ -157,10 +176,14 @@ def main() -> int:
 
     excludes = list(BASE_EXCLUDES)
     if args.with_ui:
-        for p in UI_PACKAGES:
-            pyi_args += ["--collect-all", p]
+        include_ui = UI_PACKAGES
+    elif args.editor_ui:
+        include_ui = EDITOR_UI_PACKAGES
     else:
-        excludes += UI_PACKAGES
+        include_ui = []
+    for p in include_ui:
+        pyi_args += ["--collect-all", p]
+    excludes += [p for p in UI_PACKAGES if p not in include_ui]
     for e in excludes:
         pyi_args += ["--exclude-module", e]
 
