@@ -3251,8 +3251,8 @@ async function locateAndExtract(droppedPath, file) {
     log(r.building
         ? 'file index is still building (first run walks the CAD shares, ' +
           'a few minutes) — try the drop again shortly, or use 🗄'
-        : 'not found on this machine — open it via the 🗄 server browser ' +
-          'instead', 'wrn');
+        : 'not found in the CAD shares or local Desktop/Downloads/Documents ' +
+          '— open it via the 🗄 server browser instead', 'wrn');
     return;
   }
   // multiple candidates: a prominent centered picker (the dim stays behind it)

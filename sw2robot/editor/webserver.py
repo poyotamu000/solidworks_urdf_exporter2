@@ -165,10 +165,73 @@ def _resolve_package(path):
 
 
 # --- .sldasm basename index (NO SolidWorks needed: plain os.walk) ---------
-_DEFAULT_CAD_ROOTS = [
-    r"G:\共有ドライブ\KXR\kxr-design",
-    r"G:\共有ドライブ\Designs\Mechanical Design",
+# Google Drive for Desktop localises the "Shared drives" mount folder by the
+# app's display LANGUAGE -- it is 共有ドライブ in Japanese, "Shared drives" in
+# English, "Unidades compartidas" in Spanish, and so on.  Hardcoding one name
+# silently breaks the index (and every absolute part reference) the moment the
+# language is switched, so resolve the live name at runtime instead.
+_GDRIVE_LETTER = "G:"
+_SHARED_DRIVE_NAMES = ["共有ドライブ", "Shared drives", "Unidades compartidas",
+                       "Geteilte Ablagen", "Drive partagés", "공유 드라이브",
+                       "共享云端硬盘", "Gedeelde drives"]
+# CAD roots as paths RELATIVE to the shared-drives mount folder
+_CAD_ROOT_RELS = [
+    r"KXR\kxr-design",
+    r"Designs\Mechanical Design",
 ]
+
+
+def _shared_drives_base():
+    """The Google Drive 'Shared drives' mount folder under G:, by whatever
+    localised name it currently carries; None if G: isn't mounted."""
+    drive = _GDRIVE_LETTER + "\\"
+    for name in _SHARED_DRIVE_NAMES:               # known localisations first
+        p = os.path.join(drive, name)
+        if os.path.isdir(p):
+            return p
+    # unknown locale: pick any G:\<dir> that actually holds our CAD drives
+    firsts = {rel.split("\\", 1)[0].lower() for rel in _CAD_ROOT_RELS}
+    try:
+        for name in os.listdir(drive):
+            p = os.path.join(drive, name)
+            if os.path.isdir(p) and any(
+                    os.path.isdir(os.path.join(p, d)) for d in
+                    os.listdir(p) if d.lower() in firsts):
+                return p
+    except OSError:
+        pass
+    return None
+
+
+def _default_cad_roots():
+    """The configured CAD roots, resolved against the live shared-drives mount
+    name; empty when G: isn't available (the index then simply finds nothing
+    instead of walking dead Japanese-named paths)."""
+    base = _shared_drives_base()
+    if not base:
+        return []
+    return [os.path.join(base, rel) for rel in _CAD_ROOT_RELS]
+
+
+def _remap_share(path, base=None):
+    """Rewrite ``G:\\<old shared-drives name>\\...`` to the CURRENT mount name.
+
+    When Google Drive's display language is switched the only thing that moves
+    is the localised top folder (共有ドライブ <-> Shared drives <-> ...); the
+    sub-tree is identical.  So a stale cached path is fixed by swapping just
+    that one segment -- no need to re-walk the share (minutes over streaming).
+    Leaves non-G:, already-current, and unrecognised paths untouched."""
+    base = base or _shared_drives_base()
+    drive = _GDRIVE_LETTER + "\\"
+    if not base or not path.startswith(drive):
+        return path
+    oldname, _, tail = path[len(drive):].partition("\\")
+    cur = os.path.basename(base)
+    if tail and oldname != cur and oldname in _SHARED_DRIVE_NAMES:
+        return os.path.join(base, tail)
+    return path
+
+
 _SKIP_DIRS = {"backup", "backups", "old", "_old", "bak", "trash", ".git",
               "sandbox"}
 _INDEX_FILE = os.path.join(_DATA_DIR, "_sldasm_index.json")
@@ -197,7 +260,7 @@ def _build_index(roots):
                         n += 1
         _index["byname"], _index["count"] = byname, n
         with open(_INDEX_FILE, "w", encoding="utf-8") as f:
-            json.dump(byname, f)
+            json.dump({"roots": list(roots), "byname": byname}, f)
         print(f"[sw2robot.web] index: {n} .sldasm files indexed")
     except Exception as e:
         print(f"[sw2robot.web] index build failed: {e!r}")
@@ -213,16 +276,100 @@ def _ensure_index(roots):
             < _INDEX_MAX_AGE_S:
         try:
             with open(_INDEX_FILE, encoding="utf-8") as f:
-                _index["byname"] = json.load(f)
-            _index["count"] = sum(len(v)
-                                  for v in _index["byname"].values())
+                cached = json.load(f)
+            # accept both the new {"roots","byname"} and the old plain-{byname}
+            byname = cached["byname"] if isinstance(cached, dict) \
+                and "byname" in cached else cached
+            # the shared-drives mount may have been RENAMED (locale switch)
+            # since the cache was written -- repoint the stored paths to the
+            # live name in memory instead of re-walking the share (a walk over
+            # Google Drive streaming costs minutes for ~20k files).
+            base = _shared_drives_base()
+            n_remap = 0
+            for k, paths in byname.items():
+                fixed = [_remap_share(p, base) for p in paths]
+                n_remap += sum(a != b for a, b in zip(paths, fixed))
+                byname[k] = fixed
+            _index["byname"] = byname
+            _index["count"] = sum(len(v) for v in byname.values())
+            note = (f" ({n_remap} repointed to '{os.path.basename(base)}')"
+                    if n_remap and base else "")
             print(f"[sw2robot.web] index: {_index['count']} entries loaded "
-                  f"from cache")
+                  f"from cache{note}")
             return
         except Exception:
             pass
     threading.Thread(target=_build_index, args=(roots,),
                      daemon=True).start()
+
+
+def _shell_folder_roots():
+    """Desktop / Downloads / Documents as Windows ACTUALLY has them, read from
+    the per-user 'User Shell Folders' registry.  This is the only reliable way
+    when OneDrive's Known-Folder-Move has redirected them away from the plain
+    ``~\\Desktop`` path (a guess that then silently doesn't exist)."""
+    if os.name != "nt":
+        return []
+    keys = {"Desktop": "Desktop",
+            "Personal": "Documents",                       # Documents
+            "{374DE290-123F-4565-9164-39C4925E467B}": "Downloads"}
+    out = []
+    try:
+        import winreg
+        with winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Explorer"
+                r"\User Shell Folders") as k:
+            for val in keys:
+                try:
+                    raw, _ = winreg.QueryValueEx(k, val)
+                except OSError:
+                    continue
+                out.append(os.path.expandvars(raw))   # %USERPROFILE% etc.
+    except Exception:
+        pass
+    return out
+
+
+def _local_search_roots():
+    """Likely local spots for a hand-dropped .sldasm that lives OUTSIDE the
+    indexed CAD shares -- Desktop / Downloads / Documents under the user
+    profile (and their OneDrive mirrors).  A GUI .exe user typically drops a
+    working copy from one of these, which the drive index never walks."""
+    cands = list(_shell_folder_roots())          # registry truth first
+    bases = [os.path.expanduser("~")]
+    for var in ("OneDrive", "OneDriveConsumer", "OneDriveCommercial"):
+        if os.environ.get(var):
+            bases.append(os.environ[var])
+    for b in bases:                              # plain-path fallback guesses
+        for sub in ("Desktop", "Downloads", "Documents"):
+            cands.append(os.path.join(b, sub))
+    seen, out = set(), []
+    for c in cands:
+        c = os.path.normpath(c)
+        if c.lower() not in seen and os.path.isdir(c):
+            seen.add(c.lower())
+            out.append(c)
+    return out
+
+
+def _deep_find_basename(roots, base, time_budget_s=6.0):
+    """Bounded on-demand walk of ``roots`` for a file whose lowercased basename
+    is ``base``.  Stops at ``time_budget_s`` so a huge Downloads tree can't hang
+    the /api/locate request; skips the same junk dirs as the index build."""
+    hits = []
+    deadline = time.time() + time_budget_s
+    for root in roots:
+        for dirpath, dirnames, filenames in os.walk(root):
+            if time.time() > deadline:
+                return hits, True            # timed out -- partial result
+            dirnames[:] = [d for d in dirnames
+                           if d.lower() not in _SKIP_DIRS
+                           and not d.lower().endswith("_backups")]
+            for f in filenames:
+                if f.lower() == base and not f.startswith("~$"):
+                    hits.append(os.path.join(dirpath, f))
+    return hits, False
 
 
 def _locate_sldasm(name, size=None):
@@ -281,6 +428,17 @@ def _locate_sldasm(name, size=None):
                 p = key.rsplit("|", 1)[0]
                 if os.path.basename(p).lower() == base:
                     consider(p)
+    # last resort: the indexed sources (MRU / output / drive index / roots
+    # cache) all cover the CAD shares, not local folders.  A GUI .exe user
+    # usually drops a working copy from Desktop/Downloads/Documents, so walk
+    # those on demand before giving up.
+    if not out:
+        local, timed_out = _deep_find_basename(_local_search_roots(), base)
+        for p in local:
+            consider(p)
+        if timed_out:
+            print(f"[sw2robot.web] local search for {base} hit its time "
+                  f"budget; results may be incomplete")
     # exact-size hits first, then newest
     out.sort(key=lambda h: (not h["size_match"], -h["mtime"]))
     return out
@@ -760,17 +918,33 @@ def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg):
     threads -- the CPython convoy -- which inflated an 8 s sweep to ~90 s just
     by having a page open.  A fresh process has its own GIL and no server
     threads, so it stays at the true ~8 s (+~3 s to load the model)."""
+    import importlib.util
     import subprocess
     urdf = os.path.join(pkg_dir, urdf_rel)
     if not os.path.exists(urdf):
         return None, "URDF not found"
+    # the sweep needs the optional self-collision extra; the default .exe build
+    # ships without it (skrobot/fcl excluded to stay small).  Check up front so
+    # the user gets a clear reason instead of a subprocess ImportError tail.
+    if importlib.util.find_spec("skrobot") is None \
+            or importlib.util.find_spec("fcl") is None:
+        return None, ("auto joint limits need the self-collision extra "
+                      "(skrobot + fcl), which this build does not include. "
+                      "Rebuild the .exe with `build_exe.py --with-ui`, or run "
+                      "from a source checkout with the `ui` extra installed.")
+    # a frozen .exe has no `python -m`; re-invoke the exe itself with a sentinel
+    # (webserver.main dispatches it to _autolimits_cli).  A source run uses -m.
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "__autolimits__"]
+        cwd = _DATA_DIR
+    else:
+        cmd = [sys.executable, "-m", "sw2robot.editor._autolimits_cli"]
+        cwd = PROJECT_ROOT
+    cmd += [urdf, str(step_deg), str(max_deg)]
     _t0 = time.time()
     try:
-        p = subprocess.run(
-            [sys.executable, "-m", "sw2robot.editor._autolimits_cli",
-             urdf, str(step_deg), str(max_deg)],
-            capture_output=True, text=True, timeout=900,
-            cwd=PROJECT_ROOT)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
+                           cwd=cwd)
     except subprocess.TimeoutExpired:
         return None, "sweep timed out"
     if p.returncode != 0:
@@ -938,7 +1112,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     for d in string.ascii_uppercase:
                         if os.path.exists(f"{d}:\\"):
                             roots.append(f"{d}:\\")
-                    for r in [_Handler.root_dir, *_DEFAULT_CAD_ROOTS]:
+                    for r in [_Handler.root_dir, *_default_cad_roots()]:
                         if r and os.path.isdir(r) and r not in roots:
                             roots.append(r)
                     return self._send_json(
@@ -1716,7 +1890,7 @@ def serve(package_dir=None, root_dir=None, port=8090, cad_roots=None):
     atexit.register(_shutdown_sw)     # close the warm session on exit
     threading.Thread(target=_keepalive_loop, daemon=True).start()
     _Handler.root_dir = os.path.abspath(root_dir or _default_root())
-    _ensure_index(cad_roots or _DEFAULT_CAD_ROOTS)
+    _ensure_index(cad_roots or _default_cad_roots())
     if package_dir:
         pkg, rel = _resolve_package(package_dir)
         _Handler.pkg_dir, _Handler.urdf_rel = pkg, rel
@@ -1732,6 +1906,13 @@ def serve(package_dir=None, root_dir=None, port=8090, cad_roots=None):
 
 
 def main():
+    # self-dispatch: the auto-limit sweep re-invokes this exe as a subprocess
+    # (a frozen .exe has no `python -m` to call) with a sentinel first arg.
+    if len(sys.argv) > 1 and sys.argv[1] == "__autolimits__":
+        from ._autolimits_cli import main as _autolimits_main
+        del sys.argv[1]                       # _autolimits_cli reads argv[1:]
+        return _autolimits_main()
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("package_dir", nargs="?", default=None)
     ap.add_argument("--root", default=None,
