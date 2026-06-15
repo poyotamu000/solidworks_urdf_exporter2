@@ -638,30 +638,32 @@ def _zdir_to_rpy(zdir):
     return list(rpy)
 
 
+def _parse_urdf(pkg_dir, urdf_rel):
+    """Parse the served URDF via the editor's one canonical parser
+    (``parse_urdf_content``) -- the same code path ``core.load_module`` uses --
+    so link/joint listing and root-link detection don't drift between the
+    server and the rest of the editor.  Returns the parsed dict or None."""
+    from ._vendor.rc_config.urdf_parser import parse_urdf_content
+    try:
+        with open(os.path.join(pkg_dir, urdf_rel), encoding="utf-8") as f:
+            return parse_urdf_content(f.read())
+    except Exception:
+        return None
+
+
 def _urdf_names(pkg_dir, urdf_rel, tag):
     """Current ``<link>``/``<joint>`` names in the served URDF (the source of
     truth for what's on screen), for the rename collision check + root detect."""
-    import xml.etree.ElementTree as ET
-    try:
-        root = ET.parse(os.path.join(pkg_dir, urdf_rel)).getroot()
-    except Exception:
+    parsed = _parse_urdf(pkg_dir, urdf_rel)
+    if parsed is None:
         return []
-    return [e.get("name") for e in root.findall(tag) if e.get("name")]
+    return [e["name"] for e in parsed["links" if tag == "link" else "joints"]]
 
 
 def _urdf_root_link(pkg_dir, urdf_rel):
     """The root link name (the link that is never a joint's child)."""
-    import xml.etree.ElementTree as ET
-    try:
-        root = ET.parse(os.path.join(pkg_dir, urdf_rel)).getroot()
-    except Exception:
-        return None
-    children = {j.find("child").get("link") for j in root.findall("joint")
-                if j.find("child") is not None}
-    for ln in root.findall("link"):
-        if ln.get("name") not in children:
-            return ln.get("name")
-    return None
+    parsed = _parse_urdf(pkg_dir, urdf_rel)
+    return parsed["root_link"] if parsed else None
 
 
 def _list_packages(root):
