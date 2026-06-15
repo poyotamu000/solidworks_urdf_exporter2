@@ -24,17 +24,34 @@ import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from .state import JointEdit, RobotCompilerState
+from .state import RobotCompilerState
 
 __all__ = [
-    "import_module", "extract_and_import", "sw_recent_assemblies",
-    "sw_session_status", "load_module", "register_module",
-    "rename_joint", "set_limits", "set_mimic", "set_servo",
-    "set_axis_flip", "set_joint_type", "reverse_direction",
-    "set_actuator", "apply_servo_profile", "SERVO_PROFILES",
-    "chain_related", "movable_names", "validate",
-    "build_urdf", "export_ros_package",
-    "state_path", "save_state", "load_state", "load_edits",
+    "SERVO_PROFILES",
+    "apply_servo_profile",
+    "build_urdf",
+    "chain_related",
+    "export_ros_package",
+    "extract_and_import",
+    "import_module",
+    "load_edits",
+    "load_module",
+    "load_state",
+    "movable_names",
+    "register_module",
+    "rename_joint",
+    "reverse_direction",
+    "save_state",
+    "set_actuator",
+    "set_axis_flip",
+    "set_joint_type",
+    "set_limits",
+    "set_mimic",
+    "set_servo",
+    "state_path",
+    "sw_recent_assemblies",
+    "sw_session_status",
+    "validate",
 ]
 
 JOINT_TYPES = ("fixed", "revolute", "continuous", "prismatic")
@@ -253,7 +270,7 @@ def sw_recent_assemblies(limit: int = 10) -> list:
     # paths, parts AND assemblies mixed); keep the .sldasm ones in File-number
     # order so File1 (most-recently-opened) is first.
     for ver in sorted(versions, reverse=True):
-        sub = r"%s\%s\Recent File List" % (base, ver)
+        sub = rf"{base}\{ver}\Recent File List"
         items = []
         try:
             with winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub) as key:
@@ -361,8 +378,8 @@ SERVO_PROFILES = {
 
 
 def set_actuator(state: RobotCompilerState, joint: str,
-                 effort: Optional[float] = None,
-                 velocity: Optional[float] = None) -> None:
+                 effort: float | None = None,
+                 velocity: float | None = None) -> None:
     """Set the joint's effort (N*m) and/or velocity (rad/s) limits."""
     _require_joint(state, joint)
     e = state.edit_for(joint)
@@ -373,7 +390,7 @@ def set_actuator(state: RobotCompilerState, joint: str,
 
 
 def apply_servo_profile(state: RobotCompilerState, joint: str,
-                        model: Optional[str]) -> Optional[dict]:
+                        model: str | None) -> dict | None:
     """Record the servo model and, if known, auto-fill effort / velocity / range
     from its profile.  Returns the applied profile (or None)."""
     _require_joint(state, joint)
@@ -592,8 +609,8 @@ def export_ros_package(state: RobotCompilerState, out_path,
     """Produce the final ROS/MoveIt/Gazebo/IL config ZIP via the vendored
     ``rc_config.export_all_configs``.  With ``strict=True`` a non-empty
     ``validate(state)`` raises instead of writing a broken package."""
-    from ._vendor.rc_config.urdf_parser import parse_urdf_content
     from ._vendor.rc_config.export import export_all_configs
+    from ._vendor.rc_config.urdf_parser import parse_urdf_content
 
     problems = validate(state)
     if problems and strict:

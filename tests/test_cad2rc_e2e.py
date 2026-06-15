@@ -25,8 +25,12 @@ CACHE = REPO_ROOT / "output" / "feetech_hand"
 
 def _rc_config_available() -> bool:
     try:
-        from sw2robot.editor._vendor.rc_config.export import export_all_configs  # noqa: F401
-        from sw2robot.editor._vendor.rc_config.urdf_parser import parse_urdf_content  # noqa: F401
+        from sw2robot.editor._vendor.rc_config.export import (
+            export_all_configs,  # noqa: F401
+        )
+        from sw2robot.editor._vendor.rc_config.urdf_parser import (
+            parse_urdf_content,  # noqa: F401
+        )
     except Exception:
         return False
     return True

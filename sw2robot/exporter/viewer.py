@@ -72,9 +72,9 @@ def _wxyz_to_mat(q):
 def view(urdf_path, open_browser=True, labels=True, gizmos=True,
          gizmo_scale=0.05, axis_viz=True, axis_length=0.05):
     import skrobot
-    from skrobot.models.urdf import RobotModelFromURDF
-    from skrobot.model import Axis, Cylinder
     from skrobot.coordinates import Coordinates
+    from skrobot.model import Axis, Cylinder
+    from skrobot.models.urdf import RobotModelFromURDF
 
     print(f"loading URDF: {urdf_path}")
     robot = RobotModelFromURDF(urdf_file=urdf_path)

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import itertools
 import math
 import os
 import threading
@@ -29,8 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import autoinit
-from . import core
+from . import autoinit, core
 from .state import RobotCompilerState
 
 _PI = math.pi
@@ -95,7 +95,7 @@ def _rotation_arrow(color, radius=0.025, tube=0.0028, span_deg=290.0, n=36):
     pts = np.column_stack([radius * np.cos(angs), radius * np.sin(angs),
                            np.zeros_like(angs)])
     parts = [trimesh.creation.cylinder(radius=tube, segment=[a, b], sections=8)
-             for a, b in zip(pts[:-1], pts[1:])]
+             for a, b in itertools.pairwise(pts)]
     t = angs[-1]
     tangent = np.array([-np.sin(t), np.cos(t), 0.0])   # +theta direction at the tip
     cone = trimesh.creation.cone(radius=3.2 * tube, height=11.0 * tube, sections=12)
@@ -105,7 +105,7 @@ def _rotation_arrow(color, radius=0.025, tube=0.0028, span_deg=290.0, n=36):
     cone.apply_translation(pts[-1])
     parts.append(cone)
     arrow = trimesh.util.concatenate(parts)
-    arrow.visual = trimesh.visual.ColorVisuals(arrow, face_colors=list(color) + [255])
+    arrow.visual = trimesh.visual.ColorVisuals(arrow, face_colors=[*list(color), 255])
     return arrow
 
 
@@ -168,7 +168,7 @@ class RenderHandles:
         self._apply()
 
 
-def render_robot(server, robot) -> "tuple":
+def render_robot(server, robot) -> tuple:
     """Add each link's visual mesh (plus a hidden red copy) to the viser scene
     under a frame at the link's world pose.  Returns ``(refresh, handles)``;
     ``refresh()`` re-syncs the frames after an FK change."""
@@ -503,7 +503,7 @@ def build_gui(server, refresh, handles, watcher, robot,
     with joints_tab:
         server.gui.add_markdown("**Click a link in 3D** (or pick below) to edit it.")
         group_dd = server.gui.add_dropdown(
-            "chain", tuple(["(all)"] + group_names))
+            "chain", ("(all)", *group_names))
         select_dd = server.gui.add_dropdown("joint", tuple(orig_names))
         autoinit_btn = server.gui.add_button(
             "🪄 Auto-init limits (collision sweep)")
@@ -518,7 +518,7 @@ def build_gui(server, refresh, handles, watcher, robot,
         with server.gui.add_folder("🔗 bulk edit (selected joints)"):
             bulk_status = server.gui.add_markdown("_none selected_")
             bulk_mimic = server.gui.add_dropdown(
-                "mimic driver", tuple(["(none)"] + orig_names))
+                "mimic driver", ("(none)", *orig_names))
             bulk_mult = server.gui.add_number("mimic mult", initial_value=1.0)
             bulk_moff = server.gui.add_number("mimic offset", initial_value=0.0)
             bulk_mimic_btn = server.gui.add_button("apply mimic → selected")
@@ -526,7 +526,7 @@ def build_gui(server, refresh, handles, watcher, robot,
             bulk_hi = server.gui.add_number("upper", initial_value=0.0)
             bulk_lim_btn = server.gui.add_button("apply limits → selected")
             bulk_servo = server.gui.add_dropdown(
-                "servo model", ("(custom)",) + tuple(core.SERVO_PROFILES))
+                "servo model", ("(custom)", *tuple(core.SERVO_PROFILES)))
             bulk_servo_btn = server.gui.add_button("apply servo profile → selected")
             bulk_clear_btn = server.gui.add_button("clear selection")
         edit_status = server.gui.add_markdown("")
@@ -583,7 +583,7 @@ def build_gui(server, refresh, handles, watcher, robot,
                 velocity = server.gui.add_number("velocity (rad/s, 0=keep)", step=0.5,
                     initial_value=(e.velocity if e and e.velocity is not None else 0.0))
                 servo_model = server.gui.add_dropdown(
-                    "servo model", ("(custom)",) + tuple(core.SERVO_PROFILES),
+                    "servo model", ("(custom)", *tuple(core.SERVO_PROFILES)),
                     initial_value=(e.servo_model if e and e.servo_model in core.SERVO_PROFILES else "(custom)"))
                 servo_id = server.gui.add_number("servo_id (-1=none)", step=1,
                     initial_value=(e.servo_id if e and e.servo_id is not None else -1))
@@ -592,7 +592,7 @@ def build_gui(server, refresh, handles, watcher, robot,
                 offset = server.gui.add_number("angle_offset",
                     initial_value=(e.angle_offset if e else 0.0))
                 cands = [n for n in orig_names if n != jn]  # any movable joint
-                mimic = server.gui.add_dropdown("mimic", tuple(["(none)"] + cands),
+                mimic = server.gui.add_dropdown("mimic", ("(none)", *cands),
                     initial_value=(e.mimic_joint if e and e.mimic_joint in cands else "(none)"))
                 mult = server.gui.add_number("mimic mult",
                     initial_value=(e.mimic_multiplier if e else 1.0))
@@ -601,7 +601,7 @@ def build_gui(server, refresh, handles, watcher, robot,
                 flip = server.gui.add_checkbox("flip axis",
                     initial_value=bool(e and e.flip_axis))
                 reverse = server.gui.add_button("⇅ reverse direction (flip axis + swap limits)")
-                jtype = server.gui.add_dropdown("type", ("(keep)",) + core.JOINT_TYPES,
+                jtype = server.gui.add_dropdown("type", ("(keep)", *core.JOINT_TYPES),
                     initial_value=(e.jtype if e and e.jtype else "(keep)"))
         panel["handles"] = [angle, rename, lower, upper, set_lo, set_hi, autofit,
                             effort, velocity, servo_model,
@@ -609,10 +609,10 @@ def build_gui(server, refresh, handles, watcher, robot,
                             flip, reverse, jtype, fold]
         sliders[jn] = angle
         dbg["jn"] = jn
-        dbg["w"] = dict(angle=angle, rename=rename, lower=lower, upper=upper,
-                        set_lo=set_lo, set_hi=set_hi, servo_id=servo_id,
-                        direction=direction, offset=offset, mimic=mimic,
-                        mult=mult, moff=moff, flip=flip, reverse=reverse, jtype=jtype)
+        dbg["w"] = {"angle": angle, "rename": rename, "lower": lower, "upper": upper,
+                        "set_lo": set_lo, "set_hi": set_hi, "servo_id": servo_id,
+                        "direction": direction, "offset": offset, "mimic": mimic,
+                        "mult": mult, "moff": moff, "flip": flip, "reverse": reverse, "jtype": jtype}
 
         def on_angle(_):
             if _suppress["on"]:

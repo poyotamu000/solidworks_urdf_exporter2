@@ -168,7 +168,7 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
             return
         try:
             data = _CONVERT[fmt](src)
-        except Exception as e:             # noqa: BLE001 -- report, don't die
+        except Exception as e:
             errors.append(f"{base}: {fmt} convert failed ({e!r})")
             return
         arc = f"{pkg}/meshes/{base}.{fmt}"

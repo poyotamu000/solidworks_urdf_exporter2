@@ -53,7 +53,7 @@ def test_build_emits_real_inertia(built_pkg):
             off_com += 1
 
     # not the old uniform 0.1 kg placeholder: masses must vary and be plausible
-    assert len(set(round(m, 6) for m in masses)) > 1, "masses look like placeholders"
+    assert len({round(m, 6) for m in masses}) > 1, "masses look like placeholders"
     assert 0.01 < sum(masses) < 50.0, f"total mass {sum(masses)} kg implausible"
     assert off_com > 0, "no link has an off-origin centre of mass"
 
@@ -121,7 +121,7 @@ def test_sweep_limits_finds_limits_and_restores_pose(built_pkg):
     res = autoinit.sweep_limits(robot, meshes, step_deg=6, max_deg=120)
 
     assert res, "no revolute joints swept"
-    for jn, v in res.items():
+    for _jn, v in res.items():
         assert v["lower"] <= v["upper"]
         # a non-continuous joint that hit a collision must be a finite sub-range
         if v["hit_upper"] is not None:

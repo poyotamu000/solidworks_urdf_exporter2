@@ -1,6 +1,5 @@
 """Rename overlay: write_urdf applies link/joint name overrides (refs follow,
 names sanitised) and the webserver's joints.yaml helpers round-trip."""
-import os
 import xml.etree.ElementTree as ET
 
 import numpy as np

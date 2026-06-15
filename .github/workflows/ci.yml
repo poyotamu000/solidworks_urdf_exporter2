@@ -8,6 +8,7 @@ name: CI
 # push to main is always a just-tested merge -- re-running CI on that push
 # is pure duplication.  workflow_dispatch is kept for manual main runs.
 #
+#   lint        -- ruff (bug-focused rule set; config in pyproject.toml)
 #   test        -- the pytest suite (Linux, no SolidWorks needed)
 #   build-check -- freezes the web editor .exe on Windows x64 exactly like
 #                  release.yml, but does NOT upload or release it; it just
@@ -28,6 +29,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.15.17"   # pinned; bump deliberately
+
   test:
     name: pytest
     runs-on: ubuntu-latest

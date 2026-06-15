@@ -20,7 +20,6 @@ import sys
 import tempfile
 
 
-
 def _fast_urdf(urdf):
     """Return a URDF path whose mesh refs prefer the ``.3dxml.glb`` caches.
 
@@ -54,6 +53,7 @@ def main():
     urdf, step_deg, max_deg = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
     import trimesh
     from skrobot.models.urdf import RobotModelFromURDF
+
     from sw2robot.editor import autoinit
 
     load_urdf, is_tmp = _fast_urdf(urdf)

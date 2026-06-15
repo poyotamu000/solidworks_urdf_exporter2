@@ -15,7 +15,7 @@ and the vendored ``sw2robot.editor._vendor.rc_config`` (ROS/MoveIt/Gazebo
 config generators).
 """
 
-from .state import JointEdit, RobotCompilerState
 from . import core
+from .state import JointEdit, RobotCompilerState
 
-__all__ = ["RobotCompilerState", "JointEdit", "core"]
+__all__ = ["JointEdit", "RobotCompilerState", "core"]

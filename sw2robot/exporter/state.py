@@ -93,5 +93,5 @@ class GraphState(BaseModel):
 
     @classmethod
     def load(cls, path):
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return cls.model_validate_json(f.read())

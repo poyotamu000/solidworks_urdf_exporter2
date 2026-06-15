@@ -29,8 +29,8 @@ def test_safe_name_strips_unsafe_chars():
 
 
 def test_exporter_sanitizes_root_and_port(tmp_path):
-    from sw2robot.exporter.model import Component, Joint, Port, RobotModel
     from sw2robot.exporter import urdf_writer
+    from sw2robot.exporter.model import Component, Joint, Port, RobotModel
 
     comps = [
         Component(name="Base-1", link_name="base_link", part_path=None,

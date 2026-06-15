@@ -35,6 +35,7 @@ def test_mesh_to_dae_scale_and_loadable():
     if not os.path.exists(_SAMPLE_MESH):
         pytest.skip("sample .3dxml mesh not present")
     import trimesh
+
     from sw2robot.exporter.ros_export import _mesh_to_dae_bytes
 
     src = trimesh.load(_SAMPLE_MESH)
@@ -60,6 +61,7 @@ def test_mesh_to_dae_scale_and_loadable():
 
 def test_build_ros_description_layout(tmp_path):
     import trimesh
+
     from sw2robot.exporter.ros_export import build_ros_description
 
     pkg_dir = _make_pkg(tmp_path, robot="fing")
@@ -96,9 +98,11 @@ def test_build_ros_description_layout(tmp_path):
 
 def test_glb_ctx_exports_uniform_glb(tmp_path):
     import io
-    import trimesh
     import xml.etree.ElementTree as ET
-    from sw2robot.exporter.ros_export import build_ros_description, GLB_CTX_FMT
+
+    import trimesh
+
+    from sw2robot.exporter.ros_export import GLB_CTX_FMT, build_ros_description
 
     pkg_dir = _make_pkg(tmp_path, robot="g")
     files = dict(build_ros_description(pkg_dir, "g", ctx_fmt=GLB_CTX_FMT))
@@ -134,9 +138,10 @@ def test_working_package_is_not_modified(tmp_path):
 def test_texture_glb_colours_become_collada_materials(tmp_path):
     import numpy as np
     pytest.importorskip("PIL")
-    from PIL import Image
     import trimesh
+    from PIL import Image
     from trimesh.visual.texture import TextureVisuals
+
     from sw2robot.exporter.ros_export import _mesh_to_dae_bytes
 
     mesh = trimesh.creation.box(extents=(1, 1, 1))

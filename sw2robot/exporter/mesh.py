@@ -12,9 +12,16 @@ from __future__ import annotations
 
 import os
 
-from .swcom import (safe_prop, safe_call, as_iface, byref_long,
-                    doc_type_for, SW_OPEN_SILENT,
-                    SW_SAVEAS_SILENT, SW_SAVEAS_COPY)
+from .swcom import (
+    SW_OPEN_SILENT,
+    SW_SAVEAS_COPY,
+    SW_SAVEAS_SILENT,
+    as_iface,
+    byref_long,
+    doc_type_for,
+    safe_call,
+    safe_prop,
+)
 
 _SAVE_OPTS = SW_SAVEAS_SILENT | SW_SAVEAS_COPY  # 3
 # a 3DXML below this is just the empty-document envelope (no tessellation);
