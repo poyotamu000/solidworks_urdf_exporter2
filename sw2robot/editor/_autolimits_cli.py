@@ -51,7 +51,6 @@ def _fast_urdf(urdf):
 
 def main():
     urdf, step_deg, max_deg = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
-    import trimesh
     from skrobot.models.urdf import RobotModelFromURDF
 
     from sw2robot.editor import autoinit
@@ -65,15 +64,7 @@ def main():
                 os.remove(load_urdf)
             except OSError:
                 pass
-    meshes = {}
-    for l in robot.link_list:
-        vm = getattr(l, "visual_mesh", None)
-        ms = (vm if isinstance(vm, (list, tuple)) else [vm]) \
-            if vm is not None else []
-        ms = [m for m in ms if hasattr(m, "vertices") and len(m.vertices)]
-        if ms:
-            meshes[l.name] = (trimesh.util.concatenate(ms)
-                              if len(ms) > 1 else ms[0])
+    meshes = autoinit.link_meshes(robot)
 
     results = autoinit.sweep_limits(
         robot, meshes, step_deg=step_deg, max_deg=max_deg, margin_deg=2.0,

@@ -116,20 +116,6 @@ def _slider_range(j: dict) -> tuple[float, float]:
     return (lo, hi)
 
 
-def _link_mesh(link):
-    """A single trimesh for a link's visual geometry (local frame), or None."""
-    import trimesh
-    vm = getattr(link, "visual_mesh", None)
-    if vm is None:
-        return None
-    if isinstance(vm, (list, tuple)):
-        vm = [m for m in vm if m is not None]
-        if not vm:
-            return None
-        return trimesh.util.concatenate(vm) if len(vm) > 1 else vm[0]
-    return vm
-
-
 def _pose(link):
     """(position xyz, quaternion wxyz) of a link in world coords."""
     c = link.worldcoords()
@@ -176,7 +162,7 @@ def render_robot(server, robot) -> tuple:
 
     h = RenderHandles()
     for link in robot.link_list:
-        mesh = _link_mesh(link)
+        mesh = autoinit.link_visual_mesh(link)
         if mesh is None:
             continue
         pos, wxyz = _pose(link)
@@ -206,81 +192,6 @@ def render_robot(server, robot) -> tuple:
                 fr.position, fr.wxyz = _pose(link)
 
     return refresh, h
-
-
-def _collision_mesh(mesh):
-    """A cheap proxy for fcl: the convex hull (built-in, ~100x faster than the
-    raw CAD mesh -- base_link alone is 117k faces).  Since the baseline is
-    computed with the SAME proxies, hull-induced static overlaps are absorbed
-    into the baseline and never show as a new collision."""
-    try:
-        hull = mesh.convex_hull
-        if hull is not None and len(hull.faces):
-            return hull
-    except Exception:
-        pass
-    return mesh
-
-
-class CollisionWatcher:
-    """Self-collision detector. Pairs touching at the REST pose, plus
-    parent/child adjacency, are the allowed baseline; any NEW colliding pair is
-    reported so the offending links can be highlighted (the user's request).
-
-    Collision geometry is the per-link convex hull, not the full CAD mesh, so a
-    query is ~2 ms instead of ~200 ms (the FK slider stays interactive)."""
-
-    def __init__(self, robot, meshes: dict, margin: float = 0.002):
-        from trimesh.collision import CollisionManager
-        self.robot = robot
-        self.names = list(meshes)
-        self._link = {l.name: l for l in robot.link_list}
-        self.margin = margin            # penetration (m) before a pair counts
-        self.cm = CollisionManager()
-        for name in self.names:
-            self.cm.add_object(name, _collision_mesh(meshes[name]),
-                               transform=self._link[name].worldcoords().T())
-        # Baseline = EVERY pair touching at rest (margin 0), plus parent/child
-        # adjacency.  A "new" collision must penetrate past ``margin``, so the
-        # depth~0 grazing contacts that flicker on fcl's boundary never trigger.
-        self.baseline = self._pairs(0.0)
-        for j in robot.joint_list:
-            if j.parent_link and j.child_link:
-                self.baseline.add(frozenset((j.parent_link.name, j.child_link.name)))
-
-    def _pairs(self, margin) -> set:
-        """Colliding link pairs whose max penetration depth exceeds ``margin``."""
-        _, names, data = self.cm.in_collision_internal(return_names=True,
-                                                        return_data=True)
-        if margin <= 0:
-            return {frozenset(p) for p in names}
-        depth = {}
-        for d in data:
-            k = frozenset(d.names)
-            depth[k] = max(depth.get(k, 0.0), abs(d.depth))
-        return {k for k, v in depth.items() if v > margin}
-
-    def offenders(self):
-        """(new_pairs, offending_link_names) at the robot's current pose."""
-        for name in self.names:
-            self.cm.set_transform(name, self._link[name].worldcoords().T())
-        new = self._pairs(self.margin) - self.baseline
-        links = set()
-        for p in new:
-            links |= set(p)
-        return new, links
-
-    def min_distance(self):
-        """``(distance_m, (link_a, link_b))`` for the closest separated pair, or
-        ``(inf, None)`` if nothing is near.  fcl skips pairs already in contact,
-        so a touching/penetrating pair shows up via ``offenders`` instead."""
-        for name in self.names:
-            self.cm.set_transform(name, self._link[name].worldcoords().T())
-        try:
-            d, names = self.cm.min_distance_internal(return_names=True)
-        except Exception:
-            return float("inf"), None
-        return float(d), (tuple(sorted(names)) if names else None)
 
 
 def build_gui(server, refresh, handles, watcher, robot,
@@ -994,7 +905,7 @@ def mount_module(server, state: RobotCompilerState, export_dir: Path):
 
     robot = RobotModelFromURDF(urdf_file=state.urdf_path)
     refresh, handles = render_robot(server, robot)
-    watcher = CollisionWatcher(robot, handles.meshes)
+    watcher = autoinit.SelfCollision(robot, handles.meshes)
     build_gui(server, refresh, handles, watcher, robot, state, export_dir)
     print(f"[sw2robot.ui] mounted '{state.robot_name}': {len(state.joints)} joints "
           f"({len(state.movable_joints())} movable), root={state.root_link}")

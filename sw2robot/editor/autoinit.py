@@ -57,6 +57,34 @@ def _descendants(root, children):
     return out
 
 
+def link_visual_mesh(link):
+    """A single local-frame trimesh for a skrobot link's visual geometry, or
+    None.  ``visual_mesh`` is a single mesh, a list, or None depending on the
+    URDF; empty meshes are dropped and a multi-mesh link is concatenated."""
+    import trimesh
+    vm = getattr(link, "visual_mesh", None)
+    ms = (vm if isinstance(vm, (list, tuple)) else [vm]) \
+        if vm is not None else []
+    ms = [m for m in ms
+          if m is not None and hasattr(m, "vertices") and len(m.vertices)]
+    if not ms:
+        return None
+    return trimesh.util.concatenate(ms) if len(ms) > 1 else ms[0]
+
+
+def link_meshes(robot):
+    """``{link name -> local-frame trimesh}`` for every link that has visual
+    geometry -- the per-link mesh map both :class:`SelfCollision` and
+    :func:`sweep_limits` take.  One place so the webserver, the autolimits
+    subprocess and the viser UI build it identically."""
+    out = {}
+    for l in robot.link_list:
+        m = link_visual_mesh(l)
+        if m is not None:
+            out[l.name] = m
+    return out
+
+
 class SelfCollision:
     """Convex-hull self-collision model over a skrobot robot.
 
@@ -105,6 +133,16 @@ class SelfCollision:
         """Colliding link pairs (beyond the rest baseline) at the current pose."""
         self._sync()
         return self._pairs(self.margin) - self.baseline
+
+    def offenders(self):
+        """``(new_pairs, offending_link_names)`` at the current pose -- the live
+        drag highlight wants the flat set of links to tint as well as the
+        pairs."""
+        new = self.new_pairs()
+        links = set()
+        for p in new:
+            links |= set(p)
+        return new, links
 
     def min_distance(self):
         """``(distance_m, (link_a, link_b))`` of the closest non-adjacent pair,

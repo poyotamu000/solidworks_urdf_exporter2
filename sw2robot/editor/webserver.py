@@ -864,21 +864,11 @@ _coll = {"key": None, "ctx": None, "building": False, "error": None}
 def _build_collision(urdf_path, key):
     try:
         import numpy as np
-        import trimesh
         from skrobot.models.urdf import RobotModelFromURDF
 
         from . import autoinit
         robot = RobotModelFromURDF(urdf_file=urdf_path)
-        meshes = {}
-        for l in robot.link_list:
-            vm = getattr(l, "visual_mesh", None)
-            ms = (vm if isinstance(vm, (list, tuple)) else [vm]) \
-                if vm is not None else []
-            ms = [m for m in ms
-                  if hasattr(m, "vertices") and len(m.vertices)]
-            if ms:
-                meshes[l.name] = (trimesh.util.concatenate(ms)
-                                  if len(ms) > 1 else ms[0])
+        meshes = autoinit.link_meshes(robot)
         sc = autoinit.SelfCollision(robot, meshes)
         joints = {}
         for j in robot.joint_list:
