@@ -417,13 +417,21 @@ def build_mate_graph(doc, comps):
     return adjacency, ground
 
 
-def choose_base(comps, ground, base_hint=None):
+def choose_base(comps, ground, base_hint=None, adjacency=None):
     """Pick the base/root component.
 
     If ``base_hint`` (a case-insensitive substring) matches a component name or
-    link name, that wins -- the auto heuristics below are unreliable when the
-    only assembly-grounded component is a manipulated object (e.g. a workpiece
-    mated to the origin) rather than the structural frame."""
+    link name, that wins -- the auto heuristic below is unreliable when the only
+    assembly-grounded component is a manipulated object (e.g. a workpiece mated
+    to the origin) rather than the structural frame.
+
+    Auto pick: the mate-graph HUB -- the part the most components bolt to.  The
+    CAD ground set is unreliable (the designer often fixes a convenient arm part
+    near the origin, NOT the frame), and the part nearest the arbitrary CAD
+    origin is just as arbitrary; the frame everything attaches to is the
+    highest-degree node.  Ties break toward a grounded/fixed part, then the part
+    nearest the assembly centroid.  (Falls back to grounded/centroid when no
+    adjacency is supplied.)"""
     if base_hint:
         h = base_hint.lower()
         for c in comps:        # exact match wins (UI sends full link names)
@@ -435,16 +443,19 @@ def choose_base(comps, ground, base_hint=None):
         print(f"      WARN: base hint '{base_hint}' matched nothing; "
               f"falling back to auto")
 
-    def dist2(c):
-        t = c.world[:3, 3]
-        return float(t @ t)
-    fixed = [c for c in comps if c.fixed]
-    if fixed:
-        return min(fixed, key=dist2)
-    grounded = [c for c in comps if c.name in ground]
-    if grounded:
-        return min(grounded, key=dist2)
-    return min(comps, key=dist2)
+    deg = {c.name: 0 for c in comps}
+    for key in (adjacency or ()):
+        for n in key:
+            if n in deg:
+                deg[n] += 1
+    pts = np.array([np.asarray(c.world, float)[:3, 3] for c in comps], float)
+    centroid = pts.mean(axis=0) if len(pts) else np.zeros(3)
+
+    def score(c):
+        p = np.asarray(c.world, float)[:3, 3]
+        return (deg[c.name], bool(c.fixed) or c.name in ground,
+                -float(np.sum((p - centroid) ** 2)))
+    return max(comps, key=score)
 
 
 def classify_edge(types, axis):
@@ -1964,7 +1975,7 @@ def build_model(graph, robot_name=None, base_hint=None, config=None,
     root_z_offset = (config.get("root_z_offset", 0.0) if config else 0.0)
     root_xyz = (config.get("root_xyz") if config else None)
 
-    base = choose_base(comps, ground, base_hint)
+    base = choose_base(comps, ground, base_hint, adjacency)
     print(f"      base link: {base.link_name}")
     joints = build_tree(comps, adjacency, base, directed=directed,
                         root_rpy=root_rpy, root_z_offset=root_z_offset,
