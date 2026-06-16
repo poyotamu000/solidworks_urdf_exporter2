@@ -1040,42 +1040,70 @@ def _auto_parent_map(comps, adjacency, base):
         return sorted(nbs, key=lambda nb: (
             tuple(-x for x in _edge_pref(cur, nb)), nb))
 
-    def _twin_host(root, rpos):
-        """Mirror/copy rule for a mate-less part: SolidWorks 'Mirror Components'
-        and pattern copies carry NO mates, so a mirrored part (e.g. the right
-        gripper finger) reaches here with nothing to connect to and the plain
-        nearest-component fallback wrongly bolts it to whatever sits closest --
-        often a SIBLING copy, not its real mount.  But the SAME part is mated on
-        the original side: reuse that.  If ``root``'s mated twins (other
-        instances of the same part, placed through REAL mates) all hang off the
-        same parent PART, attach ``root`` to the nearest already-placed instance
-        of that part -- i.e. connect the copy exactly like its mirror original.
-        Returns the host name, or None when there is no unambiguous twin."""
+    def _twin_parent_parts(root):
+        """Parent PARTS of ``root``'s mated twins (other instances of the same
+        part placed through REAL mates) -- the connection(s) the mirror copy can
+        reuse."""
         rp = by_name[root].part_path
         if not rp:
-            return None
-        parent_parts = set()
+            return set()
+        out = set()
         for c in comps:
             if (c.name != root and c.part_path == rp
                     and c.name in visited and c.name not in mate_less
                     and c.name in parent_of):
                 par = by_name.get(parent_of[c.name])
                 if par is not None and par.part_path:
-                    parent_parts.add(par.part_path)
-        if len(parent_parts) != 1:
-            return None          # no mated twin, or twins disagree -> don't guess
-        target = next(iter(parent_parts))
-        insts = [c.name for c in comps if c.part_path == target]
-        if not insts:
+                    out.add(par.part_path)
+        return out
+
+    def _twin_host(root, rpos):
+        """Mirror/copy rule for a mate-less part: SolidWorks 'Mirror Components'
+        and pattern copies carry NO mates, so a mirrored part (e.g. the right
+        gripper finger) reaches here with nothing to connect to and the plain
+        nearest-component fallback wrongly bolts it to whatever sits closest --
+        often a SIBLING copy, not its real mount.  The SAME part is mated on the
+        original side, so reuse that: attach ``root`` to the nearest instance of
+        a twin's parent PART -- i.e. connect the copy exactly like its mirror
+        original.  When the part is used under several different parents (3 arm
+        instances on different mounts), disambiguate by geometry: take the
+        parent-part whose nearest instance is closest to ``root``.  Commit only
+        if that instance is already placed; otherwise (the same-side parent is
+        not reached yet) defer, so the rule never crosses sides."""
+        cands = []
+        for tgt in _twin_parent_parts(root):
+            insts = [c.name for c in comps if c.part_path == tgt]
+            if insts:
+                n = min(insts, key=lambda x: float(np.sum(
+                    (by_name[x].world[:3, 3] - rpos) ** 2)))
+                d = float(np.sum((by_name[n].world[:3, 3] - rpos) ** 2))
+                cands.append((d, n))
+        if not cands:
             return None
-        # the host is the instance of the parent part nearest ``root`` in world
-        # space (the same-side copy).  Only commit if it is ALREADY placed: if
-        # the right-side parent has not been reached yet, grabbing the nearest
-        # PLACED instance would cross sides (a right finger onto a left base), so
-        # defer to the plain nearest-component fallback instead of guessing.
-        nearest = min(insts, key=lambda n: float(np.sum(
-            (by_name[n].world[:3, 3] - rpos) ** 2)))
-        return nearest if nearest in visited else None
+        cands.sort()
+        _d, host = cands[0]            # the closest mirror parent
+        return host if host in visited else None
+
+    def _depth(name):
+        d = 0
+        while name in parent_of and d <= len(comps):
+            name = parent_of[name]
+            d += 1
+        return d
+
+    def _twin_depth(root):
+        """Depth in the mated (original) tree of ``root``'s shallowest twin --
+        how far the limb's anchor is from the base.  Big when ``root`` has no
+        mated twin (a true island), so those order by distance instead.  The
+        base itself counts (a part whose twin IS the root is the limb anchor)."""
+        rp = by_name[root].part_path
+        if not rp:
+            return 1 << 30
+        ds = [_depth(c.name) for c in comps
+              if c.name != root and c.part_path == rp
+              and c.name in visited and c.name not in mate_less
+              and (c.name in parent_of or c.name == base.name)]
+        return min(ds) if ds else (1 << 30)
 
     while True:
         bfs_within(0, [base.name, *sorted(parent_of)])
@@ -1101,20 +1129,29 @@ def _auto_parent_map(comps, adjacency, base):
         rem = [c.name for c in comps if c.name not in visited]
         if not rem:
             break
-        # mate-less / disconnected island.  FIRST try the mirror/copy rule:
-        # a part with no mates of its own but whose twin IS mated inherits that
-        # twin's connection (so a mirrored finger lands on the gripper base, not
-        # on the sibling finger that merely sits closest).  Otherwise attach to
-        # the NEAREST already-placed component, not blindly to the base -- an
-        # unmated connector sitting on a moving link must ride that link, or it
-        # stays welded to the base while its neighbours move away.
-        root = min(rem, key=dist2)
-        rpos = by_name[root].world[:3, 3]
-        host = _twin_host(root, rpos)
-        if host is not None:
+        # mate-less / disconnected island.  PREFER the mirror/copy rule: among
+        # the unplaced parts attach any whose mated twin's connection can be
+        # mirrored NOW (its same-side parent is already placed).  Doing these
+        # first lets a whole mirrored limb cascade in tree order -- shoulder
+        # before elbow before wrist -- instead of a child being reached before
+        # its parent and welding to whatever sits closest.
+        mirrorable = [(r, _twin_host(r, by_name[r].world[:3, 3])) for r in rem]
+        mirrorable = [(r, h) for r, h in mirrorable if h is not None]
+        if mirrorable:
+            root, host = min(mirrorable, key=lambda rh: dist2(rh[0]))
             print(f"      note: '{root}' has no mates; mirroring its mated "
                   f"twin's connection -> '{host}'")
         else:
+            # Nothing can mirror yet -> a whole mirrored limb is waiting on its
+            # own anchor (the part whose twin sits highest in the original tree,
+            # e.g. the one whose twin is the root).  Break the deadlock THERE:
+            # attach the leftover with the SHALLOWEST twin nearest-component, so
+            # once it lands everything below it mirrors in tree order.  Distance
+            # to base breaks ties and orders true islands with no twin.  An
+            # unmated connector on a moving link thus rides that link, not the
+            # base.
+            root = min(rem, key=lambda r: (_twin_depth(r), dist2(r)))
+            rpos = by_name[root].world[:3, 3]
             host = min(visited,
                        key=lambda n: float(np.sum(
                            (by_name[n].world[:3, 3] - rpos) ** 2)))

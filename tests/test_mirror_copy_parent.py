@@ -94,6 +94,37 @@ def test_mirror_copy_inherits_the_twins_revolute_and_axis():
     assert abs(abs(float(np.asarray(right["axis"][1]) @ [0, 0, 1])) - 1.0) < 1e-6
 
 
+def test_mirror_chain_cascades_in_tree_order_not_to_nearest():
+    """A whole mate-less limb (shoulder->elbow) must rebuild in tree order: the
+    elbow copy attaches to the shoulder copy, even though it sits closest to the
+    base.  This needs the shoulder copy placed first so the elbow can mirror
+    onto it, instead of the elbow grabbing the nearest placed component."""
+    base = _c("base", "root.SLDASM", (0, 0, 0))
+    shoulder_l = _c("shoulder_l", "shoulder.SLDASM", (-1.0, 0, 0))
+    elbow_l = _c("elbow_l", "elbow.SLDASM", (-1.0, 0, 0.10))
+    # right copies (no mates); the elbow copy sits RIGHT NEXT TO the base, so a
+    # nearest-component fallback would wrongly weld it to the base
+    shoulder_r = _c("shoulder_r", "shoulder.SLDASM", (1.0, 0, 0))
+    elbow_r = _c("elbow_r", "elbow.SLDASM", (0.1, 0, 0.05))
+
+    adjacency = {
+        frozenset(("base", "shoulder_l")):
+            {"types": ["COINCIDENT"], "axis": None, "mates": []},
+        frozenset(("shoulder_l", "elbow_l")):
+            {"types": ["CONCENTRIC"],
+             "axis": (np.zeros(3), np.array([0.0, 1.0, 0.0])), "mates": []},
+    }
+    comps = [base, shoulder_l, elbow_l, shoulder_r, elbow_r]
+    parent_of, edge_info = _auto_parent_map(comps, adjacency, base)
+
+    assert parent_of["shoulder_r"] == "base"
+    # the elbow copy rides the shoulder copy, NOT the nearby base
+    assert parent_of["elbow_r"] == "shoulder_r", \
+        "elbow copy welded to nearest component instead of cascading"
+    # and it inherits the elbow's revolute, not a dead fixed link
+    assert edge_info[("elbow_r", "shoulder_r")]["type"] == "revolute"
+
+
 def test_rule_defers_instead_of_crossing_sides_when_same_side_base_unplaced():
     """The right base EXISTS but, being farther from the root, is reached AFTER
     the right finger.  The finger's world-nearest base instance is the (still
