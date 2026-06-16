@@ -877,6 +877,64 @@ def _demote_coaxial_duplicates(edge, adjacency):
                 kept.append((p, d))
 
 
+def _mirror_axis_fallback(comps, edge_info, inherit_type=False):
+    """Give a mate-less child the joint of its mated twin.
+
+    A SolidWorks mirror-feature copy or pattern copy carries no mates, so its
+    edge reaches here with no axis (and, in the auto tree, no joint type).  But
+    the SAME part is a real joint on the original side: the axis is a feature of
+    that part, identical in the part's own frame, so reflect each twin's axis
+    into this child's pose -- ``ax = W_child . W_twin^-1 . ax_twin`` -- and
+    accept it when every same-part twin AGREES up to sign (four identical wheels
+    share one spin axis; a part used in unrelated roles stays ambiguous and is
+    left untouched).  With ``inherit_type`` the twin's joint TYPE is copied too
+    (the auto tree has no mate to type the copy, so a mirrored revolute would
+    otherwise weld as a fixed link)."""
+    by_name = {c.name: c for c in comps}
+    axis_by_child = {ch: info["axis"] for (ch, _pa), info in edge_info.items()
+                     if info.get("axis") is not None}
+    type_by_child = {ch: info.get("type") for (ch, _pa), info in
+                     edge_info.items() if info.get("axis") is not None}
+    for (child, parent), info in edge_info.items():
+        if info.get("axis") is not None:
+            continue
+        cR = by_name.get(child)
+        if cR is None or not cR.part_path:
+            continue
+        sibs = [ch for ch in axis_by_child
+                if ch != child and by_name.get(ch)
+                and by_name[ch].part_path == cR.part_path]
+        cands = []
+        WR = np.asarray(cR.world, float)
+        for s in sibs:
+            try:
+                T = WR @ np.linalg.inv(np.asarray(by_name[s].world, float))
+            except np.linalg.LinAlgError:
+                continue
+            axS = axis_by_child[s]
+            pt = (T @ np.append(np.asarray(axS[0], float), 1.0))[:3]
+            d = T[:3, :3] @ np.asarray(axS[1], float)
+            nrm = float(np.linalg.norm(d))
+            if nrm > 1e-9:
+                cands.append((pt, d / nrm))
+        if not cands:
+            continue
+        d0 = cands[0][1]
+        if not all(abs(float(d0 @ d)) > 0.99 for _, d in cands):
+            continue                      # siblings disagree -> truly ambiguous
+        info["axis"] = cands[0]
+        info["mirrored_axis"] = True
+        if inherit_type and info.get("type") not in _MOVABLE_TYPES:
+            ttypes = {type_by_child[s] for s in sibs
+                      if type_by_child.get(s) in _MOVABLE_TYPES}
+            if len(ttypes) == 1:
+                info["type"] = next(iter(ttypes))
+                info["lower"], info["upper"] = (
+                    (-0.05, 0.05) if info["type"] == "prismatic"
+                    else (-3.141592, 3.141592))
+    return edge_info
+
+
 def _auto_parent_map(comps, adjacency, base):
     """Spanning forest rooted at base -> (parent_of, edge_info).
 
@@ -1073,6 +1131,10 @@ def _auto_parent_map(comps, adjacency, base):
         lo, hi = (-0.05, 0.05) if jt == "prismatic" else (-3.141592, 3.141592)
         edge_info[(child, parent)] = {"type": jt, "axis": ax, "note": note,
                                       "lower": lo, "upper": hi}
+    # mate-less mirror/pattern copies inherit the joint (type + reflected axis)
+    # of their mated twin, so the right gripper finger is a revolute like the
+    # left one instead of a dead fixed link
+    _mirror_axis_fallback(comps, edge_info, inherit_type=True)
     return parent_of, edge_info
 
 
@@ -1196,46 +1258,10 @@ def _config_parent_map(comps, adjacency, base, directed):
             "upper": 3.141592 if up is None else up,
             "mimic": d.get("mimic")}
     # Mirror / sibling fallback: a joint whose child got no axis (a SolidWorks
-    # mirror-feature copy, or a wheel mated only by coincident planes) but whose
-    # child part has sibling instances WITH an axis -- the mated originals.  The
-    # axis is a feature of the child part, identical in the part's own frame, so
-    # reflect it into this child's pose: ax = W_child . W_sibling^-1 . ax_sibling.
-    # Every sibling of the SAME part yields the same axis here (4 identical
-    # wheels all share one spin axis), so accept when the candidates AGREE up to
-    # sign; only genuinely different per-instance axes (a part used in unrelated
-    # roles) stay ambiguous and are left untouched.
-    by_name = {c.name: c for c in comps}
-    axis_by_child = {ch: info["axis"] for (ch, _pa), info in edge_info.items()
-                     if info.get("axis") is not None}
-    for (child, parent), info in edge_info.items():
-        if info.get("axis") is not None:
-            continue
-        cR = by_name.get(child)
-        if cR is None or not cR.part_path:
-            continue
-        sibs = [ch for ch in axis_by_child
-                if ch != child and by_name.get(ch)
-                and by_name[ch].part_path == cR.part_path]
-        cands = []
-        WR = np.asarray(cR.world, float)
-        for s in sibs:
-            try:
-                T = WR @ np.linalg.inv(np.asarray(by_name[s].world, float))
-            except np.linalg.LinAlgError:
-                continue
-            axS = axis_by_child[s]
-            pt = (T @ np.append(np.asarray(axS[0], float), 1.0))[:3]
-            d = T[:3, :3] @ np.asarray(axS[1], float)
-            nrm = float(np.linalg.norm(d))
-            if nrm > 1e-9:
-                cands.append((pt, d / nrm))
-        if not cands:
-            continue
-        d0 = cands[0][1]
-        if not all(abs(float(d0 @ d)) > 0.99 for _, d in cands):
-            continue                      # siblings disagree -> truly ambiguous
-        info["axis"] = cands[0]
-        info["mirrored_axis"] = True
+    # mirror-feature copy, or a wheel mated only by coincident planes) inherits
+    # its mated twin's axis.  The config already supplies the joint TYPE here, so
+    # only the axis is filled (inherit_type left off).
+    _mirror_axis_fallback(comps, edge_info)
     # anything unlisted -> fixed to base
     for c in comps:
         if c.name != base.name and c.name not in parent_of:
