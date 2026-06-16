@@ -211,7 +211,8 @@ jobs:
           mkdir -p ws/src
           cp -r artifacts/ros1/fingertip_description ws/src/
           cd ws
-          catkin build --install --no-status     # configures + runs install rules
+          catkin config --install     # run the install rules into install/
+          catkin build --no-status
           source install/setup.bash
           # the URDF must parse with ROS's own urdfdom parser
           check_urdf install/share/fingertip_description/urdf/fingertip.urdf
