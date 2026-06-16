@@ -910,7 +910,7 @@ def _mirror_axis_fallback(comps, edge_info, inherit_type=False):
                      if info.get("axis") is not None}
     type_by_child = {ch: info.get("type") for (ch, _pa), info in
                      edge_info.items() if info.get("axis") is not None}
-    for (child, parent), info in edge_info.items():
+    for (child, _parent), info in edge_info.items():
         if info.get("axis") is not None:
             continue
         cR = by_name.get(child)

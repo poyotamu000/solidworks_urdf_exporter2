@@ -117,7 +117,7 @@ def test_mirror_from_several_siblings_when_they_agree():
     directed = [{"parent": "axle", "child": w, "type": "revolute"}
                 for w in ("w1", "w2", "w3", "w4")]
     _parent_of, edge_info = _config_parent_map(
-        comps + [pa], adjacency, _comp("base", np.eye(4)), directed)
+        [*comps, pa], adjacency, _comp("base", np.eye(4)), directed)
     for w in ("w3", "w4"):
         ax = edge_info[(w, "axle")]["axis"]
         assert ax is not None, f"{w} did not inherit the wheel spin axis"
