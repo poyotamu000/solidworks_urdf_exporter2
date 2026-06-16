@@ -420,6 +420,9 @@
     </div>
     <div>
       <button id="reset" data-i18n="ui.reset">Reset pose</button>
+      <button id="resetview" data-i18n="ui.resetview"
+              data-i18n-title="t.resetview"
+              title="ビューを最初の状態に戻す (c)">↺ リセット</button>
       <button id="undo" disabled data-i18n-title="hist.undoEmpty"
               title="undo (Ctrl+Z)">↶</button>
       <button id="redo" disabled data-i18n-title="hist.redoEmpty"
@@ -565,6 +568,8 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     'excl.now': { en: a => `URDF exclude list now: ${a.n} item(s) ✓ (Ctrl+Z to restore)`,
                   ja: a => `URDF 除外リスト: 現在 ${a.n} 件 ✓ (Ctrl+Z で復元可)` },
     'excl.fail': { en: a => `exclude failed: ${a.e}`, ja: a => `除外に失敗: ${a.e}` },
+    'del.deleting': { en: a => `deleting ${a.l}${a.n > 1 ? ` + ${a.n - 1} child link(s)` : ''} (Ctrl+Z to undo)`,
+                      ja: a => `${a.l}${a.n > 1 ? ` と子リンク ${a.n - 1} 個` : ''} を削除 (Ctrl+Z で戻す)` },
     // rename
     'rename.resetOk': { en: a => `reset ${a.kind} name to default: ${a.name}`,
                         ja: a => `${a.kind} 名をデフォルトに戻しました: ${a.name}` },
@@ -784,8 +789,8 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     'ec.snapOff': { en: 'surface snap off', ja: '吸着オフ' },
     'hov.alignFace': { en: a => `${a.link} — <span class="key">click</span> align root to this face (origin = face center)`,
                        ja: a => `${a.link} — <span class="key">click</span> この面にルートを整列（原点 = 面の中心）` },
-    'hov.selected': { en: a => `✓ ${a.link} selected — <span class="key">t</span> fixed/revolute, <span class="key">m</span> mimic, <span class="key">R</span> make root`,
-                      ja: a => `✓ ${a.link} を選択中 — <span class="key">t</span> 固定/回転、<span class="key">m</span> mimic 連動、<span class="key">R</span> ルート化` },
+    'hov.selected': { en: a => `✓ ${a.link} selected — <span class="key">t</span> fixed/revolute, <span class="key">m</span> mimic, <span class="key">R</span> make root, <span class="key">Del</span> delete subtree`,
+                      ja: a => `✓ ${a.link} を選択中 — <span class="key">t</span> 固定/回転、<span class="key">m</span> mimic 連動、<span class="key">R</span> ルート化、<span class="key">Del</span> サブツリー削除` },
     'hov.link': { en: a => `${a.link} — <span class="key">click</span> select, <span class="key">dbl-click</span> tree, <span class="key">Shift+drag</span> box-select`,
                   ja: a => `${a.link} — <span class="key">click</span> 選択、<span class="key">dbl-click</span> ツリー、<span class="key">Shift+drag</span> 範囲選択` },
     'hov.axis': { en: a => `⊕ ${a.joint} (joint axis) — <span class="key">click</span> select, <span class="key">t</span> fixed/revolute`,
@@ -933,7 +938,11 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     'ui.openfolder': { en: '📁 Folder…', ja: '📁 フォルダ…' },
     't.fsbrowse': { en: 'server-side file browser (when the dialog can’t find it)',
                     ja: 'サーバー側のファイルブラウザ (ダイアログで見つからない時)' },
-    'ui.reset': { en: 'Reset pose', ja: '姿勢リセット' },
+    'ui.reset': { en: 'Reset pose (0)', ja: '姿勢リセット (0)' },
+    'ui.resetview': { en: '↺ Reset view', ja: '↺ リセット' },
+    't.resetview': { en: 'back to the just-loaded state: neutral pose, default camera, nothing selected, all tools closed (c)',
+                     ja: 'ビューを最初の状態へ: 中立姿勢・初期カメラ・選択解除・ツール終了 (c)' },
+    'view.reset': { en: 'view reset to the initial state', ja: 'ビューを最初の状態に戻しました' },
     't.renamelist': { en: 'rename joints/links in a list', ja: '関節名・リンク名を一覧で改名' },
     'ui.renamelist': { en: '≣ rename', ja: '≣ 改名' },
     't.bug': { en: 'broken? this sends the op-log + state to the server', ja: '壊れたらこれ: 操作ログ+状態をサーバーに送る' },
@@ -1199,20 +1208,25 @@ viewer.loadMeshFunc = (path, manager, done) => {
   const clean = path.split('?')[0];
   const name = clean.split('/').pop();
   const lower = clean.toLowerCase();
-  meshStats.want += 1;
+  // NEVER hand urdf-loaders a null object on failure: it calls .traverse() on
+  // whatever we pass and a single null halts the ENTIRE model load.  A bad mesh
+  // becomes an empty Group so the rest of the robot keeps loading.  Wrap done()
+  // too, so a throw deeper in the loader can't take the whole load down either.
+  const safeDone = obj => { try { done(obj); } catch (e) { /* keep loading */ } };
   if (meshCache.has(path)) {
-    meshStats.done += 1;
-    done(meshCache.get(path).clone(true));
+    meshStats.want += 1; meshStats.done += 1;
+    safeDone(meshCache.get(path).clone(true));
     return;
   }
+  meshStats.want += 1;
   const ok = obj => {
     meshCache.set(path, obj);
     meshTick(name, true);
-    done(obj.clone(true));
+    safeDone(obj.clone(true));
   };
   const fail = err => {
     meshTick(name, false, err?.message ?? String(err));
-    done(null, err ?? new Error(t('mesh.loadFailed')));
+    safeDone(new THREE.Group());      // empty placeholder, not null
   };
   if (lower.endsWith('.3dxml')) {
     const url = dropMode ? path : path + '?glb=1';
@@ -2584,6 +2598,33 @@ document.getElementById('selexclude').addEventListener('click', () => {
 document.getElementById('exclchip').addEventListener('click', () =>
   setExclude({ clear: true }, t('excl.restoring')));
 
+// a link + every descendant link under it (the subtree to delete together)
+function linkSubtree(linkName) {
+  const root = viewer.robot?.links?.[linkName];
+  const out = [];
+  if (!root) { return out; }
+  (function walk(link) {
+    out.push(link.name);
+    for (const j of link.children) {
+      if (j.isURDFJoint) {
+        for (const cl of j.children) { if (cl.isURDFLink) { walk(cl); } }
+      } else if (j.isURDFLink) { walk(j); }   // defensive: directly nested link
+    }
+  })(root);
+  return out;
+}
+// Delete key: remove the selected link AND its whole subtree from the URDF
+// (children would otherwise dangle).  Excluded as one rebuild; Ctrl+Z restores.
+function deleteSelectedSubtree() {
+  if (!selectedLink || !currentInfo) { return; }
+  const links = linkSubtree(selectedLink);
+  if (!links.length) { return; }
+  const comps = [...new Set(links.map(n => compMeta[n]?.name ?? n))];
+  const l = selectedLink, n = links.length;
+  selectLink(null);
+  setExclude({ names: comps, on: true }, t('del.deleting', { l, n }));
+}
+
 function highlightJoint(name, on) {
   const m = axisMarkers.get(name);
   if (m && m.ghost) {
@@ -2778,7 +2819,10 @@ const VIEWS = {
   front:  [1, 0, 0], back: [-1, 0, 0],
   right:  [0, 1, 0], left: [0, -1, 0],
   top:    [0, 0, 1], bottom: [0, 0, -1],
-  iso:    [1, -1, 0.8],
+  // isometric from the +X +Y +Z octant (camera at "(1,1,1)"): a robot-friendly
+  // 3/4 view.  Any (±1,±1,±1) diagonal is isometric; this picks the all-positive
+  // one so +Y (robot left) faces the viewer instead of away.
+  iso:    [1, 1, 1],
 };
 
 // ⌖ origin: the WORLD origin is fixed (grid lives there); this moves the
@@ -3733,10 +3777,17 @@ window.addEventListener('keydown', ev => {
     return;
   }
   const target = selectedLink ?? hoveredLink;
-  if ((ev.key === 't' || ev.key === 'T')) {
+  if ((ev.key === 'Delete' || ev.key === 'Backspace') && selectedLink) {
+    ev.preventDefault();                // Backspace must not navigate back
+    deleteSelectedSubtree();            // remove the link + its whole subtree
+  } else if ((ev.key === 't' || ev.key === 'T')) {
     toggleJointFixed();                 // fixed <-> revolute on selected/hovered
   } else if ((ev.key === 'm' || ev.key === 'M')) {
     enterMimicMode();                   // start mimic linking from the selection
+  } else if (ev.key === '0' || ev.key === 'Home') {
+    resetPose();                        // all joints back to 0 (neutral pose)
+  } else if (ev.key === 'c' || ev.key === 'C') {
+    resetView();                        // whole viewer back to the loaded state
   } else if ((ev.key === 'r' || ev.key === 'R') && target) {
     reRoot(target);
     selectLink(null);
@@ -3930,13 +3981,32 @@ viewer.addEventListener('urdf-error', e => {
   log(t('urdf.error', { detail: e.detail ?? t('urdf.seeConsole') }), 'err');
 });
 
-document.getElementById('reset').addEventListener('click', () => {
+function resetPose() {
   for (const j of Object.values(viewer.robot?.joints ?? {})) {
     if (j.jointType !== 'fixed' && !j.mimicJoint) {
       viewer.setJointValue(j.name, 0);
     }
   }
-});
+}
+document.getElementById('reset').addEventListener('click', resetPose);
+
+// reset the VIEWER to the just-loaded state -- neutral pose, default camera,
+// nothing selected, every transient tool/overlay closed.  NOT a data reload:
+// joint TYPE/limit edits persist (they live in the URDF); only the live view
+// state is cleared.
+function resetView() {
+  if (mimicMode) { cancelMimic(); }
+  if (ecTool) { cancelEndcoords(); }
+  resetPose();
+  selectLink(null);
+  clearBoxSelection();
+  alignBtn.classList.remove('active');
+  portBtn.classList.remove('active');
+  clearFaceOverlay();
+  setView('iso');
+  log(t('view.reset'), 'ok');
+}
+document.getElementById('resetview').addEventListener('click', resetView);
 
 // ---- loading entry points -----------------------------------------------
 function loadRobot(info, { drop = false, keepPose = false,

@@ -125,6 +125,16 @@ class SelfCollision:
             for n in self.names:
                 self._raw.add_object(
                     n, meshes[n], transform=self._link[n].worldcoords().T())
+        # trimesh 4.x's add_object(transform=) sets the fcl object's pose but
+        # does NOT refresh the broadphase AABB-tree node, so a part that only
+        # overlaps once moved to its world pose can be missed by
+        # in_collision_internal.  At query time _sync() calls set_transform,
+        # which DOES refresh the tree -- so without this, those rest-pose
+        # contacts escape the baseline and then light up red as false "new"
+        # collisions the instant the page loads (even on parts that never
+        # move).  Re-sync now so the baseline is built over the same broadphase
+        # state the queries use.
+        self._sync()
         self.baseline = self._pairs(0.0)
         for j in robot.joint_list:
             if j.parent_link and j.child_link:

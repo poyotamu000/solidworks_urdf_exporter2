@@ -232,6 +232,10 @@ def extract_components(doc, exclude=None):
         state = safe_call(ct, "GetSuppression")
         if not name or state == 0:
             n_skipped += 1
+            # name a dropped part so a missing link (e.g. a suppressed finger)
+            # is diagnosable instead of silently vanishing from the tree
+            print(f"      skip component: name={name!r} "
+                  f"suppression={state} (0=suppressed)")
             continue
         if any(e in name.lower() for e in exclude):
             n_excluded += 1
@@ -327,6 +331,8 @@ def build_mate_graph(doc, comps):
     adjacency = {}
     ground = set()
     raw = list(safe_call(doc, "GetComponents", True) or [])
+    mate_count = {}        # own_name -> number of mates GetMates returned
+    unresolved = {}        # own_name -> {entity refs that are not known comps}
     # No mate de-duplication: each mate is returned by GetMates of BOTH its
     # components, so it is processed ~twice -- harmless for presence-based
     # classification, and far safer than de-duping by COM pointer address
@@ -335,7 +341,9 @@ def build_mate_graph(doc, comps):
     for c in raw:
         ct = as_iface(c, "IComponent2")
         own_name = safe_prop(ct, "Name2")
-        for m in list(safe_call(ct, "GetMates") or []):
+        _mates = list(safe_call(ct, "GetMates") or [])
+        mate_count[own_name] = mate_count.get(own_name, 0) + len(_mates)
+        for m in _mates:
             mate = as_iface(m, "IMate2")
             mtype = safe_prop(mate, "Type")
             mname = MATE_TYPES.get(mtype, str(mtype))
@@ -349,7 +357,12 @@ def build_mate_graph(doc, comps):
                 rc = as_iface(safe_prop(me, "ReferenceComponent"), "IComponent2")
                 rn = safe_prop(rc, "Name2") if rc else None
                 top = _top_level(rn) if rn else None
-                tops.append(top if top in name_set else "__ground__")
+                if top in name_set:
+                    tops.append(top)
+                else:
+                    tops.append("__ground__")
+                    if rn:        # record what this entity resolved to
+                        unresolved.setdefault(own_name, set()).add(rn)
                 if mtype == CONCENTRIC and axis is None:
                     axis = _entity_axis_world(me)
                 eg = _entity_geo(me)
@@ -386,16 +399,43 @@ def build_mate_graph(doc, comps):
                     if mtype == CONCENTRIC and axis is not None \
                             and rec["axis"] is None:
                         rec["axis"] = axis
+    # Diagnostics: a top-level component with no mate edge attaches as FIXED and
+    # cannot become a joint.  The usual cause is a MIRRORED sub-assembly instance
+    # whose mate entities resolve to the mirror SOURCE (or internal parts) rather
+    # than the instance, so every mate drops to ground.  Surface it so a
+    # re-extraction shows whether GetMates returned nothing (mirror feature
+    # carries no mates -> mirror the sibling) or returned mates that resolved to
+    # unknown components (an extraction name-resolution gap we can fix).
+    incident = set()
+    for key in adjacency:
+        incident.update(key)
+    for c in comps:
+        if c.name in incident or c.name in ground:
+            continue
+        seen = mate_count.get(c.name, 0)
+        refs = sorted(unresolved.get(c.name, ()))[:4]
+        print(f"      WARN: '{c.name}' has NO mate edge "
+              f"({seen} mates from GetMates"
+              + (f"; entities resolved to {refs}" if refs else "")
+              + ") -> attaches FIXED")
     return adjacency, ground
 
 
-def choose_base(comps, ground, base_hint=None):
+def choose_base(comps, ground, base_hint=None, adjacency=None):
     """Pick the base/root component.
 
     If ``base_hint`` (a case-insensitive substring) matches a component name or
-    link name, that wins -- the auto heuristics below are unreliable when the
-    only assembly-grounded component is a manipulated object (e.g. a workpiece
-    mated to the origin) rather than the structural frame."""
+    link name, that wins -- the auto heuristic below is unreliable when the only
+    assembly-grounded component is a manipulated object (e.g. a workpiece mated
+    to the origin) rather than the structural frame.
+
+    Auto pick: the mate-graph HUB -- the part the most components bolt to.  The
+    CAD ground set is unreliable (the designer often fixes a convenient arm part
+    near the origin, NOT the frame), and the part nearest the arbitrary CAD
+    origin is just as arbitrary; the frame everything attaches to is the
+    highest-degree node.  Ties break toward a grounded/fixed part, then the part
+    nearest the assembly centroid.  (Falls back to grounded/centroid when no
+    adjacency is supplied.)"""
     if base_hint:
         h = base_hint.lower()
         for c in comps:        # exact match wins (UI sends full link names)
@@ -407,16 +447,19 @@ def choose_base(comps, ground, base_hint=None):
         print(f"      WARN: base hint '{base_hint}' matched nothing; "
               f"falling back to auto")
 
-    def dist2(c):
-        t = c.world[:3, 3]
-        return float(t @ t)
-    fixed = [c for c in comps if c.fixed]
-    if fixed:
-        return min(fixed, key=dist2)
-    grounded = [c for c in comps if c.name in ground]
-    if grounded:
-        return min(grounded, key=dist2)
-    return min(comps, key=dist2)
+    deg = {c.name: 0 for c in comps}
+    for key in (adjacency or ()):
+        for n in key:
+            if n in deg:
+                deg[n] += 1
+    pts = np.array([np.asarray(c.world, float)[:3, 3] for c in comps], float)
+    centroid = pts.mean(axis=0) if len(pts) else np.zeros(3)
+
+    def score(c):
+        p = np.asarray(c.world, float)[:3, 3]
+        return (deg[c.name], bool(c.fixed) or c.name in ground,
+                -float(np.sum((p - centroid) ** 2)))
+    return max(comps, key=score)
 
 
 def classify_edge(types, axis):
@@ -849,6 +892,64 @@ def _demote_coaxial_duplicates(edge, adjacency):
                 kept.append((p, d))
 
 
+def _mirror_axis_fallback(comps, edge_info, inherit_type=False):
+    """Give a mate-less child the joint of its mated twin.
+
+    A SolidWorks mirror-feature copy or pattern copy carries no mates, so its
+    edge reaches here with no axis (and, in the auto tree, no joint type).  But
+    the SAME part is a real joint on the original side: the axis is a feature of
+    that part, identical in the part's own frame, so reflect each twin's axis
+    into this child's pose -- ``ax = W_child . W_twin^-1 . ax_twin`` -- and
+    accept it when every same-part twin AGREES up to sign (four identical wheels
+    share one spin axis; a part used in unrelated roles stays ambiguous and is
+    left untouched).  With ``inherit_type`` the twin's joint TYPE is copied too
+    (the auto tree has no mate to type the copy, so a mirrored revolute would
+    otherwise weld as a fixed link)."""
+    by_name = {c.name: c for c in comps}
+    axis_by_child = {ch: info["axis"] for (ch, _pa), info in edge_info.items()
+                     if info.get("axis") is not None}
+    type_by_child = {ch: info.get("type") for (ch, _pa), info in
+                     edge_info.items() if info.get("axis") is not None}
+    for (child, _parent), info in edge_info.items():
+        if info.get("axis") is not None:
+            continue
+        cR = by_name.get(child)
+        if cR is None or not cR.part_path:
+            continue
+        sibs = [ch for ch in axis_by_child
+                if ch != child and by_name.get(ch)
+                and by_name[ch].part_path == cR.part_path]
+        cands = []
+        WR = np.asarray(cR.world, float)
+        for s in sibs:
+            try:
+                T = WR @ np.linalg.inv(np.asarray(by_name[s].world, float))
+            except np.linalg.LinAlgError:
+                continue
+            axS = axis_by_child[s]
+            pt = (T @ np.append(np.asarray(axS[0], float), 1.0))[:3]
+            d = T[:3, :3] @ np.asarray(axS[1], float)
+            nrm = float(np.linalg.norm(d))
+            if nrm > 1e-9:
+                cands.append((pt, d / nrm))
+        if not cands:
+            continue
+        d0 = cands[0][1]
+        if not all(abs(float(d0 @ d)) > 0.99 for _, d in cands):
+            continue                      # siblings disagree -> truly ambiguous
+        info["axis"] = cands[0]
+        info["mirrored_axis"] = True
+        if inherit_type and info.get("type") not in _MOVABLE_TYPES:
+            ttypes = {type_by_child[s] for s in sibs
+                      if type_by_child.get(s) in _MOVABLE_TYPES}
+            if len(ttypes) == 1:
+                info["type"] = next(iter(ttypes))
+                info["lower"], info["upper"] = (
+                    (-0.05, 0.05) if info["type"] == "prismatic"
+                    else (-3.141592, 3.141592))
+    return edge_info
+
+
 def _auto_parent_map(comps, adjacency, base):
     """Spanning forest rooted at base -> (parent_of, edge_info).
 
@@ -880,10 +981,32 @@ def _auto_parent_map(comps, adjacency, base):
             weak.add(key)
     forced = {key for key, rec in adjacency.items()
               if rec.get("force_fixed") and key in edge}
+    # A FIXED edge whose BOTH ends are independently driven (each carries its
+    # own movable joint) is a loop closure / alignment tie -- e.g. two motorised
+    # mecanum wheels barrel-mated to each other -- never a structural parent.
+    # Defer it below everything so each part attaches through its OWN joint and
+    # the redundant tie is dropped as a loop closure, instead of one wheel being
+    # parented to the other and stealing its motor into its subtree.
+    driven = set()
+    for key, (jt, ax, _note) in edge.items():
+        if jt in _MOVABLE_TYPES and ax is not None:
+            driven.update(key)
+    loop_closure = {key for key, (jt, _ax, _n) in edge.items()
+                    if jt == "fixed" and all(n in driven for n in key)}
+    # Synthetic LOCK edges tie a sub-assembly's grounded children (fixed to its
+    # frame) rigidly together.  They carry no mate geometry, so the global twist
+    # solve cannot see them as rigid and they fall to the weak tier -- then a
+    # grounded part reachable ALSO through a revolute joint (a wheel unit fixed
+    # to the movebase frame but spun by its motor) gets attached through the
+    # joint, inverting the hierarchy.  Treat a LOCK as the rigid tie it is.
+    locked = {key for key, rec in adjacency.items()
+              if key in edge and "LOCK" in (rec.get("types") or [])}
 
     def tier(key):
-        if key in forced:
+        if key in forced or key in locked:
             return 0
+        if key in loop_closure:
+            return 3
         if rigid:
             if key in rigid:
                 return 0
@@ -898,6 +1021,7 @@ def _auto_parent_map(comps, adjacency, base):
 
     visited = {base.name}
     parent_of = {}
+    mate_less = set()        # names attached by the no-mate fallback (untrusted)
 
     def bfs_within(max_tier, roots):
         queue = list(roots)
@@ -931,13 +1055,78 @@ def _auto_parent_map(comps, adjacency, base):
         return sorted(nbs, key=lambda nb: (
             tuple(-x for x in _edge_pref(cur, nb)), nb))
 
+    def _twin_parent_parts(root):
+        """Parent PARTS of ``root``'s mated twins (other instances of the same
+        part placed through REAL mates) -- the connection(s) the mirror copy can
+        reuse."""
+        rp = by_name[root].part_path
+        if not rp:
+            return set()
+        out = set()
+        for c in comps:
+            if (c.name != root and c.part_path == rp
+                    and c.name in visited and c.name not in mate_less
+                    and c.name in parent_of):
+                par = by_name.get(parent_of[c.name])
+                if par is not None and par.part_path:
+                    out.add(par.part_path)
+        return out
+
+    def _twin_host(root, rpos):
+        """Mirror/copy rule for a mate-less part: SolidWorks 'Mirror Components'
+        and pattern copies carry NO mates, so a mirrored part (e.g. the right
+        gripper finger) reaches here with nothing to connect to and the plain
+        nearest-component fallback wrongly bolts it to whatever sits closest --
+        often a SIBLING copy, not its real mount.  The SAME part is mated on the
+        original side, so reuse that: attach ``root`` to the nearest instance of
+        a twin's parent PART -- i.e. connect the copy exactly like its mirror
+        original.  When the part is used under several different parents (3 arm
+        instances on different mounts), disambiguate by geometry: take the
+        parent-part whose nearest instance is closest to ``root``.  Commit only
+        if that instance is already placed; otherwise (the same-side parent is
+        not reached yet) defer, so the rule never crosses sides."""
+        cands = []
+        for tgt in _twin_parent_parts(root):
+            insts = [c.name for c in comps if c.part_path == tgt]
+            if insts:
+                n = min(insts, key=lambda x: float(np.sum(
+                    (by_name[x].world[:3, 3] - rpos) ** 2)))
+                d = float(np.sum((by_name[n].world[:3, 3] - rpos) ** 2))
+                cands.append((d, n))
+        if not cands:
+            return None
+        cands.sort()
+        _d, host = cands[0]            # the closest mirror parent
+        return host if host in visited else None
+
+    def _depth(name):
+        d = 0
+        while name in parent_of and d <= len(comps):
+            name = parent_of[name]
+            d += 1
+        return d
+
+    def _twin_depth(root):
+        """Depth in the mated (original) tree of ``root``'s shallowest twin --
+        how far the limb's anchor is from the base.  Big when ``root`` has no
+        mated twin (a true island), so those order by distance instead.  The
+        base itself counts (a part whose twin IS the root is the limb anchor)."""
+        rp = by_name[root].part_path
+        if not rp:
+            return 1 << 30
+        ds = [_depth(c.name) for c in comps
+              if c.name != root and c.part_path == rp
+              and c.name in visited and c.name not in mate_less
+              and (c.name in parent_of or c.name == base.name)]
+        return min(ds) if ds else (1 << 30)
+
     while True:
         bfs_within(0, [base.name, *sorted(parent_of)])
         # attach ONE component over the lowest-tier edge available --
         # picking the BEST such edge (instance affinity, mate richness),
         # then resume rigid expansion from it
         attached = False
-        for want in (1, 2):
+        for want in (1, 2, 3):
             cands = [(cur, nb) for cur in visited
                      for nb in neighbors[cur]
                      if nb not in visited
@@ -955,19 +1144,37 @@ def _auto_parent_map(comps, adjacency, base):
         rem = [c.name for c in comps if c.name not in visited]
         if not rem:
             break
-        # mate-less / disconnected island: attach to the NEAREST already-
-        # placed component, not blindly to the base -- an unmated connector
-        # sitting on a moving link must ride that link, or it stays welded
-        # to the base while its neighbours move away
-        root = min(rem, key=dist2)
-        rpos = by_name[root].world[:3, 3]
-        host = min(visited,
-                   key=lambda n: float(np.sum(
-                       (by_name[n].world[:3, 3] - rpos) ** 2)))
-        print(f"      note: '{root}' has no usable mates; attaching to "
-              f"nearest component '{host}'")
+        # mate-less / disconnected island.  PREFER the mirror/copy rule: among
+        # the unplaced parts attach any whose mated twin's connection can be
+        # mirrored NOW (its same-side parent is already placed).  Doing these
+        # first lets a whole mirrored limb cascade in tree order -- shoulder
+        # before elbow before wrist -- instead of a child being reached before
+        # its parent and welding to whatever sits closest.
+        mirrorable = [(r, _twin_host(r, by_name[r].world[:3, 3])) for r in rem]
+        mirrorable = [(r, h) for r, h in mirrorable if h is not None]
+        if mirrorable:
+            root, host = min(mirrorable, key=lambda rh: dist2(rh[0]))
+            print(f"      note: '{root}' has no mates; mirroring its mated "
+                  f"twin's connection -> '{host}'")
+        else:
+            # Nothing can mirror yet -> a whole mirrored limb is waiting on its
+            # own anchor (the part whose twin sits highest in the original tree,
+            # e.g. the one whose twin is the root).  Break the deadlock THERE:
+            # attach the leftover with the SHALLOWEST twin nearest-component, so
+            # once it lands everything below it mirrors in tree order.  Distance
+            # to base breaks ties and orders true islands with no twin.  An
+            # unmated connector on a moving link thus rides that link, not the
+            # base.
+            root = min(rem, key=lambda r: (_twin_depth(r), dist2(r)))
+            rpos = by_name[root].world[:3, 3]
+            host = min(visited,
+                       key=lambda n: float(np.sum(
+                           (by_name[n].world[:3, 3] - rpos) ** 2)))
+            print(f"      note: '{root}' has no usable mates; attaching to "
+                  f"nearest component '{host}'")
         parent_of[root] = host
         visited.add(root)
+        mate_less.add(root)
 
     edge_info = {}
     for child, parent in parent_of.items():
@@ -976,6 +1183,10 @@ def _auto_parent_map(comps, adjacency, base):
         lo, hi = (-0.05, 0.05) if jt == "prismatic" else (-3.141592, 3.141592)
         edge_info[(child, parent)] = {"type": jt, "axis": ax, "note": note,
                                       "lower": lo, "upper": hi}
+    # mate-less mirror/pattern copies inherit the joint (type + reflected axis)
+    # of their mated twin, so the right gripper finger is a revolute like the
+    # left one instead of a dead fixed link
+    _mirror_axis_fallback(comps, edge_info, inherit_type=True)
     return parent_of, edge_info
 
 
@@ -1078,6 +1289,19 @@ def _config_parent_map(comps, adjacency, base, directed):
         else:
             rec = adjacency.get(frozenset((child, parent)), {})
             ax = rec.get("axis")
+            if ax is None and rec.get("mates"):
+                # No CONCENTRIC mate axis -- e.g. a MIRRORED part whose hinge is
+                # constrained by an ANGLE + coincident-plane mate set rather than
+                # a concentric cylinder.  Derive the rotation axis from the full
+                # mate geometry (the twist nullspace), the same way the auto
+                # classifier does, so the configured revolute keeps its axis
+                # instead of silently degrading to fixed.
+                try:
+                    geo = classify_edge_geo(rec["mates"])
+                except Exception:
+                    geo = None
+                if geo and geo[1] is not None:
+                    ax = geo[1]
         parent_of[child] = parent
         lo = d.get("lower"); up = d.get("upper")
         edge_info[(child, parent)] = {
@@ -1085,6 +1309,11 @@ def _config_parent_map(comps, adjacency, base, directed):
             "lower": -3.141592 if lo is None else lo,
             "upper": 3.141592 if up is None else up,
             "mimic": d.get("mimic")}
+    # Mirror / sibling fallback: a joint whose child got no axis (a SolidWorks
+    # mirror-feature copy, or a wheel mated only by coincident planes) inherits
+    # its mated twin's axis.  The config already supplies the joint TYPE here, so
+    # only the axis is filled (inherit_type left off).
+    _mirror_axis_fallback(comps, edge_info)
     # anything unlisted -> fixed to base
     for c in comps:
         if c.name != base.name and c.name not in parent_of:
@@ -1296,6 +1525,12 @@ def _snap_unsolved_mates(comps, adjacency):
     if not flagged:
         return
     by_name = {c.name: c for c in comps}
+    # original positions of every OTHER instance of each part, for the
+    # collapse guard below (snapshot before any moves)
+    same_part_pos = {}
+    for c in comps:
+        same_part_pos.setdefault(c.part_path, []).append(
+            (c.name, c.world[:3, 3].copy()))
     for top, (off, best, p, d) in flagged.items():
         c = by_name.get(top)
         if c is None:
@@ -1308,7 +1543,25 @@ def _snap_unsolved_mates(comps, adjacency):
         if np.linalg.norm(perp) < 1e-12:
             continue
         move = perp * (1.0 - best / max(off, 1e-12))
-        c.world[:3, 3] = pos + move
+        new_pos = pos + move
+        # GUARD: the snap must not stack this part onto a SIBLING instance.
+        # The same part is sometimes used in different roles (e.g. a finger
+        # part as both the proximal AND the middle phalanx); the proximal one
+        # legitimately sits the inter-joint distance off the shared mate axis,
+        # so the "sibling sits at 0 mm" outlier test mis-fires and would snap
+        # it right on top of its neighbour.  A genuine suppressed-mate repair
+        # snaps to an EMPTY axis location, never onto another instance -- so if
+        # the target coincides with a sibling, keep the exported pose instead.
+        clash = min((float(np.linalg.norm(new_pos - q))
+                     for nm, q in same_part_pos.get(c.part_path, [])
+                     if nm != top), default=np.inf)
+        if clash < 0.003:                    # 3 mm: a clear overlap, not a repair
+            print(f"      skipped auto-correct of '{top}': snapping "
+                  f"{np.linalg.norm(move)*1000:.1f} mm would stack it on a "
+                  f"sibling instance (same part in a different role) -- "
+                  f"keeping the exported pose")
+            continue
+        c.world[:3, 3] = new_pos
         print(f"      auto-corrected '{top}': moved {np.linalg.norm(move)*1000:.1f} mm "
               f"onto its mate-solved axis (matching sibling instances)")
 
@@ -1750,7 +2003,7 @@ def build_model(graph, robot_name=None, base_hint=None, config=None,
     root_z_offset = (config.get("root_z_offset", 0.0) if config else 0.0)
     root_xyz = (config.get("root_xyz") if config else None)
 
-    base = choose_base(comps, ground, base_hint)
+    base = choose_base(comps, ground, base_hint, adjacency)
     print(f"      base link: {base.link_name}")
     joints = build_tree(comps, adjacency, base, directed=directed,
                         root_rpy=root_rpy, root_z_offset=root_z_offset,
