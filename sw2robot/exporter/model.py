@@ -1078,6 +1078,19 @@ def _config_parent_map(comps, adjacency, base, directed):
         else:
             rec = adjacency.get(frozenset((child, parent)), {})
             ax = rec.get("axis")
+            if ax is None and rec.get("mates"):
+                # No CONCENTRIC mate axis -- e.g. a MIRRORED part whose hinge is
+                # constrained by an ANGLE + coincident-plane mate set rather than
+                # a concentric cylinder.  Derive the rotation axis from the full
+                # mate geometry (the twist nullspace), the same way the auto
+                # classifier does, so the configured revolute keeps its axis
+                # instead of silently degrading to fixed.
+                try:
+                    geo = classify_edge_geo(rec["mates"])
+                except Exception:
+                    geo = None
+                if geo and geo[1] is not None:
+                    ax = geo[1]
         parent_of[child] = parent
         lo = d.get("lower"); up = d.get("upper")
         edge_info[(child, parent)] = {
