@@ -327,6 +327,8 @@ def build_mate_graph(doc, comps):
     adjacency = {}
     ground = set()
     raw = list(safe_call(doc, "GetComponents", True) or [])
+    mate_count = {}        # own_name -> number of mates GetMates returned
+    unresolved = {}        # own_name -> {entity refs that are not known comps}
     # No mate de-duplication: each mate is returned by GetMates of BOTH its
     # components, so it is processed ~twice -- harmless for presence-based
     # classification, and far safer than de-duping by COM pointer address
@@ -335,7 +337,9 @@ def build_mate_graph(doc, comps):
     for c in raw:
         ct = as_iface(c, "IComponent2")
         own_name = safe_prop(ct, "Name2")
-        for m in list(safe_call(ct, "GetMates") or []):
+        _mates = list(safe_call(ct, "GetMates") or [])
+        mate_count[own_name] = mate_count.get(own_name, 0) + len(_mates)
+        for m in _mates:
             mate = as_iface(m, "IMate2")
             mtype = safe_prop(mate, "Type")
             mname = MATE_TYPES.get(mtype, str(mtype))
@@ -349,7 +353,12 @@ def build_mate_graph(doc, comps):
                 rc = as_iface(safe_prop(me, "ReferenceComponent"), "IComponent2")
                 rn = safe_prop(rc, "Name2") if rc else None
                 top = _top_level(rn) if rn else None
-                tops.append(top if top in name_set else "__ground__")
+                if top in name_set:
+                    tops.append(top)
+                else:
+                    tops.append("__ground__")
+                    if rn:        # record what this entity resolved to
+                        unresolved.setdefault(own_name, set()).add(rn)
                 if mtype == CONCENTRIC and axis is None:
                     axis = _entity_axis_world(me)
                 eg = _entity_geo(me)
@@ -386,6 +395,25 @@ def build_mate_graph(doc, comps):
                     if mtype == CONCENTRIC and axis is not None \
                             and rec["axis"] is None:
                         rec["axis"] = axis
+    # Diagnostics: a top-level component with no mate edge attaches as FIXED and
+    # cannot become a joint.  The usual cause is a MIRRORED sub-assembly instance
+    # whose mate entities resolve to the mirror SOURCE (or internal parts) rather
+    # than the instance, so every mate drops to ground.  Surface it so a
+    # re-extraction shows whether GetMates returned nothing (mirror feature
+    # carries no mates -> mirror the sibling) or returned mates that resolved to
+    # unknown components (an extraction name-resolution gap we can fix).
+    incident = set()
+    for key in adjacency:
+        incident.update(key)
+    for c in comps:
+        if c.name in incident or c.name in ground:
+            continue
+        seen = mate_count.get(c.name, 0)
+        refs = sorted(unresolved.get(c.name, ()))[:4]
+        print(f"      WARN: '{c.name}' has NO mate edge "
+              f"({seen} mates from GetMates"
+              + (f"; entities resolved to {refs}" if refs else "")
+              + ") -> attaches FIXED")
     return adjacency, ground
 
 
