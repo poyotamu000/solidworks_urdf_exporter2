@@ -1199,20 +1199,25 @@ viewer.loadMeshFunc = (path, manager, done) => {
   const clean = path.split('?')[0];
   const name = clean.split('/').pop();
   const lower = clean.toLowerCase();
-  meshStats.want += 1;
+  // NEVER hand urdf-loaders a null object on failure: it calls .traverse() on
+  // whatever we pass and a single null halts the ENTIRE model load.  A bad mesh
+  // becomes an empty Group so the rest of the robot keeps loading.  Wrap done()
+  // too, so a throw deeper in the loader can't take the whole load down either.
+  const safeDone = obj => { try { done(obj); } catch (e) { /* keep loading */ } };
   if (meshCache.has(path)) {
-    meshStats.done += 1;
-    done(meshCache.get(path).clone(true));
+    meshStats.want += 1; meshStats.done += 1;
+    safeDone(meshCache.get(path).clone(true));
     return;
   }
+  meshStats.want += 1;
   const ok = obj => {
     meshCache.set(path, obj);
     meshTick(name, true);
-    done(obj.clone(true));
+    safeDone(obj.clone(true));
   };
   const fail = err => {
     meshTick(name, false, err?.message ?? String(err));
-    done(null, err ?? new Error(t('mesh.loadFailed')));
+    safeDone(new THREE.Group());      // empty placeholder, not null
   };
   if (lower.endsWith('.3dxml')) {
     const url = dropMode ? path : path + '?glb=1';
