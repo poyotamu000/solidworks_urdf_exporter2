@@ -1525,6 +1525,12 @@ def _snap_unsolved_mates(comps, adjacency):
     if not flagged:
         return
     by_name = {c.name: c for c in comps}
+    # original positions of every OTHER instance of each part, for the
+    # collapse guard below (snapshot before any moves)
+    same_part_pos = {}
+    for c in comps:
+        same_part_pos.setdefault(c.part_path, []).append(
+            (c.name, c.world[:3, 3].copy()))
     for top, (off, best, p, d) in flagged.items():
         c = by_name.get(top)
         if c is None:
@@ -1537,7 +1543,25 @@ def _snap_unsolved_mates(comps, adjacency):
         if np.linalg.norm(perp) < 1e-12:
             continue
         move = perp * (1.0 - best / max(off, 1e-12))
-        c.world[:3, 3] = pos + move
+        new_pos = pos + move
+        # GUARD: the snap must not stack this part onto a SIBLING instance.
+        # The same part is sometimes used in different roles (e.g. a finger
+        # part as both the proximal AND the middle phalanx); the proximal one
+        # legitimately sits the inter-joint distance off the shared mate axis,
+        # so the "sibling sits at 0 mm" outlier test mis-fires and would snap
+        # it right on top of its neighbour.  A genuine suppressed-mate repair
+        # snaps to an EMPTY axis location, never onto another instance -- so if
+        # the target coincides with a sibling, keep the exported pose instead.
+        clash = min((float(np.linalg.norm(new_pos - q))
+                     for nm, q in same_part_pos.get(c.part_path, [])
+                     if nm != top), default=np.inf)
+        if clash < 0.003:                    # 3 mm: a clear overlap, not a repair
+            print(f"      skipped auto-correct of '{top}': snapping "
+                  f"{np.linalg.norm(move)*1000:.1f} mm would stack it on a "
+                  f"sibling instance (same part in a different role) -- "
+                  f"keeping the exported pose")
+            continue
+        c.world[:3, 3] = new_pos
         print(f"      auto-corrected '{top}': moved {np.linalg.norm(move)*1000:.1f} mm "
               f"onto its mate-solved axis (matching sibling instances)")
 
