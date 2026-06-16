@@ -908,10 +908,32 @@ def _auto_parent_map(comps, adjacency, base):
             weak.add(key)
     forced = {key for key, rec in adjacency.items()
               if rec.get("force_fixed") and key in edge}
+    # A FIXED edge whose BOTH ends are independently driven (each carries its
+    # own movable joint) is a loop closure / alignment tie -- e.g. two motorised
+    # mecanum wheels barrel-mated to each other -- never a structural parent.
+    # Defer it below everything so each part attaches through its OWN joint and
+    # the redundant tie is dropped as a loop closure, instead of one wheel being
+    # parented to the other and stealing its motor into its subtree.
+    driven = set()
+    for key, (jt, ax, _note) in edge.items():
+        if jt in _MOVABLE_TYPES and ax is not None:
+            driven.update(key)
+    loop_closure = {key for key, (jt, _ax, _n) in edge.items()
+                    if jt == "fixed" and all(n in driven for n in key)}
+    # Synthetic LOCK edges tie a sub-assembly's grounded children (fixed to its
+    # frame) rigidly together.  They carry no mate geometry, so the global twist
+    # solve cannot see them as rigid and they fall to the weak tier -- then a
+    # grounded part reachable ALSO through a revolute joint (a wheel unit fixed
+    # to the movebase frame but spun by its motor) gets attached through the
+    # joint, inverting the hierarchy.  Treat a LOCK as the rigid tie it is.
+    locked = {key for key, rec in adjacency.items()
+              if key in edge and "LOCK" in (rec.get("types") or [])}
 
     def tier(key):
-        if key in forced:
+        if key in forced or key in locked:
             return 0
+        if key in loop_closure:
+            return 3
         if rigid:
             if key in rigid:
                 return 0
@@ -965,7 +987,7 @@ def _auto_parent_map(comps, adjacency, base):
         # picking the BEST such edge (instance affinity, mate richness),
         # then resume rigid expansion from it
         attached = False
-        for want in (1, 2):
+        for want in (1, 2, 3):
             cands = [(cur, nb) for cur in visited
                      for nb in neighbors[cur]
                      if nb not in visited
