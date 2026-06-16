@@ -2783,7 +2783,10 @@ const VIEWS = {
   front:  [1, 0, 0], back: [-1, 0, 0],
   right:  [0, 1, 0], left: [0, -1, 0],
   top:    [0, 0, 1], bottom: [0, 0, -1],
-  iso:    [1, -1, 0.8],
+  // isometric from the +X +Y +Z octant (camera at "(1,1,1)"): a robot-friendly
+  // 3/4 view.  Any (±1,±1,±1) diagonal is isometric; this picks the all-positive
+  // one so +Y (robot left) faces the viewer instead of away.
+  iso:    [1, 1, 1],
 };
 
 // ⌖ origin: the WORLD origin is fixed (grid lives there); this moves the
