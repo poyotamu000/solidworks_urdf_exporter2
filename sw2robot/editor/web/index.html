@@ -420,6 +420,9 @@
     </div>
     <div>
       <button id="reset" data-i18n="ui.reset">Reset pose</button>
+      <button id="resetview" data-i18n="ui.resetview"
+              data-i18n-title="t.resetview"
+              title="ビューを最初の状態に戻す (c)">↺ リセット</button>
       <button id="undo" disabled data-i18n-title="hist.undoEmpty"
               title="undo (Ctrl+Z)">↶</button>
       <button id="redo" disabled data-i18n-title="hist.redoEmpty"
@@ -936,6 +939,10 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     't.fsbrowse': { en: 'server-side file browser (when the dialog can’t find it)',
                     ja: 'サーバー側のファイルブラウザ (ダイアログで見つからない時)' },
     'ui.reset': { en: 'Reset pose (0)', ja: '姿勢リセット (0)' },
+    'ui.resetview': { en: '↺ Reset view', ja: '↺ リセット' },
+    't.resetview': { en: 'back to the just-loaded state: neutral pose, default camera, nothing selected, all tools closed (c)',
+                     ja: 'ビューを最初の状態へ: 中立姿勢・初期カメラ・選択解除・ツール終了 (c)' },
+    'view.reset': { en: 'view reset to the initial state', ja: 'ビューを最初の状態に戻しました' },
     't.renamelist': { en: 'rename joints/links in a list', ja: '関節名・リンク名を一覧で改名' },
     'ui.renamelist': { en: '≣ rename', ja: '≣ 改名' },
     't.bug': { en: 'broken? this sends the op-log + state to the server', ja: '壊れたらこれ: 操作ログ+状態をサーバーに送る' },
@@ -3779,6 +3786,8 @@ window.addEventListener('keydown', ev => {
     enterMimicMode();                   // start mimic linking from the selection
   } else if (ev.key === '0' || ev.key === 'Home') {
     resetPose();                        // all joints back to 0 (neutral pose)
+  } else if (ev.key === 'c' || ev.key === 'C') {
+    resetView();                        // whole viewer back to the loaded state
   } else if ((ev.key === 'r' || ev.key === 'R') && target) {
     reRoot(target);
     selectLink(null);
@@ -3980,6 +3989,24 @@ function resetPose() {
   }
 }
 document.getElementById('reset').addEventListener('click', resetPose);
+
+// reset the VIEWER to the just-loaded state -- neutral pose, default camera,
+// nothing selected, every transient tool/overlay closed.  NOT a data reload:
+// joint TYPE/limit edits persist (they live in the URDF); only the live view
+// state is cleared.
+function resetView() {
+  if (mimicMode) { cancelMimic(); }
+  if (ecTool) { cancelEndcoords(); }
+  resetPose();
+  selectLink(null);
+  clearBoxSelection();
+  alignBtn.classList.remove('active');
+  portBtn.classList.remove('active');
+  clearFaceOverlay();
+  setView('iso');
+  log(t('view.reset'), 'ok');
+}
+document.getElementById('resetview').addEventListener('click', resetView);
 
 // ---- loading entry points -----------------------------------------------
 function loadRobot(info, { drop = false, keepPose = false,
