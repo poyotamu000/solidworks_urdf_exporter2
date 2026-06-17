@@ -35,17 +35,53 @@ except ImportError:  # pragma: no cover - non-Windows / no pywin32
     pythoncom = win32com = gencache = None
     _HAVE_WIN32 = False
 
-# SolidWorks 2024 type libraries (LIBID, lcid, major, minor) -- generated once
-# via ``python -m win32com.client.makepy <sldworks.tlb>`` etc.  Loading them
-# explicitly is what makes Dispatch return *typed* objects so that methods with
-# [out] parameters (GetRemainingDOFs) and overloads (SaveAs4) marshal correctly.
-# Plain dynamic dispatch cannot call those.  major=32 == SolidWorks 2024.
-_TYPELIBS = [
-    ("{83A33D31-27C5-11CE-BFD4-00400513BB57}", 0, 32, 0),  # sldworks
-    ("{4687F359-55D0-4CD3-B6CF-2EB42C11F989}", 0, 32, 0),  # swconst
-    ("{C71C31CD-898C-11D4-AEF6-00C04F603FAF}", 0, 32, 0),  # swpublished
-]
+# SolidWorks type libraries (stable LIBIDs; generated via makepy).  Loading
+# them is what makes Dispatch return *typed* objects so methods with [out]
+# parameters (GetRemainingDOFs) and overloads (SaveAs4) marshal correctly --
+# plain dynamic dispatch cannot call those.
+#
+# The typelib VERSION (major.minor) differs per SolidWorks release -- major ==
+# release year - 1992 (2024 -> 32, 2025 -> 33, ...) -- so it is DETECTED at
+# runtime from the registry (with a year-range fallback) instead of pinned to
+# one release.  Development/CI is on SolidWorks 2024; if the installed version's
+# typelib cannot be loaded, we raise a clear error pointing at the maintainer.
+_TYPELIBS = {
+    "sldworks":    "{83A33D31-27C5-11CE-BFD4-00400513BB57}",
+    "swconst":     "{4687F359-55D0-4CD3-B6CF-2EB42C11F989}",
+    "swpublished": "{C71C31CD-898C-11D4-AEF6-00C04F603FAF}",
+}
+_TESTED_MAJOR = 32                  # SolidWorks 2024 (year - 1992); the verified one
+_ISSUES_URL = "https://github.com/iory/sw2robot/issues"
 _sld_module = None
+
+
+def _registered_typelib_versions(libid):
+    """(major, minor) versions registered for ``libid``, newest first.
+
+    The TypeLib registry stores version components in HEX (the COM convention),
+    which is exactly what ``EnsureModule`` wants as integers, so e.g. the key
+    ``20.0`` parses to ``(32, 0)`` = SolidWorks 2024."""
+    out = []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT,
+                            rf"TypeLib\{libid}") as k:
+            i = 0
+            while True:
+                try:
+                    sub = winreg.EnumKey(k, i)
+                except OSError:
+                    break
+                i += 1
+                try:
+                    maj, _, minr = sub.partition(".")
+                    out.append((int(maj, 16), int(minr or "0", 16)))
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    out.sort(reverse=True)
+    return out
 
 
 def _prepare_gencache():
@@ -97,15 +133,43 @@ def ensure_typelibs():
     return mod
 
 
+def _version_candidates(libid):
+    """Versions to try for ``libid``, in order:
+
+    1. the VERIFIED major (SolidWorks 2024) if it is registered -- so the
+       tested dev/CI machine keeps using the proven typelib;
+    2. the remaining registered versions, newest first (other environments);
+    3. a year-range fallback (major == year - 1992) if the registry read came
+       up empty or in an unexpected encoding."""
+    registered = _registered_typelib_versions(libid)
+    ordered = [v for v in registered if v[0] == _TESTED_MAJOR]   # (1)
+    for v in registered:                                         # (2)
+        if v not in ordered:
+            ordered.append(v)
+    for y in range(2030, 2019, -1):                              # (3) 2030..2020
+        v = (y - 1992, 0)
+        if v not in ordered:
+            ordered.append(v)
+    return ordered
+
+
 def _load_modules():
+    """Load the makepy wrappers for whatever SolidWorks version is installed,
+    auto-detecting each typelib's version.  Returns the sldworks module, or
+    None if it could not be loaded for any candidate version."""
+    if gencache is None:
+        return None
     mod = None
-    for libid, lcid, major, minor in _TYPELIBS:
-        try:
-            m = gencache.EnsureModule(libid, lcid, major, minor)
-            if libid.startswith("{83A33D31"):
-                mod = m
-        except Exception:
-            pass
+    for name, libid in _TYPELIBS.items():
+        for major, minor in _version_candidates(libid):
+            try:
+                m = gencache.EnsureModule(libid, 0, major, minor)
+            except Exception:
+                continue                      # not this version -- try the next
+            if m is not None:
+                if name == "sldworks":
+                    mod = m
+                break                         # this typelib loaded; next typelib
     return mod
 
 
@@ -222,6 +286,33 @@ class SolidWorksUnavailable(RuntimeError):
     restored."""
 
 
+class SolidWorksTypelibError(SolidWorksUnavailable):
+    """The SolidWorks API type library could not be loaded for the installed
+    version.  The version is auto-detected, but this build is only verified
+    against SolidWorks 2024 -- a different release may need support added."""
+
+
+def _require_typelibs():
+    """``ensure_typelibs()`` but raise a CLEAR, actionable error if the typelib
+    for the installed SolidWorks version cannot be loaded (instead of letting a
+    cryptic [out]-parameter / OpenDoc6 failure surface much later)."""
+    mod = ensure_typelibs()
+    if mod is None and _HAVE_WIN32:
+        detected = _registered_typelib_versions(_TYPELIBS["sldworks"])
+        if detected:
+            maj = detected[0][0]
+            ver = f"typelib major {maj} (~SolidWorks {maj + 1992})"
+        else:
+            ver = "an unknown version (no SolidWorks typelib found in the registry)"
+        raise SolidWorksTypelibError(
+            f"Could not load the SolidWorks API type library for {ver}. This "
+            f"build is verified with SolidWorks {_TESTED_MAJOR + 1992} (typelib "
+            f"major {_TESTED_MAJOR}); your installed version may need support "
+            f"added. Please report your SolidWorks version to the repository "
+            f"maintainer: {_ISSUES_URL}")
+    return mod
+
+
 class SolidWorks:
     """Owns a private SolidWorks instance; opens docs read-only; never saves.
 
@@ -242,7 +333,7 @@ class SolidWorks:
                 pythoncom.CoInitialize()
             except Exception:
                 pass
-            ensure_typelibs()
+            _require_typelibs()
             try:
                 self.app = win32com.client.GetActiveObject(
                     "SldWorks.Application")
@@ -270,7 +361,7 @@ class SolidWorks:
             pythoncom.CoInitialize()
         except Exception:
             pass
-        ensure_typelibs()  # load typelibs first so Dispatch returns typed
+        _require_typelibs()  # load typelibs first so Dispatch returns typed
         try:
             self.app = win32com.client.gencache.EnsureDispatch(
                 "SldWorks.Application")
