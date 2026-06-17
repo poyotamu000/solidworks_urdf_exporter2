@@ -266,6 +266,13 @@
 </script>
 </head>
 <body>
+<div id="backendDown" style="position:fixed;top:0;left:0;right:0;z-index:1000;
+     display:none;background:#7a1d1d;color:#fff;padding:8px 14px;font-size:13px;
+     text-align:center;box-shadow:0 2px 10px #0009">
+  <span id="backendDownMsg"></span>
+  <button id="backendReload" data-i18n="backend.reload"
+          style="margin-left:12px">⟳ reload</button>
+</div>
 <div id="droptip" data-i18n="ui.droptip">drop a package folder here (for a .sldasm use 🗄)</div>
 <div id="app">
   <div id="viewwrap">
@@ -529,6 +536,9 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
                       ja: a => `JSエラー: ${a.msg} (${a.file}:${a.line})` },
     'boot.promiseRejected': { en: a => `promise rejected: ${a.reason}`,
                               ja: a => `Promise が拒否されました: ${a.reason}` },
+    'backend.down': { en: '⚠ Lost connection to the sw2robot server — it may have stopped. Restart it in the terminal, then reload.',
+                      ja: '⚠ sw2robot サーバーに接続できません — 停止した可能性があります。ターミナルで再起動してから再読み込みしてください。' },
+    'backend.reload': { en: '⟳ reload', ja: '⟳ 再読み込み' },
     'load.ok': { en: 'three.js + urdf-loader loaded ✓', ja: 'three.js + urdf-loader を読み込みました ✓' },
     'load.fail': { en: a => `CDN import failed: ${a.e}`, ja: a => `CDN の読み込みに失敗: ${a.e}` },
     'load.failHint': { en: '→ check internet access / proxy for unpkg.com, then reload',
@@ -1019,11 +1029,45 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     if (cls === 'err') { statusEl.textContent = '❌ ' + msg; }
   }
   window.log = log;
+
+  // Backend-down banner: when the local server stops (or the network drops),
+  // every fetch throws `TypeError: Failed to fetch` -- cryptic on its own.
+  // Wrap fetch so ANY failed request raises a clear, persistent banner, and any
+  // successful response clears it (auto-recovers when the server is back).
+  function setBackendDown(down) {
+    const el = document.getElementById('backendDown');
+    if (!el) { return; }
+    if (down && el.style.display === 'none') {
+      document.getElementById('backendDownMsg').textContent = t('backend.down');
+    }
+    el.style.display = down ? 'block' : 'none';
+  }
+  window.setBackendDown = setBackendDown;
+  const isNetErr = r => (r instanceof TypeError)
+    && /fetch|network|load failed/i.test(r.message || '');
+  const _origFetch = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    try {
+      const r = await _origFetch(...args);
+      setBackendDown(false);            // got a response -> server is alive
+      return r;
+    } catch (e) {
+      if (isNetErr(e)) { setBackendDown(true); }
+      throw e;                          // keep existing error handling working
+    }
+  };
+  const reloadBtn = document.getElementById('backendReload');
+  if (reloadBtn) { reloadBtn.addEventListener('click', () => location.reload()); }
+
   window.addEventListener('error', e =>
     log(t('boot.jsError', { msg: e.message,
         file: (e.filename || '?').split('/').pop(), line: e.lineno }), 'err'));
-  window.addEventListener('unhandledrejection', e =>
-    log(t('boot.promiseRejected', { reason: e.reason }), 'err'));
+  window.addEventListener('unhandledrejection', e => {
+    // a dead backend surfaces here as "Failed to fetch" -- the banner already
+    // explains it clearly, so don't also dump the raw TypeError on the user
+    if (isNetErr(e.reason)) { setBackendDown(true); e.preventDefault(); return; }
+    log(t('boot.promiseRejected', { reason: e.reason }), 'err');
+  });
   // translate the static chrome + reflect the active language button now
   applyStaticI18n();
   // #title / #status are dynamic (set from JS), so localize their placeholders
