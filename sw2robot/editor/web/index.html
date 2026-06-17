@@ -24,6 +24,11 @@
   #panel { width: 340px; padding: 12px; overflow-y: auto; flex-shrink: 0;
            background: #22252b; border-left: 1px solid #333;
            display: flex; flex-direction: column; }
+  /* draggable splitter to widen/narrow the right panel (link names get long) */
+  #resizer { flex-shrink: 0; width: 6px; cursor: col-resize; background: #333;
+             transition: background .15s; }
+  #resizer:hover, body.resizing #resizer { background: #2d6acc; }
+  body.resizing { cursor: col-resize; user-select: none; }
   #panel h1 { font-size: 15px; margin: 0 0 4px; color: #fff; }
   #status { color: #8a93a3; font-size: 12px; margin-bottom: 8px; }
   #picker { border: 1px solid #333; border-radius: 4px; padding: 8px;
@@ -197,11 +202,6 @@
   #loadbar .lb-sub { font-size: 11px; color: #8a93a3; margin-top: 6px;
                      overflow: hidden; text-overflow: ellipsis;
                      white-space: nowrap; }
-  #droptip { position: fixed; inset: 0; display: none; align-items: center;
-             justify-content: center; background: rgba(40,120,220,.25);
-             border: 3px dashed #6db3ff; font-size: 22px; color: #fff;
-             pointer-events: none; z-index: 10; }
-  body.dragging #droptip { display: flex; }
   /* end-coords placement panel (Blender-style gizmo HUD) */
   #ecpanel { position: absolute; left: 8px; top: 44px; z-index: 8;
              display: none; width: 212px; background: #1b2128f2;
@@ -273,7 +273,6 @@
   <button id="backendReload" data-i18n="backend.reload"
           style="margin-left:12px">⟳ reload</button>
 </div>
-<div id="droptip" data-i18n="ui.droptip">drop a package folder here (for a .sldasm use 🗄)</div>
 <div id="app">
   <div id="viewwrap">
     <urdf-manipulator id="viewer" up="Z" highlight-color="#ffb86b">
@@ -323,12 +322,12 @@
     <div id="emptyprompt" style="position:absolute;left:50%;top:50%;
          transform:translate(-50%,-50%);z-index:4;display:none;
          text-align:center;color:#7a828e;pointer-events:none">
-      <div style="font-size:42px">⤓</div>
+      <div style="font-size:42px">🗄</div>
       <div style="font-size:16px;margin-top:6px" data-i18n="ui.emptyDrop">
-        ここに .sldasm / パッケージフォルダを Drag &amp; Drop</div>
+        クリックしてパッケージを開く</div>
       <div style="font-size:12px;margin-top:4px;color:#5a6472"
            data-i18n="ui.emptyPick">
-        または右の「📄 ファイルを開く…」「📁 フォルダ…」から選択</div>
+        最近のファイル・フルパス貼り付け・右の 🗄</div>
     </div>
     <div id="fsmodal" style="position:absolute;left:50%;top:8%;
          transform:translateX(-50%);z-index:8;display:none;width:480px;
@@ -399,6 +398,7 @@
     <div id="linkinfo"></div>
     <div id="keyoverlay" aria-hidden="true"></div>
   </div>
+  <div id="resizer" title="ドラッグでパネル幅を調整"></div>
   <div id="panel">
     <div id="langbar" style="display:flex;gap:4px;justify-content:flex-end;
          margin-bottom:2px" data-i18n-title="lang.title" title="display language">
@@ -420,17 +420,15 @@
                 title="サーバー側のファイルブラウザ（最近のファイル＋フルパス貼り付け）">
           🗄 開く…</button>
       </div>
-      <!-- folder-upload kept for later (no visible button): a package folder
-           can still be dropped onto the page; this hidden directory picker is
-           wired to handleDrop so a button can re-enable dialog upload anytime -->
-      <input id="openfolderinput" type="file" webkitdirectory directory
-             multiple style="display:none">
     </div>
     <div>
       <button id="reset" data-i18n="ui.reset">Reset pose</button>
       <button id="resetview" data-i18n="ui.resetview"
               data-i18n-title="t.resetview"
               title="ビューを最初の状態に戻す (c)">↺ リセット</button>
+      <button id="clearview" data-i18n="ui.clearview"
+              data-i18n-title="t.clearview"
+              title="ビューアを空にする（パッケージは開いたまま）">🗑 クリア</button>
       <button id="undo" disabled data-i18n-title="hist.undoEmpty"
               title="undo (Ctrl+Z)">↶</button>
       <button id="redo" disabled data-i18n-title="hist.redoEmpty"
@@ -872,16 +870,6 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     'fs.recentHint': { en: '(recent — click to extract)', ja: '(最近のファイル — クリックで抽出)' },
     'fs.pkgRecentHint': { en: '(built package — click to open)', ja: '(抽出済みパッケージ — クリックで開く)' },
     'fs.empty': { en: '(empty, or no matching files)', ja: '(空、または対象ファイルなし)' },
-    // drag & drop
-    'drop.count': { en: a => `dropped ${a.n} files`, ja: a => `${a.n} 個のファイルをドロップ` },
-    'drop.noUrdf': { en: 'no .urdf (or .sldasm) in the drop', ja: 'ドロップに .urdf（または .sldasm）がありません' },
-    'drop.converting': { en: a => `converting ${a.name} via /api/convert …`, ja: a => `${a.name} を /api/convert で変換中 …` },
-    'drop.convertFail': { en: a => `convert failed (${a.status}) for ${a.n}`, ja: a => `変換失敗 (${a.status}): ${a.n}` },
-    'drop.convertOk': { en: a => `3DXML conversions done ✓ (${a.n} files ready)`, ja: a => `3DXML 変換完了 ✓（${a.n} ファイル）` },
-    'drop.suffix': { en: ' (dropped)', ja: '（ドロップ）' },
-    'drop.fail': { en: a => `drop failed: ${a.e}`, ja: a => `ドロップに失敗: ${a.e}` },
-    'drop.sldasmUsePath': { en: 'a dropped .sldasm has no real path — open 🗄 and pick a recent file or paste its full path',
-                            ja: 'ドロップした .sldasm は実パスが取れません — 🗄 を開いて最近のファイルを選ぶかフルパスを貼り付けてください' },
     // SolidWorks status
     'sw.unsaved': { en: '⚠️ unsaved changes — press Ctrl+S in SolidWorks first; ', ja: '⚠️ 未保存の変更 — まず SolidWorks で Ctrl+S を押してください; ' },
     'sw.open': { en: a => `open: ${a.name}`, ja: a => `開いています: ${a.name}` },
@@ -894,12 +882,11 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     // diagnostics + startup
     'bug.sent': { en: '🐞 diagnostic report sent (server: _client_report.json)', ja: '🐞 診断レポートを送信しました（サーバー: _client_report.json）' },
     'bug.fail': { en: a => `🐞 report failed: ${a.e}`, ja: a => `🐞 レポート送信に失敗: ${a.e}` },
-    'start.pick': { en: 'pick a package (or drag&drop)', ja: 'パッケージを選択（またはドラッグ&ドロップ）' },
-    'start.noPkg': { en: 'no package open yet — drop a package folder, or open a .sldasm via 🗄 (recent files + paste a full path)',
-                     ja: 'まだパッケージが開かれていません — パッケージフォルダをドロップ、または .sldasm を 🗄（最近のファイル＋フルパス貼り付け）で開く' },
+    'start.pick': { en: 'pick a package', ja: 'パッケージを選択' },
+    'start.noPkg': { en: 'no package open yet — click the viewer or 🗄 to open (recent files / paste a full path)',
+                     ja: 'まだパッケージが開かれていません — ビューアか 🗄 をクリックして開く（最近のファイル / フルパス貼り付け）' },
     // ---- static HTML (data-i18n / data-i18n-title) ----
     'ui.title': { en: 'sw2robot viewer', ja: 'sw2robot ビューア' },
-    'ui.droptip': { en: 'drop a package folder here (for a .sldasm use 🗄)', ja: 'パッケージフォルダをここにドロップ（.sldasm は 🗄 で）' },
     't.iso': { en: 'isometric', ja: '等角投影' },
     't.axes': { en: 'joint axes', ja: '関節軸' },
     't.origin': { en: 'root origin triad', ja: 'ルート原点の座標軸' },
@@ -917,10 +904,10 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     't.gridcap': { en: 'grid pitch', ja: 'グリッド間隔' },
     't.keycast': { en: 'demo recording: show pressed keys / mouse in the bottom-left',
                    ja: 'デモ録画用: 押したキー/マウス操作を画面左下に表示' },
-    'ui.emptyDrop': { en: 'Drag & Drop a package folder here',
-                      ja: 'ここにパッケージフォルダを Drag & Drop' },
-    'ui.emptyPick': { en: 'or open via 🗄 on the right (recent files / paste a full path)',
-                      ja: 'または右の 🗄 から開く（最近のファイル / フルパス貼り付け）' },
+    'ui.emptyDrop': { en: 'Click here to open a package',
+                      ja: 'クリックしてパッケージを開く' },
+    'ui.emptyPick': { en: 'recent files · paste a full path · 🗄 on the right',
+                      ja: '最近のファイル・フルパス貼り付け・右の 🗄' },
     't.selexclude': { en: 'exclude from the URDF (adds to yaml exclude:, Ctrl+Z to undo)',
                       ja: 'URDFから除外する (yaml exclude: に追加、Ctrl+Zで戻る)' },
     'ui.selroot': { en: '⌂ make root', ja: '⌂ ルート化' },
@@ -940,6 +927,10 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     't.resetview': { en: 'back to the just-loaded state: neutral pose, default camera, nothing selected, all tools closed (c)',
                      ja: 'ビューを最初の状態へ: 中立姿勢・初期カメラ・選択解除・ツール終了 (c)' },
     'view.reset': { en: 'view reset to the initial state', ja: 'ビューを最初の状態に戻しました' },
+    'ui.clearview': { en: '🗑 Clear', ja: '🗑 クリア' },
+    't.clearview': { en: 'empty the viewer (the package stays open — reopen it from 🗄)',
+                     ja: 'ビューアを空にする（パッケージは開いたまま。🗄 から再表示できます）' },
+    'view.cleared': { en: 'viewer cleared', ja: 'ビューアを空にしました' },
     't.renamelist': { en: 'rename joints/links in a list', ja: '関節名・リンク名を一覧で改名' },
     'ui.renamelist': { en: '≣ rename', ja: '≣ 改名' },
     't.bug': { en: 'broken? this sends the op-log + state to the server', ja: '壊れたらこれ: 操作ログ+状態をサーバーに送る' },
@@ -4042,6 +4033,47 @@ function resetView() {
 }
 document.getElementById('resetview').addEventListener('click', resetView);
 
+// Empty the viewer entirely (unlike resetView, which only returns the loaded
+// robot to its initial pose/camera).  The server package stays open, so 🗄 /
+// the recent list re-open it.  Markers (axis meshes, TF triads) are parented to
+// the robot's joints/links, so removing the robot drops them too; we only have
+// to undim the SHARED materials TF may have dimmed and clear the JS-side state.
+function clearViewer() {
+  if (!viewer.robot) { return; }                 // already empty
+  op('clearViewer', {});
+  if (mimicMode) { cancelMimic(); }
+  if (ecTool) { cancelEndcoords(); }
+  selectLink(null);
+  clearBoxSelection();
+  clearFaceOverlay();
+  clearPortMarkers();
+  alignBtn.classList.remove('active');
+  portBtn.classList.remove('active');
+  undimAll();                                    // restore TF-dimmed materials
+  tfBtn.classList.remove('active');
+  tfNodes = [];                                  // gone with the robot tree
+  axisMarkers.clear();                           // gone with the robot tree
+  clearTimeout(colPoll); colPoll = 0;            // stop self-collision polling
+  colReady = false; colBusy = false; colQueued = false;
+  removeLoadCover();
+  const r = viewer.robot;
+  if (r && r.parent) { r.parent.remove(r); }
+  viewer.robot = null;
+  jointsEl.innerHTML = '';
+  rows.clear();
+  document.getElementById('selbar').style.display = 'none';
+  document.getElementById('linkinfo').style.display = 'none';
+  hideLoadbar();
+  document.getElementById('emptyprompt').style.display = '';
+  currentInfo = null;
+  document.getElementById('title').textContent = t('ui.title');
+  document.title = 'sw2robot';
+  statusEl.textContent = t('view.cleared');
+  viewer.redraw();
+  log(t('view.cleared'), 'ok');
+}
+document.getElementById('clearview').addEventListener('click', clearViewer);
+
 // ---- loading entry points -----------------------------------------------
 function loadRobot(info, { drop = false, keepPose = false,
                            followCamera = false } = {}) {
@@ -4454,13 +4486,37 @@ function fsGo() {
   else { fsShow(p); }
 }
 
-document.getElementById('fsbrowse').addEventListener('click', () => {
+function openFsBrowser() {
   let start = fsCur;
   try { start = start || localStorage.getItem(FS_LAST_DIR_KEY) || ''; }
   catch { /**/ }
   fsShow(start);
   setTimeout(() => document.getElementById('fspath').focus(), 50);
+}
+function closeFsBrowser() { fsmodal.style.display = 'none'; }
+document.getElementById('fsbrowse').addEventListener('click', openFsBrowser);
+
+// Clicking the EMPTY viewer opens the file browser (no robot loaded -> the only
+// thing to do is open one), like pressing 🗄.  While the browser is open, a
+// click anywhere outside it (or Escape) dismisses it.
+const viewwrapEl = document.getElementById('viewwrap');
+viewwrapEl.addEventListener('click', e => {
+  if (e.target.closest('#fsmodal')) { return; }     // clicks inside it: ignore
+  if (fsmodal.style.display !== 'none') { closeFsBrowser(); return; }  // click-away
+  // empty viewer surface -> open (the 3D click lands on the <canvas> inside the
+  // viewer, not the element itself, so match anything that isn't a UI control)
+  if (!viewer.robot && !e.target.closest('button, input, select, a')) {
+    openFsBrowser();
+  }
 });
+// capture phase so Escape closes the browser even while typing in its path/
+// filter fields (the inputs' own handlers would otherwise swallow it)
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && fsmodal.style.display !== 'none') {
+    closeFsBrowser();
+    e.stopPropagation();
+  }
+}, true);
 document.getElementById('fsgo').addEventListener('click', fsGo);
 document.getElementById('fspath').addEventListener('keydown', e => {
   if (e.key === 'Enter') { e.preventDefault(); fsGo(); }
@@ -4473,130 +4529,44 @@ document.getElementById('fsfilter').addEventListener('keydown', e => {
   if (vis.length === 1) { vis[0].click(); }
 });
 
-// Folder-upload (view a package without a server path) is kept for later but
-// has no visible button: this hidden directory picker stays wired to handleDrop
-// (browsers hide real paths, so uploaded files load via blob URLs), and a
-// package folder can still be drag&dropped onto the page.  Re-adding a button
-// that calls openFolderInput.click() re-enables dialog upload.
-const openFolderInput = document.getElementById('openfolderinput');
-openFolderInput.addEventListener('change', () => {
-  const files = {};
-  [...openFolderInput.files].forEach(
-    f => { files['/' + (f.webkitRelativePath || f.name)] = f; });
-  if (Object.keys(files).length) { handleDrop(files); }
-});
 document.getElementById('fsclose').addEventListener('click',
   () => { fsmodal.style.display = 'none'; });
 document.getElementById('fsup').addEventListener('click', ev =>
   fsShow(ev.target.dataset.parent || ''));
 
-// ---- drag & drop: package folder OR a .sldasm ---------------------------
-function dataTransferToFiles(dt) {
-  const files = {};
-  function recurse(item) {
-    if (item.isFile) {
-      return new Promise(res =>
-        item.file(f => { files[item.fullPath] = f; res(); }));
-    }
-    const reader = item.createReader();
-    return new Promise(res => {
-      const ps = [];
-      (function next() {
-        reader.readEntries(es => {
-          if (!es.length) { Promise.all(ps).then(res); return; }
-          es.forEach(e => ps.push(recurse(e)));
-          next();
-        });
-      })();
-    });
-  }
-  const items = [...(dt.items || [])]
-    .map(i => i.webkitGetAsEntry?.()).filter(Boolean);
-  if (items.length) {
-    return Promise.all(items.map(recurse)).then(() => files);
-  }
-  [...dt.files].forEach(f => { files['/' + f.name] = f; });
-  return Promise.resolve(files);
-}
-
-const cleanPath = p => p.replace(/\\/g, '/').split('/').reduce((a, el) => {
-  if (el === '..') { a.pop(); } else if (el !== '.' && el !== '') { a.push(el); }
-  return a;
-}, []).join('/');
-
-async function handleDrop(files) {
-  const names = Object.keys(files);
-  log(t('drop.count', { n: names.length }));
-  const urdfPath = names.find(n => n.toLowerCase().endsWith('.urdf'));
-  if (!urdfPath) {
-    // A dropped .sldasm can't be extracted from its uploaded bytes -- SolidWorks
-    // needs the file in its folder (referenced parts resolve relative to it) and
-    // the browser hides the real path.  Point the user at the path-aware entries.
-    const sld = names.find(n => n.toLowerCase().endsWith('.sldasm'));
-    log(t(sld ? 'drop.sldasmUsePath' : 'drop.noUrdf'), sld ? 'wrn' : 'err');
-    return;
-  }
-  const blobs = new Map();
-  for (const n of names) {
-    const f = files[n];
-    if (n.toLowerCase().endsWith('.3dxml')) {
-      log(t('drop.converting', { name: n.split('/').pop() }));
-      const resp = await fetch('/api/convert', { method: 'POST', body: f });
-      if (!resp.ok) {
-        log(t('drop.convertFail', { status: resp.status, n }), 'err');
-        continue;
-      }
-      blobs.set(cleanPath(n), URL.createObjectURL(await resp.blob()));
-    } else {
-      blobs.set(cleanPath(n), URL.createObjectURL(f));
-    }
-  }
-  log(t('drop.convertOk', { n: blobs.size }), 'ok');
-  viewer.urlModifierFunc = url => {
-    const cleaned = cleanPath(url);
-    for (const [name, blob] of blobs) {
-      const len = Math.min(name.length, cleaned.length);
-      if (cleaned.slice(-len) === name.slice(-len)) { return blob; }
-    }
-    return url;
+// ---- resizable right panel (link names get long; let the user widen it) ---
+(function () {
+  const panel = document.getElementById('panel');
+  const resizer = document.getElementById('resizer');
+  const KEY = 'sw2robot.panelWidth';
+  const MIN = 240;
+  const maxW = () => Math.max(MIN, window.innerWidth - 360);   // keep the viewer usable
+  const apply = w => {
+    panel.style.width = Math.round(Math.min(maxW(), Math.max(MIN, w))) + 'px';
   };
-  const name = urdfPath.split('/').pop().replace(/\.urdf$/i, '');
-  loadRobot({ name: name + t('drop.suffix'), urdf: cleanPath(urdfPath) },
-            { drop: true });
-}
-
-// full-viewer dim shown while a NEW assembly is being located/extracted, so
-// the old model is hidden (the screen reads as "loading something new") and
-// there's always a visible spinner -- the drop/locate used to look frozen.
-const loadBackdrop = document.getElementById('loadbackdrop');
-function showLoadOverlay(text) {
-  loadBackdrop.style.display = 'block';
-  showLoadbar(text, { indet: true });
-}
-function hideLoadOverlay() {
-  loadBackdrop.style.display = 'none';
-  hideLoadbar();
-}
-
-let dragDepth = 0;
-document.addEventListener('dragover', e => e.preventDefault());
-document.addEventListener('dragenter', e => {
-  e.preventDefault();
-  if (++dragDepth === 1) { document.body.classList.add('dragging'); }
-});
-document.addEventListener('dragleave', () => {
-  if (--dragDepth <= 0) {
-    dragDepth = 0;
-    document.body.classList.remove('dragging');
-  }
-});
-document.addEventListener('drop', e => {
-  e.preventDefault();
-  dragDepth = 0;
-  document.body.classList.remove('dragging');
-  dataTransferToFiles(e.dataTransfer).then(handleDrop)
-    .catch(err => log(t('drop.fail', { e: err.message ?? err }), 'err'));
-});
+  try {
+    const saved = parseFloat(localStorage.getItem(KEY));
+    if (saved > 0) { apply(saved); }
+  } catch { /**/ }
+  let dragging = false;
+  resizer.addEventListener('mousedown', e => {
+    dragging = true; e.preventDefault();
+    document.body.classList.add('resizing');
+  });
+  window.addEventListener('mousemove', e => {
+    if (dragging) { apply(window.innerWidth - e.clientX); }  // panel hugs the right edge
+  });
+  window.addEventListener('mouseup', () => {
+    if (!dragging) { return; }
+    dragging = false;
+    document.body.classList.remove('resizing');
+    try { localStorage.setItem(KEY, parseFloat(panel.style.width)); } catch { /**/ }
+  });
+  resizer.addEventListener('dblclick', () => {       // reset to the default width
+    panel.style.width = '';
+    try { localStorage.removeItem(KEY); } catch { /**/ }
+  });
+})();
 
 // ---- kick off -----------------------------------------------------------
 // live SolidWorks session: only attachable when THIS SERVER was started

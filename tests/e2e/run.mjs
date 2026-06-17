@@ -203,40 +203,8 @@ check('fs: close hides modal', fsClosed === 'none');
 check('fs: empty prompt hidden while robot loaded', await page.evaluate(
   () => document.getElementById('emptyprompt').style.display !== 'block'));
 
-// ---- 7. folder upload (hidden webkitdirectory input, kept for later) -------
-// The 📄/📁 buttons were removed, but the folder-upload plumbing stays: the
-// hidden directory picker still feeds handleDrop (uploaded files -> blob URLs),
-// so clicking it programmatically loads a whole package without a server path.
-const pkgName = await page.evaluate(async () =>
-  (await (await fetch('/api/info')).json()).name);
-const pkgDir = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)), '../../output', pkgName);
-const pkgUrdf = path.join(pkgDir, 'urdf', pkgName + '.urdf');
-if (fs.existsSync(pkgUrdf)) {
-  const logLen = () => page.evaluate(
-    () => document.querySelectorAll('#log div').length);
-  const logAfter = async n => page.evaluate(i =>
-    [...document.querySelectorAll('#log div')].slice(i)
-      .map(d => d.textContent).join('\n'), n);
-
-  const mark = await logLen();
-  const [chooser] = await Promise.all([
-    page.waitForFileChooser({ timeout: 10000 }),
-    page.evaluate(() => document.getElementById('openfolderinput').click()),
-  ]);
-  await chooser.accept([pkgDir]);     // a DIRECTORY (webkitdirectory input)
-  await sleep(30000);
-  const dirLog = await logAfter(mark);
-  check('folder-upload: package folder loads fully',
-        /\d+ 個のファイルをドロップ/.test(dirLog) && dirLog.includes('カメラを調整しました'),
-        (dirLog.match(/dropped \d+ files/) ?? ['?'])[0]);
-} else {
-  console.log(`SKIP  folder-upload (no local ${pkgUrdf})`);
-}
-
 // ---- 8. self-collision: NEW contacts tint the offending links red ----------
-// section 7 left a DROPPED robot loaded (collision is disabled for those);
-// reload to get the server package back in the normal (non-drop) path.
+// reload to a clean server-package state before checking collisions.
 // domcontentloaded (not networkidle2): the mesh stream keeps the network
 // busy for >60 s on big packages, so networkidle2 would time out.
 await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
