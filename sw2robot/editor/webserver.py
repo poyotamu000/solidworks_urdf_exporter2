@@ -11,8 +11,6 @@ Routes
     /api/list             packages under --root: [{"name", "path"}, ...]
     /api/open?path=P      switch the served package (package dir, a dir with
                           urdf/*.urdf, or a .urdf file path) -> /api/info JSON
-    /api/convert  (POST)  3DXML bytes in -> GLB bytes out (mm -> m), so the
-                          page can also render drag&dropped local packages
     /pkg/<rel>            files from the CURRENT package dir
     /pkg/<rel>.3dxml?glb=1  the mesh converted to GLB (three.js cannot read
                           3DXML), cached next to the source as <rel>.3dxml.glb
@@ -24,7 +22,6 @@ sw2robot.exporter already requires.
 """
 import argparse
 import http.server
-import io
 import json
 import os
 import posixpath
@@ -131,15 +128,6 @@ def _preconvert_meshes(pkg_dir):
         if n:
             print(f"[sw2robot.web] preconverted {n} meshes to glb")
     threading.Thread(target=run, daemon=True).start()
-
-
-def _convert_3dxml_bytes(data):
-    """3DXML bytes (drag&dropped file) -> GLB bytes, mm -> m."""
-    import trimesh
-    mesh = _to_single_mesh(trimesh.load(io.BytesIO(data), file_type="3dxml"))
-    mesh.apply_scale(0.001)
-    mesh.units = "meter"
-    return mesh.export(file_type="glb")
 
 
 def _resolve_package(path):
@@ -1830,15 +1818,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._send_json(
                     {"done": src, "label": label,
                      "undo": len(h["undo"]), "redo": len(h["redo"])})
-            if parsed.path == "/api/convert":
-                n = int(self.headers.get("Content-Length", 0))
-                if not (0 < n < 200 * 1024 * 1024):
-                    return self.send_error(400, "bad length")
-                data = self.rfile.read(n)
-                glb = _convert_3dxml_bytes(data)
-                print(f"[sw2robot.web] /api/convert: {n}B 3dxml -> "
-                      f"{len(glb)}B glb")
-                return self._send_bytes(glb, "model/gltf-binary")
             return self.send_error(404)
         except BrokenPipeError:
             pass
