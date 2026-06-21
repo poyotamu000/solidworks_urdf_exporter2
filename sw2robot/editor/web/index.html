@@ -1043,6 +1043,12 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     't.selall': { en: 'select all', ja: 'すべて選択' },
     'ui.selectedArrow': { en: 'selected →', ja: '選択 →' },
     'ui.set': { en: 'Set', ja: '適用' },
+    'export.bar': { en: a => `exporting ${a.what} package …`,
+                    ja: a => `${a.what} パッケージを書き出し中 …` },
+    'export.start': { en: a => `exporting ${a.what} package (converting meshes) …`,
+                      ja: a => `${a.what} パッケージを書き出し中（メッシュ変換）…` },
+    'export.done': { en: a => `exported ${a.file}`, ja: a => `${a.file} を書き出しました` },
+    'export.fail': { en: a => `export failed: ${a.e}`, ja: a => `書き出しに失敗: ${a.e}` },
     'ui.exppkgname': { en: 'package', ja: 'パッケージ名' },
     't.exppkgname': { en: 'ROS package name for the exported ROS1/ROS2 package (default <name>_description). Lowercase letters, digits and underscores only.',
                       ja: 'エクスポートする ROS1/ROS2 パッケージの名前（既定: <name>_description）。英小文字・数字・アンダースコアのみ。' },
@@ -3171,13 +3177,44 @@ expurdf?.addEventListener('input', () => {
     .replace(/[^A-Za-z0-9_.-]/g, '_').replace(/^[^A-Za-z0-9]+/, '');
   if (expurdf.value !== clean) { expurdf.value = clean; }
 });
-expLinks.forEach(a => a.addEventListener('click', () => {
+// building a ROS package converts every mesh (3dxml -> dae/stl) and can take a
+// few seconds, during which a plain <a download> gives NO feedback.  Drive it
+// over fetch instead: show an "exporting ..." loadbar, then hand the finished
+// blob to a throwaway download link.
+expLinks.forEach(a => a.addEventListener('click', async ev => {
+  ev.preventDefault();
   const base = a.getAttribute('href').split('&name=')[0].split('&urdf=')[0];
   const name = (exppkg?.value || '').trim();
   const urdf = (expurdf?.value || '').trim();
-  a.href = base
+  const url = base
     + (name ? `&name=${encodeURIComponent(name)}` : '')
     + (urdf ? `&urdf=${encodeURIComponent(urdf)}` : '');
+  const what = a.id === 'expglb' ? 'glb'
+    : a.id === 'expros2' ? 'ROS 2' : 'ROS 1';
+  showLoadbar(t('export.bar', { what }), { indet: true });
+  log(t('export.start', { what }));
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      let msg = resp.status;
+      try { msg = (await resp.json()).error ?? msg; } catch (_e) { /* not json */ }
+      throw new Error(msg);
+    }
+    const blob = await resp.blob();
+    const cd = resp.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const fn = m ? m[1] : `${name || 'package'}.zip`;
+    const objurl = URL.createObjectURL(blob);
+    const tmp = document.createElement('a');
+    tmp.href = objurl; tmp.download = fn;
+    document.body.appendChild(tmp); tmp.click(); tmp.remove();
+    URL.revokeObjectURL(objurl);
+    log(t('export.done', { file: fn }), 'ok');
+  } catch (e) {
+    log(t('export.fail', { e: e.message ?? e }), 'err');
+  } finally {
+    hideLoadbar();
+  }
 }));
 
 // ---- camera: bbox helpers, SolidWorks-style view presets, auto-fit ------
