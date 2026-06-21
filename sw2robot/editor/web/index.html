@@ -1967,6 +1967,19 @@ function applyPoseDrag() {
   if (dc !== _origDragControls) {
     _origDragControls = dc;
     _origOnHover = dc.onHover; _origOnUnhover = dc.onUnhover;
+    // urdf-loader's getPrismaticDelta projects the pointer onto the axis
+    // transformed by joint.PARENT.matrixWorld -- it drops the joint's own
+    // <origin rpy>, so a prismatic with a rotated origin drags the WRONG way
+    // (getRevoluteDelta already uses joint.matrixWorld).  The real motion runs
+    // the axis through the joint's own frame, so use joint.matrixWorld here too
+    // and every slider drags the way the mouse moves, not just the rpy=0 ones.
+    const _pdN = new THREE.Vector3();
+    const _pdD = new THREE.Vector3();
+    dc.getPrismaticDelta = (joint, startPoint, endPoint) => {
+      _pdD.subVectors(endPoint, startPoint);
+      _pdN.copy(joint.axis).transformDirection(joint.matrixWorld).normalize();
+      return _pdD.dot(_pdN);
+    };
   } else {
     if (dc.onHover !== _noopHover && dc.onHover !== _origOnHover) {
       _origOnHover = dc.onHover;
