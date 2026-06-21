@@ -63,6 +63,22 @@ def test_limit_joint_builds_prismatic_with_limits():
     assert abs(j.upper - 0.15) < 1e-9
 
 
+def test_template_round_trips_joint_limits(tmp_path):
+    # write_template must emit lower/upper -- a joint without a SolidWorks limit
+    # mate (a promoted slide) has its travel range ONLY in the config, so a
+    # template that drops it silently resets the joint on the next build
+    from sw2robot.exporter import jointcfg
+    lj = LimitJoint(a="slider", b="base", type="prismatic",
+                    axis_point=[0, 0, 0], axis_dir=[0, 1, 0],
+                    lower=-0.05, upper=0.15)
+    model = build_model(_graph(lj))
+    out = tmp_path / "j.joints.yaml"
+    jointcfg.write_template(model, str(out))
+    txt = out.read_text(encoding="utf-8")
+    assert "lower: -0.05000" in txt
+    assert "upper: 0.15000" in txt
+
+
 def test_limit_joint_axis_flips_for_the_other_side():
     # if the tree child is the OTHER mate side (not the reference ``a``), its +
     # motion shrinks the distance, so the axis flips to keep joint>0 = toward max

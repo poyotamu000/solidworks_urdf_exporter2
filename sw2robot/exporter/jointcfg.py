@@ -70,6 +70,14 @@ def write_template(model, path):
         lines.append(f"  - parent: {j.parent}")
         lines.append(f"    child:  {j.child}")
         lines.append(f"    type:   {j.jtype}{hint}")
+        # round-trip the travel range so re-running --config keeps it -- a joint
+        # WITHOUT a SolidWorks limit mate (a promoted concentric slide) has no
+        # other home for its limits, so omitting them here silently reset it to
+        # the default on the next build.  continuous joints have no endpoints.
+        if j.jtype in ("revolute", "prismatic") \
+                and j.lower is not None and j.upper is not None:
+            lines.append(f"    lower: {float(j.lower):.5f}")
+            lines.append(f"    upper: {float(j.upper):.5f}")
     # robot-compiler module interface (root is emitted as base_link by default)
     lines.append("")
     lines.append("# --- robot-compiler module interface (optional) ---")

@@ -188,6 +188,19 @@ def extract_and_import(assembly_path, out_dir=None, robot_name=None,
                  else "starting SolidWorks (this can take a minute) ...")
     pkg_dir = extract(assembly_path, out_dir=out_dir, robot_name=robot_name,
                       visible=visible, progress=progress, sw=sw)
+    # A re-extract regenerates graph.json but extract() leaves the existing
+    # <name>.joints.yaml in place.  Without a config the build would take the
+    # auto path and OVERWRITE that file -- silently dropping every edit the user
+    # made (joint types, axes, renames, base, and the travel range of a joint
+    # with no SolidWorks limit mate, which lives ONLY here).  So reuse it as the
+    # config: re-extracting refreshes the geometry while keeping the user's work.
+    if config_path is None:
+        existing = sorted(Path(pkg_dir).glob("*.joints.yaml"))
+        if existing:
+            config_path = str(existing[0])
+            if progress:
+                progress(f"reusing your joint config {existing[0].name} "
+                         f"(keeps types/limits/renames across the re-extract)")
     if progress:
         progress("building URDF from the CAD graph ...")
     return import_module(pkg_dir, config_path=config_path, base_hint=base_hint)
