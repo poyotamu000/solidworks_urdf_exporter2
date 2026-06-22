@@ -139,6 +139,11 @@ def _link(root, name):
 
 
 # --------------------------------------------------------------- tests
+def test_info_reports_urdf_mode(server):
+    """The frontend gates URDF-only controls (inertial editing) on info.mode."""
+    assert _get_json(server, "/api/info")["mode"] == "urdf"
+
+
 def test_serves_base_urdf_unedited(server):
     _require_fixture()
     root = _served_urdf(server)
@@ -170,6 +175,14 @@ def test_set_inertial(server):
 def test_set_inertial_nonphysical_is_400(server):
     code, r = _post(server, "/api/set_inertial",
                     {"link": TIP_LINK, "inertia": [1, 0, 0, 1, 0, 10]})
+    assert code == 400 and "error" in r
+
+
+def test_set_inertial_malformed_body_is_400(server):
+    """A null in the com/inertia arrays (e.g. an empty UI field) is a 400, not a
+    500 -- the bad-input guard covers TypeError too."""
+    code, r = _post(server, "/api/set_inertial",
+                    {"link": TIP_LINK, "com": [None, 0, 0]})
     assert code == 400 and "error" in r
 
 

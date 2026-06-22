@@ -1380,15 +1380,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _info(self):
         cls = type(self)
-        return {"name": cls.robot_name, "urdf": "/pkg/" + cls.urdf_rel} \
-            if cls.urdf_rel else {"name": None, "urdf": None}
+        if not cls.urdf_rel:
+            return {"name": None, "urdf": None, "mode": None}
+        # 'cad' = joints.yaml + build() path; 'urdf' = direct overlay editing
+        # (the frontend gates URDF-only controls such as inertial editing on this)
+        return {"name": cls.robot_name, "urdf": "/pkg/" + cls.urdf_rel,
+                "mode": "cad" if _cad_mode(cls.pkg_dir) else "urdf"}
 
     def _um_reply(self, fn, *args):
-        """Run a URDF-mode edit and JSON-reply, turning a validation error into a
-        400 the editor surfaces (rather than the generic 500)."""
+        """Run a URDF-mode edit and JSON-reply, turning a bad-input error into a
+        400 the editor surfaces (rather than the generic 500) -- TypeError covers
+        a malformed body, e.g. a null in the com/inertia arrays."""
         try:
             return self._send_json(fn(_um["state"], *args))
-        except ValueError as e:
+        except (ValueError, TypeError) as e:
             return self._send_json({"error": str(e)}, 400)
 
     # -- routes -----------------------------------------------------------
