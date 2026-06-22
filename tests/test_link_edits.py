@@ -206,6 +206,24 @@ def test_type_change_to_movable_adds_axis_and_limit(tmp_path):
     assert lim.get("lower") and lim.get("upper")
 
 
+def test_flip_axis_on_just_converted_joint(tmp_path):
+    """Flipping a joint in the same edit that first makes it movable must take:
+    build_urdf backfills the <axis> before applying the flip."""
+    urdf = ('<robot name="r"><link name="a"/><link name="b"/>'
+            '<joint name="j" type="fixed"><parent link="a"/>'
+            '<child link="b"/></joint></robot>')
+    p = tmp_path / "urdf" / "r.urdf"
+    p.parent.mkdir(parents=True)
+    p.write_text(urdf, encoding="utf-8")
+    st = c.load_module(str(p))
+    c.set_joint_type(st, "j", "revolute")
+    c.set_axis_flip(st, "j", True)
+    j = next(x for x in ET.fromstring(c.build_urdf(st, sanitize=False))
+             .findall("joint") if x.get("name") == "j")
+    xyz = [float(v) for v in j.find("axis").get("xyz").split()]
+    assert xyz == [0.0, 0.0, -1.0]      # backfilled 0 0 1, then flipped
+
+
 def test_no_link_edits_leaves_urdf_structurally_unchanged(state):
     """build_urdf with an empty link overlay must not invent <material> or change
     inertials -- the existing joint-only behaviour is preserved."""

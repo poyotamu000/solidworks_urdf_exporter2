@@ -144,8 +144,10 @@ def _resolve_package(path):
         for sub in ("urdf", "."):
             d = os.path.normpath(os.path.join(path, sub))
             if os.path.isdir(d):
+                # skip dotfiles -- e.g. the hidden .<name>.live.urdf overlay copy
                 urdfs = sorted(f for f in os.listdir(d)
-                               if f.lower().endswith(".urdf"))
+                               if f.lower().endswith(".urdf")
+                               and not f.startswith("."))
                 if urdfs:
                     rel = os.path.relpath(os.path.join(d, urdfs[0]), path)
                     return path, rel.replace("\\", "/")
@@ -161,7 +163,10 @@ def _resolve_package(path):
 # the headless CLI uses.  The URDF URL is served as build_urdf(state), so the
 # on-disk .urdf stays the pristine base: the declarative overlay re-applies
 # cleanly on every request and survives a restart via the .sw2robot.json sidecar.
-_um = {"state": None}     # RobotCompilerState for the current URDF-mode package
+# ``rev`` bumps on every edit so on-disk readers (collision / auto-limits) can
+# cache against a stable (path, mtime) -- the live URDF is only rewritten when
+# ``rev`` actually changed (see _um_live_urdf).
+_um = {"state": None, "rev": 0, "live_rev": -1}
 
 
 def _cad_mode(pkg_dir):
@@ -177,15 +182,57 @@ def _um_load(pkg_dir, urdf_rel):
     state = core.load_module(os.path.join(pkg_dir, urdf_rel), package_dir=pkg_dir)
     core.load_edits(state)            # restore a prior session's edits, if any
     _um["state"] = state
+    _um["rev"], _um["live_rev"] = 0, -1
     return state
 
 
 def _um_save(state):
     from . import core
+    _um["rev"] += 1                   # invalidate the live URDF / disk caches
     try:
         core.save_state(state)
     except OSError:
         pass                          # persistence is best-effort
+
+
+def _um_live_urdf(pkg_dir, urdf_rel):
+    """``(abs_path, rel)`` of a hidden, overlay-applied copy of the URDF kept in
+    sync with the in-memory edits -- for on-disk readers that take a URDF path
+    (the self-collision build, the auto-limit subprocess).  In CAD mode (or with
+    no overlay) returns the package URDF itself.  Regenerated only when edits
+    changed, so a caller's ``(path, mtime)`` cache key stays stable across polls;
+    sits next to the base so the relative ``../meshes`` references still resolve."""
+    if _cad_mode(pkg_dir) or _um["state"] is None:
+        return os.path.join(pkg_dir, *urdf_rel.split("/")), urdf_rel
+    from . import core
+    d, base = posixpath.dirname(urdf_rel), posixpath.basename(urdf_rel)
+    stem = base[:-len(".urdf")] if base.lower().endswith(".urdf") else base
+    live_rel = posixpath.join(d, f".{stem}.live.urdf") if d else f".{stem}.live.urdf"
+    live_path = os.path.join(pkg_dir, *live_rel.split("/"))
+    if _um["live_rev"] != _um["rev"] or not os.path.exists(live_path):
+        # atomic replace: an async reader (collision / auto-limits) holding this
+        # path must never see a truncated file mid-rewrite.  The temp also starts
+        # with '.' so a concurrent _resolve_package never picks it as the URDF.
+        data = core.build_urdf(_um["state"], sanitize=False)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(live_path) or ".",
+                                   prefix=".live", suffix=".urdf")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp, live_path)
+            _um["live_rev"] = _um["rev"]
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            # tolerate a transient failure (e.g. a Windows lock from a reader)
+            # ONLY when a previous valid live copy remains -- it is at worst one
+            # revision stale and refreshes on the next call; with no copy at all
+            # there is nothing usable to hand out, so signal the failure
+            if not os.path.exists(live_path):
+                raise
+    return live_path, live_rel
 
 
 @contextlib.contextmanager
@@ -1477,11 +1524,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/collision/init":
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
-                # NOTE: in URDF-input mode this reads the pristine on-disk URDF,
-                # not the live overlay -- collision against unsaved type/axis
-                # edits is a known limitation (these optional skrobot/fcl features
-                # need async-safe materialization; tracked for a follow-up).
-                urdf_path = os.path.join(cls.pkg_dir, cls.urdf_rel)
+                # URDF-input mode: collide against the live overlay (type/axis
+                # edits included), not the pristine on-disk base
+                urdf_path, _ = _um_live_urdf(cls.pkg_dir, cls.urdf_rel)
                 key = (urdf_path, os.path.getmtime(urdf_path))
                 with _coll_lock:
                     if _coll["key"] != key or (
@@ -1503,18 +1548,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # Started ASYNC so the page can poll /api/auto_limits/status for
                 # per-joint progress while it runs (the sweep is in the child
                 # process, so polling no longer thrashes its GIL).  One at a time.
-                # NOTE: like /api/collision/init, the sweep reads the pristine
-                # on-disk URDF in URDF-input mode (not the live overlay) -- a
-                # known limitation tracked for a follow-up.
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
-                # parse BEFORE claiming the job, so a bad step/max can't wedge
-                # the "running" flag (no worker would start to clear it)
+                # parse + materialize BEFORE claiming the job, so a bad step/max
+                # or a live-URDF write failure can't wedge the "running" flag
+                # (no worker would start to clear it)
                 try:
                     step = float((query.get("step") or ["10"])[0])
                     mx = float((query.get("max") or ["360"])[0])  # ±2π
                 except ValueError:
                     return self._send_json({"error": "bad step/max"}, 400)
+                # URDF-input mode: sweep the live overlay (type edits included)
+                try:
+                    pkg = cls.pkg_dir
+                    _, rel = _um_live_urdf(cls.pkg_dir, cls.urdf_rel)
+                except Exception as e:
+                    return self._send_json(
+                        {"error": f"could not prepare URDF: {e}"}, 500)
                 with _limjob_lock:
                     if _limjob["running"]:
                         return self._send_json(
@@ -1522,7 +1572,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     _limjob.update(running=True, log=[], error=None,
                                    results=None, n=0, total=0, joint=None,
                                    phase="loading")
-                pkg, rel = cls.pkg_dir, cls.urdf_rel
 
                 # NB: must NOT be named `_job` -- that shadows the module-global
                 # `_job` (the extraction job) across this whole method and breaks
@@ -1606,6 +1655,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 ros_version = int(ros)
                 pkg_name = (query.get("name") or [""])[0].strip() or None
                 urdf_name = (query.get("urdf") or [""])[0].strip() or None
+                # the ROS exporter hardcodes the urdf/<robot_name>.urdf + meshes/
+                # layout; in URDF-input mode the opened file may sit elsewhere, so
+                # fail clearly instead of with a confusing missing-file 500
+                if not _cad_mode(cls.pkg_dir) \
+                        and os.path.normpath(os.path.join(cls.pkg_dir, cls.urdf_rel)) \
+                        != os.path.normpath(os.path.join(
+                            cls.pkg_dir, "urdf", cls.robot_name + ".urdf")):
+                    return self._send_json(
+                        {"error": "export needs the standard "
+                         "<pkg>/urdf/<name>.urdf + <pkg>/meshes/ layout; open the "
+                         "URDF from inside a urdf/ folder"}, 400)
                 try:
                     # URDF-input mode keeps the on-disk URDF pristine and serves
                     # edits live; materialize them so the exporter picks them up

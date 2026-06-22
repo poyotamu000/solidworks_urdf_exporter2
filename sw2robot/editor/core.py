@@ -694,6 +694,11 @@ def build_urdf(state: RobotCompilerState, sanitize: bool = True) -> str:
                     el = je.find(tag)
                     if el is not None:
                         je.remove(el)
+        # backfill the <axis> BEFORE the flip, so flipping a joint that this same
+        # edit just made movable (it had no axis) still takes effect
+        if je.get("type") in ("revolute", "prismatic", "continuous") \
+                and je.find("axis") is None:
+            ET.SubElement(je, "axis").set("xyz", "0 0 1")
         if e.flip_axis:
             ax = je.find("axis")
             if ax is not None:
@@ -727,13 +732,10 @@ def build_urdf(state: RobotCompilerState, sanitize: bool = True) -> str:
             mim.set("multiplier", f"{e.mimic_multiplier:g}")
             mim.set("offset", f"{e.mimic_offset:g}")
         # a joint made movable (e.g. fixed -> revolute) must satisfy URDF's
-        # requirements: an <axis> and, for revolute/prismatic, a <limit>.  Add
-        # placeholders when the type edit didn't supply them, so the type change
-        # alone never yields an invalid URDF (the user refines limits afterwards).
+        # requirement of a <limit> for revolute/prismatic; add a placeholder when
+        # the type edit didn't supply one (the <axis> was backfilled above), so
+        # the type change alone never yields an invalid URDF.
         ftype = je.get("type")
-        if ftype in ("revolute", "prismatic", "continuous") \
-                and je.find("axis") is None:
-            ET.SubElement(je, "axis").set("xyz", "0 0 1")
         if ftype in ("revolute", "prismatic") and je.find("limit") is None:
             lim = ET.SubElement(je, "limit")
             lim.set("lower", "-3.14159" if ftype == "revolute" else "0")

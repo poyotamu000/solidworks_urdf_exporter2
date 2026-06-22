@@ -117,6 +117,14 @@ def _post(base, path, body):
         return e.code, json.loads(e.read().decode("utf-8"))
 
 
+def _get_status(base, path):
+    try:
+        with urllib.request.urlopen(base + path) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
 def _served_urdf(base):
     info = _get_json(base, "/api/info")
     return ET.fromstring(_get(base, info["urdf"]))
@@ -233,6 +241,59 @@ def test_components_lists_links_with_overlay_colour(server):
     comp = _get_json(server, "/api/components")
     assert TIP_LINK in comp["links"]
     assert comp["colors"][TIP_LINK] == "#00ff00"
+
+
+def test_live_urdf_reflects_edits_and_is_cache_stable(server):
+    """collision / auto-limits read a hidden live URDF that tracks the overlay
+    but only rewrites when edits change (so their (path, mtime) cache holds)."""
+    import os
+
+    from sw2robot.editor import webserver
+
+    state = webserver._um["state"]
+    pkg = state.package_dir
+    rel = os.path.relpath(state.urdf_path, pkg).replace("\\", "/")
+
+    _post(server, "/api/set_types",
+          {"changes": [{"child": SCREW_LINK, "type": "revolute"}]})
+    live, _ = webserver._um_live_urdf(pkg, rel)
+    assert os.path.basename(live).startswith(".") and live.endswith(".live.urdf")
+    root = ET.fromstring(Path(live).read_text(encoding="utf-8"))
+    assert _joint(root, FIXED_JOINT).get("type") == "revolute"
+
+    m1 = os.path.getmtime(live)
+    again, _ = webserver._um_live_urdf(pkg, rel)        # no edit -> not rewritten
+    assert os.path.getmtime(again) == m1
+
+    # the hidden live copy must never be picked as the package URDF on re-open
+    _, picked = webserver._resolve_package(pkg)
+    assert not os.path.basename(picked).startswith(".")
+
+
+def test_export_rejects_nonstandard_layout(_built_template, tmp_path):
+    """A flat URDF package (urdf at the package root) can't be exported -- the
+    ROS exporter needs urdf/<name>.urdf + meshes/; fail with a clear message."""
+    from sw2robot.editor import webserver
+
+    flat = tmp_path / "flat"
+    (flat / "meshes").mkdir(parents=True)
+    shutil.copy2(_built_template / "urdf" / "fingertip.urdf", flat / "fingertip.urdf")
+    for f in (_built_template / "meshes").iterdir():
+        if f.is_file():
+            shutil.copy2(f, flat / "meshes" / f.name)
+
+    httpd, port = webserver._bind_free_port(webserver._Handler, _free_port())
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        _get_json(base, f"/api/open?path={flat}")
+        code, body = _get_status(base, "/api/export/zip?ros=1&meshes=dae")
+        assert code == 400
+        assert b"layout" in body.lower()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        webserver._um["state"] = None
 
 
 def test_edits_persist_to_sidecar(server, tmp_path):
