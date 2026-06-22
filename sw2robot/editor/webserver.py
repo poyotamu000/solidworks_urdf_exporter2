@@ -844,6 +844,113 @@ def _flip_axis_in_urdf(pkg_dir, urdf_rel, joint_name):
     return na
 
 
+def _set_attr_in_tag(seg, attr, val):
+    """Set/replace one attribute in a single (self-closing) tag string."""
+    import re
+    if re.search(rf'\b{attr}="', seg):
+        return re.sub(rf'\b{attr}="[^"]*"', f'{attr}="{val}"', seg)
+    return re.sub(r'\s*/?>\s*$', f' {attr}="{val}"/>', seg, count=1)
+
+
+def _edit_joint_block(pkg_dir, urdf_rel, child, edit):
+    """Find the ``<joint>`` whose child link is ``child`` in the served URDF and
+    rewrite its (head, body) via ``edit(head, body) -> (head, body)`` IN PLACE --
+    the same instant, build-skipping pattern as :func:`_flip_axis_in_urdf` /
+    :func:`_rename_in_urdf`, but matched by child link (what the limits/mimic UI
+    sends).  Comments + formatting are preserved (regex, not an XML round-trip).
+    Returns True if a joint was edited."""
+    import re
+    parsed = _parse_urdf(pkg_dir, urdf_rel)
+    if not parsed:
+        return False
+    jname = next((j["name"] for j in parsed["joints"]
+                  if j["childLink"] == child), None)
+    if jname is None:
+        return False
+    path = os.path.join(pkg_dir, urdf_rel)
+    with open(path, encoding="utf-8") as f:
+        txt = f.read()
+    jpat = re.compile(
+        r'(<joint\b[^>]*\bname="' + re.escape(jname) + r'"[^>]*>)(.*?)(</joint>)',
+        re.DOTALL)
+    m = jpat.search(txt)
+    if not m:
+        return False
+    head, body = edit(m.group(1), m.group(2))
+    if head is None:
+        return False                     # edit declined (e.g. wrong joint type)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(txt[:m.start()] + head + body + m.group(3) + txt[m.end():])
+    return True
+
+
+def _append_into_body(body, line):
+    """Insert ``line`` (an indented element + newline) just before the body's
+    trailing indentation (the run before ``</joint>``)."""
+    import re
+    cut = re.search(r'[ \t]*$', body).start()
+    return body[:cut] + line + body[cut:]
+
+
+def _body_indent(body):
+    import re
+    m = re.search(r'\n([ \t]+)<', body)
+    return m.group(1) if m else "    "
+
+
+def _set_limit_in_urdf(pkg_dir, urdf_rel, child, lower, upper, continuous):
+    """Set a joint's ``<limit>`` (or make it continuous) directly in the served
+    URDF, found by child link.  Skips the inertia-recomputing build (joints.yaml
+    still persists the value).  Returns True if applied."""
+    import re
+
+    def edit(head, body):
+        if continuous:
+            head = re.sub(r'(\btype=")[^"]*(")', r'\1continuous\2', head)
+            # continuous carries no lower/upper -- drop them, keep effort/velocity
+            body = re.sub(
+                r'<limit\b[^>]*?>',
+                lambda mm: re.sub(r'\s*\b(?:lower|upper)="[^"]*"', '', mm.group(0)),
+                body)
+            return head, body
+        tm = re.search(r'\btype="([^"]*)"', head)
+        if tm and tm.group(1) not in ("revolute", "prismatic"):
+            return None, None            # a limit only applies to revolute/prismatic
+        lo, hi = _fmt_num(lower), _fmt_num(upper)
+        lm = re.search(r'<limit\b[^>]*?>', body)
+        if lm:
+            seg = _set_attr_in_tag(lm.group(0), "lower", lo)
+            seg = _set_attr_in_tag(seg, "upper", hi)
+            body = body[:lm.start()] + seg + body[lm.end():]
+        else:
+            pad = _body_indent(body)
+            body = _append_into_body(
+                body, f'{pad}<limit lower="{lo}" upper="{hi}" '
+                      f'effort="10" velocity="3.14"/>\n')
+        return head, body
+
+    return _edit_joint_block(pkg_dir, urdf_rel, child, edit)
+
+
+def _set_mimic_in_urdf(pkg_dir, urdf_rel, child, master, multiplier, offset, clear):
+    """Add / replace / remove a joint's ``<mimic>`` directly in the served URDF,
+    found by child link (build-skipping; joints.yaml still persists it).  Returns
+    True if the joint was found."""
+    import re
+
+    def edit(head, body):
+        body = re.sub(r'[ \t]*<mimic\b[^>]*?>[ \t]*\n?', '', body)  # drop existing
+        if not clear and master:
+            pad = _body_indent(body)
+            body = _append_into_body(
+                body, f'{pad}<mimic joint="{master}" '
+                      f'multiplier="{_fmt_num(multiplier)}" '
+                      f'offset="{_fmt_num(offset)}"/>\n')
+        return head, body
+
+    return _edit_joint_block(pkg_dir, urdf_rel, child, edit)
+
+
 def _urdf_names(pkg_dir, urdf_rel, tag):
     """Current ``<link>``/``<joint>`` names in the served URDF (the source of
     truth for what's on screen), for the rename collision check + root detect."""
@@ -1775,25 +1882,25 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f.read()
                 linv = _link_names_inverse(txt)   # display -> component
                 applied, missed = [], []
+                changed_yaml = False
                 for lm in limits:
-                    c = linv.get(lm.get("child"), lm.get("child"))
-                    if not c:
-                        continue
-                    txt, k = _set_joint_limit(
-                        txt, c, float(lm.get("lower", 0.0)),
-                        float(lm.get("upper", 0.0)),
-                        bool(lm.get("continuous")))
-                    (applied if k else missed).append(c)
-                if applied:
-                    _snapshot(cls.pkg_dir, yml, f"auto limits x{len(applied)}")
+                    child = lm.get("child")
+                    lo = float(lm.get("lower", 0.0))
+                    hi = float(lm.get("upper", 0.0))
+                    cont = bool(lm.get("continuous"))
+                    # persist to joints.yaml (survives re-extract / undo) ...
+                    txt, ky = _set_joint_limit(txt, linv.get(child, child),
+                                               lo, hi, cont)
+                    changed_yaml = changed_yaml or bool(ky)
+                    # ... but apply it INSTANTLY by editing the served URDF in
+                    # place, skipping the inertia-recomputing full build()
+                    ok = _set_limit_in_urdf(cls.pkg_dir, cls.urdf_rel,
+                                            child, lo, hi, cont)
+                    (applied if ok else missed).append(child)
+                if changed_yaml:
+                    _snapshot(cls.pkg_dir, yml, f"limits x{len(applied)}")
                     with open(yml, "w", encoding="utf-8") as f:
                         f.write(txt)
-                    from sw2robot.exporter.export import build
-                    try:
-                        build(cls.pkg_dir, config_path=yml)
-                    except Exception as e:
-                        return self._send_json(
-                            {"error": f"rebuild failed: {e}"}, 500)
                 print(f"[sw2robot.web] set_limits: {len(applied)} applied, "
                       f"{len(missed)} not matched")
                 return self._send_json({"applied": applied, "missed": missed})
@@ -1894,27 +2001,28 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f.read()
                 linv = _link_names_inverse(txt)   # display -> component
                 applied, missed = [], []
+                changed_yaml = False
                 for ch in changes:
-                    child = linv.get(ch.get("child"), ch.get("child"))
+                    child = ch.get("child")
                     master = ch.get("master")
                     clear = bool(ch.get("clear"))
                     if not child or (not clear and not master):
                         missed.append(ch)
                         continue
-                    txt, ok = _set_mimic_yaml(
-                        txt, child, master,
-                        ch.get("multiplier", 1.0), ch.get("offset", 0.0), clear)
+                    mult = float(ch.get("multiplier", 1.0))
+                    off = float(ch.get("offset", 0.0))
+                    # persist to joints.yaml ...
+                    txt, ky = _set_mimic_yaml(txt, linv.get(child, child),
+                                              master, mult, off, clear)
+                    changed_yaml = changed_yaml or bool(ky)
+                    # ... and apply instantly in the served URDF (no rebuild)
+                    ok = _set_mimic_in_urdf(cls.pkg_dir, cls.urdf_rel, child,
+                                            master, mult, off, clear)
                     (applied if ok else missed).append(ch)
-                if applied:
+                if changed_yaml:
                     _snapshot(cls.pkg_dir, yml, f"mimic x{len(applied)}")
                     with open(yml, "w", encoding="utf-8") as f:
                         f.write(txt)
-                    from sw2robot.exporter.export import build
-                    try:
-                        build(cls.pkg_dir, config_path=yml)
-                    except Exception as e:
-                        return self._send_json(
-                            {"error": f"rebuild failed: {e}"}, 500)
                 print(f"[sw2robot.web] set_mimic: {len(applied)} applied, "
                       f"{len(missed)} not matched")
                 return self._send_json(
