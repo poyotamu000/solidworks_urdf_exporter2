@@ -1,9 +1,17 @@
 #!/usr/bin/env python
-"""Freeze sw2robot into a standalone Windows .exe with PyInstaller.
+"""Freeze sw2robot into a standalone executable with PyInstaller.
+
+Builds a single-file binary for the host OS:
+  * Windows -> ``sw2robot-web.exe`` (the only OS where the SolidWorks ``extract``
+    step works -- it drives SolidWorks over COM via pywin32).
+  * macOS / Linux -> ``sw2robot-web`` (no extension).  These cannot extract
+    (no SolidWorks/COM), but view / edit / build / export -- including the
+    URDF-input editing mode -- all work.
 
 Why PyInstaller: this app stacks pywin32 COM (SolidWorks), numpy, trimesh and
 pydantic (compiled pydantic_core) -- PyInstaller ships working hooks for all of
-them, which Nuitka / cx_Freeze do not out of the box.
+them, which Nuitka / cx_Freeze do not out of the box.  PyInstaller cannot
+cross-compile, so each OS/arch is built on its own native runner.
 
 Run it through uv so PyInstaller is available without polluting the project env::
 
@@ -18,10 +26,12 @@ Targets (entry points, mirroring [project.scripts] in pyproject.toml):
     export  sw2urdf       -> the extract+build CLI
     cli     sw2robot      -> the headless build/edit/export CLI
 
-The .exe still needs SolidWorks INSTALLED on the target machine -- it drives
-SolidWorks over COM; it does not (and cannot) embed it.  The makepy typelib
-wrappers are generated on first extract into %TEMP%\\sw2robot_gen_py (see the
-runtime hook below), so no COM cache has to be pre-baked into the bundle.
+On Windows the .exe still needs SolidWorks INSTALLED on the target machine -- it
+drives SolidWorks over COM; it does not (and cannot) embed it.  The makepy
+typelib wrappers are generated on first extract into %TEMP%\\sw2robot_gen_py
+(see the runtime hook below), so no COM cache has to be pre-baked into the
+bundle.  The COM hidden-imports + runtime hook are Windows-only; on macOS/Linux
+pywin32 is absent, so they are skipped.
 """
 from __future__ import annotations
 
@@ -30,6 +40,8 @@ import os
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
+IS_WINDOWS = sys.platform == "win32"
+IS_MACOS = sys.platform == "darwin"
 
 # entry-point shims: PyInstaller wants a script, not a ``module:func`` spec, so
 # we generate a tiny launcher that imports the package entry and calls main().
@@ -113,12 +125,17 @@ def main() -> int:
                          "standalone viser GUI -- lighter than --with-ui")
     ap.add_argument("--windowed", action="store_true",
                     help="no console window (default keeps the console so the "
-                         "server URL / logs are visible)")
+                         "server URL / logs are visible; on macOS the build is "
+                         "always a windowed .app -- see --console-app)")
+    ap.add_argument("--console-app", action="store_true",
+                    help="macOS only: build a bare console binary instead of a "
+                         "windowed .app (no Finder/Dock icon, but a "
+                         "double-click opens Terminal with the logs)")
     ap.add_argument("--name", default=None,
-                    help="override the output .exe name")
+                    help="override the output binary name")
     ap.add_argument("--icon", default=None,
-                    help="path to a .ico for the exe "
-                         "(default: assets/icon.ico if present)")
+                    help="path to an icon (Windows .ico / macOS .icns); default: "
+                         "assets/icon.ico on Windows, assets/icon.icns on macOS")
     ap.add_argument("--clean", action="store_true",
                     help="wipe the PyInstaller cache before building")
     args = ap.parse_args()
@@ -139,18 +156,26 @@ def main() -> int:
     shim = _write(os.path.join(build_dir, f"_entry_{args.target}.py"),
                   f"from {module} import main\n\n"
                   f"if __name__ == '__main__':\n    main()\n")
-    rthook = _write(os.path.join(build_dir, "rthook_win32com.py"), RTHOOK)
 
     web = os.path.join(ROOT, "sw2robot", "editor", "web", "index.html")
+
+    # On macOS an embedded app icon only attaches to a windowed .app bundle, not
+    # to a bare console executable (PyInstaller emits the .app only with
+    # --windowed).  So default macOS to windowed to get the Finder/Dock icon;
+    # --console-app opts back into a bare binary.  The .app still logs to the
+    # terminal when its inner binary is launched from a shell, and it
+    # auto-opens the browser, so hiding the console on a Finder double-click is
+    # an acceptable trade.  Windows/Linux keep the console by default.
+    mac_app = IS_MACOS and not args.console_app
+    windowed = args.windowed or mac_app
 
     pyi_args = [
         shim,
         "--name", exe_name,
         "--noconfirm",
         "--onedir" if args.onedir else "--onefile",
-        "--windowed" if args.windowed else "--console",
+        "--windowed" if windowed else "--console",
         "--paths", ROOT,                       # so `sw2robot` imports at build
-        "--runtime-hook", rthook,
         # bundle the editor page at the path WEB_DIR expects (HERE/web)
         "--add-data", f"{web}{os.pathsep}sw2robot/editor/web",
         # grab lazily / dynamically imported package code (incl. _vendor.rc_config)
@@ -174,17 +199,34 @@ def main() -> int:
         "--workpath", os.path.join(build_dir, "work"),
         "--specpath", build_dir,
     ]
-    # Embed the app icon.  Default to the committed assets/icon.ico so every
-    # build is branded without extra flags.
-    icon = args.icon or os.path.join(ROOT, "assets", "icon.ico")
-    if os.path.isfile(icon):
+    # The SolidWorks/COM glue (makepy gen_py redirect + the pywin32 hidden
+    # imports PyInstaller's static scan misses) only exists, and is only needed,
+    # on Windows.  On macOS/Linux pywin32 isn't installed, so emitting these
+    # would just produce missing-module warnings for a code path that can never
+    # run (no SolidWorks/COM there) -- skip them.
+    if IS_WINDOWS:
+        rthook = _write(os.path.join(build_dir, "rthook_win32com.py"), RTHOOK)
+        pyi_args += ["--runtime-hook", rthook]
+        for h in WIN32_HIDDEN:
+            pyi_args += ["--hidden-import", h]
+
+    # Embed the app icon.  Windows uses the committed .ico; macOS wants a .icns
+    # (PyInstaller rejects a .ico there) and only shows it on the windowed .app.
+    # Linux ELF binaries carry no embedded icon (it lives in a .desktop file),
+    # so there is nothing to attach.  --icon is always honoured if given.
+    if args.icon:
+        icon = args.icon
+    elif IS_WINDOWS:
+        icon = os.path.join(ROOT, "assets", "icon.ico")
+    elif IS_MACOS:
+        icon = os.path.join(ROOT, "assets", "icon.icns")
+    else:
+        icon = None
+    if icon and os.path.isfile(icon):
         pyi_args += ["--icon", icon]
     elif args.icon:
         print(f"WARNING: --icon {icon} not found; building without an icon.",
               file=sys.stderr)
-
-    for h in WIN32_HIDDEN:
-        pyi_args += ["--hidden-import", h]
 
     excludes = list(BASE_EXCLUDES)
     if args.with_ui:
@@ -205,14 +247,36 @@ def main() -> int:
     print("PyInstaller args:\n  " + " ".join(pyi_args) + "\n")
     pyi.run(pyi_args)
 
-    out = os.path.join(ROOT, "dist",
-                       exe_name if args.onedir else exe_name + ".exe")
+    # Output naming: a windowed macOS build is a .app bundle; Windows onefile
+    # adds .exe; macOS console / Linux binaries have no extension.
+    if mac_app:
+        suffix = ".app"
+    elif IS_WINDOWS and not args.onedir:
+        suffix = ".exe"
+    else:
+        suffix = ""
+    out = os.path.join(ROOT, "dist", exe_name + suffix)
     print(f"\nBuilt: {out}")
     if args.target == "web":
+        if mac_app:
+            # the runnable binary lives inside the bundle; this is also how you
+            # see the server log/URL (a Finder double-click hides the console).
+            invoke = f"./{exe_name}.app/Contents/MacOS/{exe_name}"
+            sep = "/"
+        elif IS_WINDOWS:
+            invoke = f"{exe_name}{suffix}"
+            sep = "\\"
+        else:
+            invoke = f"./{exe_name}"
+            sep = "/"
         print("Run it like the module:  "
-              f"{exe_name}.exe output\\<your_package> --port 8090")
-    print("NOTE: the target machine still needs SolidWorks installed for the "
-          "extract step; view/edit/build/export work without it.")
+              f"{invoke} output{sep}<your_package> --port 8090")
+    if IS_WINDOWS:
+        print("NOTE: the target machine still needs SolidWorks installed for "
+              "the extract step; view/edit/build/export work without it.")
+    else:
+        print("NOTE: the SolidWorks 'extract' step is Windows-only; this "
+              "build does view/edit/build/export, incl. URDF-input editing.")
     return 0
 
 
