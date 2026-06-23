@@ -342,6 +342,29 @@ def test_mimic_master_after_rename(server):
         == "driver"
 
 
+def test_export_zip_bakes_colour_and_restores_pristine(server):
+    """Full parity check: in URDF-input mode a colour edit + ROS ZIP export
+    produces a package whose URDF carries the colour, and the on-disk URDF is
+    left pristine afterwards (export only materializes the overlay transiently)."""
+    import io
+    import zipfile
+
+    from sw2robot.editor import webserver
+
+    _post(server, "/api/set_color", {"link": TIP_LINK, "color": "#ff0000"})
+    code, data = _get_status(server, "/api/export/zip?ros=1&meshes=dae")
+    assert code == 200, data[:200]
+    zf = zipfile.ZipFile(io.BytesIO(data))
+    urdf_name = next(n for n in zf.namelist() if n.endswith(".urdf"))
+    exported = zf.read(urdf_name).decode("utf-8")
+    assert 'rgba="1 0 0 1"' in exported          # colour baked into the URDF
+    assert any(n.endswith(".dae") for n in zf.namelist())   # visual meshes exported
+
+    # the on-disk URDF stays pristine (no <material>); edits live in the overlay
+    disk = Path(webserver._um["state"].urdf_path).read_text(encoding="utf-8")
+    assert "material" not in disk
+
+
 def test_export_materializes_overlay_then_restores(server):
     """The on-disk URDF stays pristine while serving live, but the export window
     temporarily materializes the overlay so the ROS exporter picks edits up."""
