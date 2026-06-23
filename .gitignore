@@ -5,6 +5,9 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+# uv lockfile: CI / release resolve deps with pip, not uv, so the lock is only
+# a local `uv run` convenience -- untracked to avoid version churn / drift
+uv.lock
 
 # regenerated mesh caches (3DXML -> GLB, done on first view) -- keep the .3dxml
 *.3dxml.glb
