@@ -270,6 +270,15 @@ def _um_joint_by_child(state, child):
     return next((j["name"] for j in state.joints if j["childLink"] == child), None)
 
 
+def _rewrite_package_urls(urdf_text):
+    """Rewrite mesh ``package://<pkg>/<rest>`` URIs to the server's ``/pkg/``
+    root (where the opened package is served) so the viewer can fetch them:
+    ``package://<pkg>/<rest>`` -> ``/pkg/<rest>``.  Applied ONLY to the URDF
+    served to the viewer in URDF-input mode -- the on-disk file (and therefore
+    the ROS export) keep their original ``package://`` references."""
+    return re.sub(r'(filename=")package://[^/"]+/', r'\1/pkg/', urdf_text)
+
+
 def _um_colors(state):
     """``{link -> '#RRGGBB'}`` from the overlay -- the ROS exporter uses this to
     repaint converted meshes (URDF mode has no joints.yaml ``colors:`` block)."""
@@ -1813,9 +1822,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         and _um["state"] is not None
                         and not _cad_mode(cls.pkg_dir)):
                     from . import core
-                    return self._send_bytes(
-                        core.build_urdf(_um["state"], sanitize=False)
-                        .encode("utf-8"), "application/xml")
+                    served = _rewrite_package_urls(
+                        core.build_urdf(_um["state"], sanitize=False))
+                    return self._send_bytes(served.encode("utf-8"),
+                                            "application/xml")
                 full = self._resolve(cls.pkg_dir, rel)
                 if full is None or not os.path.isfile(full):
                     return self.send_error(404)

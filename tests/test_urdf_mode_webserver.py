@@ -283,6 +283,39 @@ def test_live_urdf_reflects_edits_and_is_cache_stable(server):
     assert not os.path.basename(picked).startswith(".")
 
 
+def test_package_uris_rewritten_for_viewer(tmp_path):
+    """A URDF that references meshes via package:// is served to the viewer with
+    /pkg/ paths (so the browser fetches them from the package server instead of
+    404-ing on http://host/<pkgname>/meshes/...)."""
+    from sw2robot.editor import webserver
+
+    pkg = tmp_path / "pkgpkg"
+    (pkg / "urdf").mkdir(parents=True)
+    (pkg / "meshes").mkdir()
+    (pkg / "meshes" / "part.stl").write_text("solid x\nendsolid x\n", encoding="utf-8")
+    (pkg / "urdf" / "robot.urdf").write_text(
+        '<?xml version="1.0"?><robot name="robot">'
+        '<link name="base_link"><visual><geometry>'
+        '<mesh filename="package://robot_description/meshes/part.stl"/>'
+        '</geometry></visual></link></robot>', encoding="utf-8")
+
+    httpd, port = webserver._bind_free_port(webserver._Handler, _free_port())
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        info = _get_json(base, f"/api/open?path={pkg}")
+        assert info["mode"] == "urdf"
+        served = _get(base, info["urdf"])
+        assert 'filename="/pkg/meshes/part.stl"' in served
+        assert "package://" not in served
+        code, _ = _get_status(base, "/pkg/meshes/part.stl")   # actually fetchable
+        assert code == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        webserver._um["state"] = None
+
+
 def test_export_rejects_nonstandard_layout(_built_template, tmp_path):
     """A flat URDF package (urdf at the package root) can't be exported -- the
     ROS exporter needs urdf/<name>.urdf + meshes/; fail with a clear message."""
