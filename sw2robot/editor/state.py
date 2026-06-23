@@ -38,6 +38,19 @@ class JointEdit(BaseModel):
     jtype: str | None = None   # override joint type (revolute/continuous/...)
 
 
+class LinkEdit(BaseModel):
+    """Interactive overlay edits for ONE link -- the per-link properties the
+    joint overlay can't carry: visual colour and the inertial mass / centre of
+    mass / inertia tensor.  All fields optional; only the set ones are applied on
+    top of the base URDF.  Keyed by the link's name in the base URDF."""
+
+    color: str | None = None       # "#RRGGBB" (None = keep the URDF default)
+    mass: float | None = None      # kg (None = keep)
+    com: list[float] | None = None     # inertial origin xyz [x, y, z] (None = keep)
+    # inertia tensor [ixx, ixy, ixz, iyy, iyz, izz] (None = keep)
+    inertia: list[float] | None = None
+
+
 class RobotCompilerState(BaseModel):
     """Everything needed to configure + export one CAD module, GUI-free.
 
@@ -52,15 +65,28 @@ class RobotCompilerState(BaseModel):
     links: list[dict] = Field(default_factory=list)
     root_link: str | None = None
     edits: dict[str, JointEdit] = Field(default_factory=dict)
+    # per-link overlay (colour / inertial), keyed by the link's ORIGINAL name
+    link_edits: dict[str, LinkEdit] = Field(default_factory=dict)
 
     def edit_for(self, joint_name: str) -> JointEdit:
         """Get (creating if needed) the overlay for ``joint_name``."""
         return self.edits.setdefault(joint_name, JointEdit())
 
+    def link_edit_for(self, link_name: str) -> LinkEdit:
+        """Get (creating if needed) the per-link overlay for ``link_name``."""
+        return self.link_edits.setdefault(link_name, LinkEdit())
+
     def effective_name(self, joint_name: str) -> str:
         e = self.edits.get(joint_name)
         return e.rename if (e and e.rename) else joint_name
 
+    def effective_type(self, joint: dict) -> str | None:
+        """The joint's type with the overlay's ``jtype`` override applied -- so a
+        joint made movable (or fixed) via :func:`core.set_joint_type` is treated
+        consistently by mimic validation and ``movable_joints``."""
+        e = self.edits.get(joint["name"])
+        return e.jtype if (e and e.jtype) else joint.get("type")
+
     def movable_joints(self) -> list[dict]:
         return [j for j in self.joints
-                if j.get("type") in ("revolute", "continuous", "prismatic")]
+                if self.effective_type(j) in ("revolute", "continuous", "prismatic")]

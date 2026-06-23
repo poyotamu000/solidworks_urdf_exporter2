@@ -21,6 +21,7 @@ localhost.  No third-party server deps; mesh conversion reuses trimesh which
 sw2robot.exporter already requires.
 """
 import argparse
+import contextlib
 import http.server
 import json
 import os
@@ -143,13 +144,347 @@ def _resolve_package(path):
         for sub in ("urdf", "."):
             d = os.path.normpath(os.path.join(path, sub))
             if os.path.isdir(d):
+                # skip dotfiles -- e.g. the hidden .<name>.live.urdf overlay copy
                 urdfs = sorted(f for f in os.listdir(d)
-                               if f.lower().endswith(".urdf"))
+                               if f.lower().endswith(".urdf")
+                               and not f.startswith("."))
                 if urdfs:
                     rel = os.path.relpath(os.path.join(d, urdfs[0]), path)
                     return path, rel.replace("\\", "/")
         raise ValueError(f"no *.urdf under {path}")
     raise ValueError(f"not a package dir or .urdf file: {path}")
+
+
+# --- URDF-input editing mode -------------------------------------------------
+# A package WITHOUT a graph.json is a plain URDF the user opened directly: there
+# is no CAD graph to rebuild from, so edits cannot go through joints.yaml +
+# build().  Instead we hold the core overlay (RobotCompilerState: per-joint and
+# per-link edits) in memory and route every edit through the SAME core setters
+# the headless CLI uses.  The URDF URL is served as build_urdf(state), so the
+# on-disk .urdf stays the pristine base: the declarative overlay re-applies
+# cleanly on every request and survives a restart via the .sw2robot.json sidecar.
+# ``rev`` bumps on every edit so on-disk readers (collision / auto-limits) can
+# cache against a stable (path, mtime) -- the live URDF is only rewritten when
+# ``rev`` actually changed (see _um_live_urdf).
+# undo/redo in URDF mode snapshot the overlay (edits + link_edits) as JSON, since
+# there is no joints.yaml to snapshot (the CAD path's history mechanism).
+_um = {"state": None, "rev": 0, "live_rev": -1, "undo": [], "redo": []}
+
+
+def _um_close():
+    """Drop the in-memory overlay (state + undo/redo + caches) when switching or
+    closing a package.  The hidden .live.urdf copy is intentionally NOT deleted:
+    a background collision / auto-limit worker may still be reading it, and the
+    file is hidden + gitignored and overwritten on the package's next use."""
+    _um.update(state=None, rev=0, live_rev=-1, undo=[], redo=[])
+
+
+def _cad_mode(pkg_dir):
+    """True when the package has a CAD graph (the joints.yaml + build() path);
+    False for a plain URDF opened directly (the overlay path)."""
+    return bool(pkg_dir) and os.path.exists(os.path.join(pkg_dir, "graph.json"))
+
+
+def _um_load(pkg_dir, urdf_rel):
+    """(Re)build the URDF-mode overlay state for the freshly-opened package and
+    merge any saved sidecar edits.  Returns the state."""
+    from . import core
+    state = core.load_module(os.path.join(pkg_dir, urdf_rel), package_dir=pkg_dir)
+    core.load_edits(state)            # restore a prior session's edits, if any
+    _um["state"] = state
+    _um["rev"], _um["live_rev"] = 0, -1
+    _um["undo"], _um["redo"] = [], []
+    return state
+
+
+def _um_overlay_json(state):
+    """A compact snapshot of just the editable overlay (for undo/redo)."""
+    return state.model_dump_json(include={"edits", "link_edits"})
+
+
+def _um_restore(snap):
+    """Replace the live overlay with a snapshot's edits/link_edits."""
+    from .state import JointEdit, LinkEdit
+    data = json.loads(snap)
+    st = _um["state"]
+    st.edits = {k: JointEdit(**v) for k, v in (data.get("edits") or {}).items()}
+    st.link_edits = {k: LinkEdit(**v)
+                     for k, v in (data.get("link_edits") or {}).items()}
+    _um_save(st)
+
+
+def _um_save(state):
+    from . import core
+    _um["rev"] += 1                   # invalidate the live URDF / disk caches
+    try:
+        core.save_state(state)
+    except OSError:
+        pass                          # persistence is best-effort
+
+
+def _um_live_urdf(pkg_dir, urdf_rel):
+    """``(abs_path, rel)`` of a hidden, overlay-applied copy of the URDF kept in
+    sync with the in-memory edits -- for on-disk readers that take a URDF path
+    (the self-collision build, the auto-limit subprocess).  In CAD mode (or with
+    no overlay) returns the package URDF itself.  Regenerated only when edits
+    changed, so a caller's ``(path, mtime)`` cache key stays stable across polls;
+    sits next to the base so the relative ``../meshes`` references still resolve."""
+    if _cad_mode(pkg_dir) or _um["state"] is None:
+        return os.path.join(pkg_dir, *urdf_rel.split("/")), urdf_rel
+    from . import core
+    d, base = posixpath.dirname(urdf_rel), posixpath.basename(urdf_rel)
+    stem = base[:-len(".urdf")] if base.lower().endswith(".urdf") else base
+    live_rel = posixpath.join(d, f".{stem}.live.urdf") if d else f".{stem}.live.urdf"
+    live_path = os.path.join(pkg_dir, *live_rel.split("/"))
+    if _um["live_rev"] != _um["rev"] or not os.path.exists(live_path):
+        # atomic replace: an async reader (collision / auto-limits) holding this
+        # path must never see a truncated file mid-rewrite.  The temp also starts
+        # with '.' so a concurrent _resolve_package never picks it as the URDF.
+        data = core.build_urdf(_um["state"], sanitize=False)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(live_path) or ".",
+                                   prefix=".live", suffix=".urdf")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(data)
+            os.replace(tmp, live_path)
+            _um["live_rev"] = _um["rev"]
+        except OSError:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            # tolerate a transient failure (e.g. a Windows lock from a reader)
+            # ONLY when a previous valid live copy remains -- it is at worst one
+            # revision stale and refreshes on the next call; with no copy at all
+            # there is nothing usable to hand out, so signal the failure
+            if not os.path.exists(live_path):
+                raise
+    return live_path, live_rel
+
+
+@contextlib.contextmanager
+def _um_materialized(pkg_dir, urdf_rel):
+    """Temporarily write the overlay-applied URDF to disk so on-disk readers (the
+    ROS exporter) see URDF-mode edits, then restore the pristine base.  The
+    served URDF is normally computed on the fly (disk stays pristine); export is
+    the one path that reads the file directly.  A no-op in CAD mode."""
+    if _cad_mode(pkg_dir) or _um["state"] is None:
+        yield
+        return
+    from . import core
+    served = os.path.join(pkg_dir, urdf_rel)
+    # build the edited URDF BEFORE truncating `served` -- build_urdf reads the
+    # pristine base from that same path, so opening it "w" first would empty it
+    edited = core.build_urdf(_um["state"], sanitize=False)
+    try:
+        with open(served, encoding="utf-8") as f:
+            pristine = f.read()
+    except OSError:
+        pristine = None
+    try:
+        with open(served, "w", encoding="utf-8") as f:
+            f.write(edited)
+        yield
+    finally:
+        if pristine is not None:
+            with open(served, "w", encoding="utf-8") as f:
+                f.write(pristine)
+
+
+def _um_joint_by_child(state, child):
+    """Map a child-link name (what the limits/types/mimic UI sends) to its joint
+    name (what the overlay is keyed by); None if no joint has that child."""
+    return next((j["name"] for j in state.joints if j["childLink"] == child), None)
+
+
+def _rewrite_package_urls(urdf_text, urdf_rel, pkg_dir):
+    """Rewrite mesh ``package://<pkg>/<rest>`` URIs so the viewer can fetch them
+    from the package root (served at ``/pkg/``).  urdf-loaders resolves a mesh
+    path RELATIVE to the URDF's own URL, so emit ``<../ per dir>rest`` -- e.g. a
+    URDF served at ``/pkg/urdf/x.urdf`` gets ``../<rest>`` so the browser
+    normalizes ``/pkg/urdf/../<rest>`` -> ``/pkg/<rest>`` (the package root).
+    Layout-independent (depth derived from ``urdf_rel``).  Applied ONLY to the
+    URDF served to the viewer; the on-disk file (and the ROS export) keep their
+    original ``package://`` references.
+
+    A ref is rewritten only when its mesh actually EXISTS in this package -- so
+    own meshes load regardless of the URI's package name (folder need not match),
+    while a ref to another ROS package whose file is not here is left as
+    ``package://`` (unresolvable in-browser either way, but not mis-pointed)."""
+    depth = len([s for s in posixpath.dirname(urdf_rel).split("/") if s])
+    prefix = "../" * depth
+    root = os.path.normpath(pkg_dir)
+
+    def repl(m):
+        rest = m.group(1)
+        local = os.path.normpath(os.path.join(root, *rest.split("/")))
+        try:
+            inside = os.path.commonpath([root, local]) == root
+        except ValueError:
+            inside = False
+        if inside and os.path.exists(local):
+            return f'filename="{prefix}{rest}"'
+        return m.group(0)                  # not in this package -- leave as-is
+    return re.sub(r'filename="package://[^/"]+/([^"]+)"', repl, urdf_text)
+
+
+def _um_colors(state):
+    """``{link -> '#RRGGBB'}`` from the overlay -- the ROS exporter uses this to
+    repaint converted meshes (URDF mode has no joints.yaml ``colors:`` block)."""
+    return {ln: le.color for ln, le in state.link_edits.items() if le.color}
+
+
+def _um_components(state):
+    """The /api/components payload for URDF mode: links straight from the parsed
+    URDF, colours from the overlay (no CAD material/density concept here)."""
+    links, colors = {}, {}
+    for ln in state.links:
+        name = ln["name"]
+        le = state.link_edits.get(name)
+        col = le.color if le else None
+        links[name] = {"material": None, "density": None, "name": name,
+                       "override": None, "color": col}
+        if col:
+            colors[name] = col
+    return {"links": links, "excluded": [], "colors": colors}
+
+
+def _um_set_limits(state, limits):
+    from . import core
+    applied, missed = [], []
+    for lm in limits:
+        child = lm.get("child")
+        j = _um_joint_by_child(state, child)
+        if not j:
+            missed.append(child)
+            continue
+        if lm.get("continuous"):
+            core.set_joint_type(state, j, "continuous")
+        else:
+            core.set_limits(state, j, float(lm.get("lower", 0.0)),
+                            float(lm.get("upper", 0.0)))
+        applied.append(child)
+    _um_save(state)
+    return {"applied": applied, "missed": missed}
+
+
+def _um_set_types(state, changes):
+    from . import core
+    applied, missed = [], []
+    for ch in changes:
+        child, t = ch.get("child"), ch.get("type")
+        j = _um_joint_by_child(state, child)
+        if not j or t not in core.JOINT_TYPES:
+            missed.append(ch)
+            continue
+        core.set_joint_type(state, j, t)
+        applied.append(child)
+    _um_save(state)
+    return {"applied": applied, "missed": missed}
+
+
+def _um_set_mimic(state, changes):
+    from . import core
+    applied, missed = [], []
+    for ch in changes:
+        child = ch.get("child")
+        j = _um_joint_by_child(state, child)
+        if not j:
+            missed.append(child)
+            continue
+        jd = next((x for x in state.joints if x["name"] == j), None)
+        if not ch.get("clear") and (jd is None or state.effective_type(jd)
+                                    not in ("revolute", "continuous", "prismatic")):
+            missed.append(child)           # a fixed joint can't follow a mimic
+            continue
+        try:
+            if ch.get("clear"):
+                core.clear_mimic(state, j)
+            else:
+                # the UI sends the master's CURRENT (effective) name; the overlay
+                # is keyed by original names, so map it back before validating
+                master = ch.get("master")
+                master = next((m["name"] for m in state.joints
+                               if state.effective_name(m["name"]) == master),
+                              master)
+                core.set_mimic(state, j, master,
+                               float(ch.get("multiplier", 1.0)),
+                               float(ch.get("offset", 0.0)))
+        except ValueError:
+            missed.append(child)
+            continue
+        applied.append(child)
+    _um_save(state)
+    return {"applied": applied, "missed": missed}
+
+
+def _um_set_axis(state, joints):
+    from . import core
+    applied, missed = [], []
+    # the UI posts CURRENT (effective) joint names; the overlay is keyed by
+    # original names, so map each back before flipping (as mimic/rename do)
+    by_effective = {state.effective_name(j["name"]): j["name"] for j in state.joints}
+    for jn in joints:
+        orig = by_effective.get(jn)
+        if orig is None:
+            missed.append(jn)
+            continue
+        core.reverse_direction(state, orig)  # flip axis + remap limits (self-inverse)
+        applied.append(jn)
+    _um_save(state)
+    return {"applied": applied, "missed": missed}
+
+
+def _um_set_color(state, link, color):
+    from . import core
+    core.set_color(state, link, color)      # raises ValueError on a bad hex
+    _um_save(state)
+    le = state.link_edits.get(link)
+    return {"link": link, "color": le.color if le else None}
+
+
+def _um_set_inertial(state, body):
+    from . import core
+    link = body.get("link")
+    if not link:
+        raise ValueError("link required")
+    core.set_inertial(state, link, mass=body.get("mass"),
+                      com=body.get("com"), inertia=body.get("inertia"))
+    _um_save(state)
+    le = state.link_edits.get(link)
+    return {"link": link,
+            "mass": le.mass if le else None,
+            "com": le.com if le else None,
+            "inertia": le.inertia if le else None}
+
+
+def _um_reset_names(state):
+    n = 0
+    for e in state.edits.values():
+        if e.rename:
+            e.rename = None
+            n += 1
+    _um_save(state)
+    return {"ok": True, "reset": n}
+
+
+def _um_rename(state, kind, old, new):
+    from . import core
+    if kind == "link":
+        raise ValueError("link rename is not yet supported in URDF-input mode")
+    # joints are keyed by ORIGINAL name; the UI sends the CURRENT (effective)
+    # name, so map back through the rename overlay
+    orig = next((j["name"] for j in state.joints
+                 if state.effective_name(j["name"]) == old), None)
+    if orig is None:
+        raise ValueError(f"no such joint: {old}")
+    if not new:                              # empty -> reset to the original name
+        if orig in state.edits:
+            state.edits[orig].rename = None
+    else:
+        core.rename_joint(state, orig, new)
+    _um_save(state)
+    return {"kind": kind, "old": old, "new": new}
 
 
 # Opening an assembly needs its REAL on-disk path (SolidWorks resolves the
@@ -570,6 +905,113 @@ def _flip_axis_in_urdf(pkg_dir, urdf_rel, joint_name):
     with open(path, "w", encoding="utf-8") as f:
         f.write(txt[:m.start()] + head + body + tail + txt[m.end():])
     return na
+
+
+def _set_attr_in_tag(seg, attr, val):
+    """Set/replace one attribute in a single (self-closing) tag string."""
+    import re
+    if re.search(rf'\b{attr}="', seg):
+        return re.sub(rf'\b{attr}="[^"]*"', f'{attr}="{val}"', seg)
+    return re.sub(r'\s*/?>\s*$', f' {attr}="{val}"/>', seg, count=1)
+
+
+def _edit_joint_block(pkg_dir, urdf_rel, child, edit):
+    """Find the ``<joint>`` whose child link is ``child`` in the served URDF and
+    rewrite its (head, body) via ``edit(head, body) -> (head, body)`` IN PLACE --
+    the same instant, build-skipping pattern as :func:`_flip_axis_in_urdf` /
+    :func:`_rename_in_urdf`, but matched by child link (what the limits/mimic UI
+    sends).  Comments + formatting are preserved (regex, not an XML round-trip).
+    Returns True if a joint was edited."""
+    import re
+    parsed = _parse_urdf(pkg_dir, urdf_rel)
+    if not parsed:
+        return False
+    jname = next((j["name"] for j in parsed["joints"]
+                  if j["childLink"] == child), None)
+    if jname is None:
+        return False
+    path = os.path.join(pkg_dir, urdf_rel)
+    with open(path, encoding="utf-8") as f:
+        txt = f.read()
+    jpat = re.compile(
+        r'(<joint\b[^>]*\bname="' + re.escape(jname) + r'"[^>]*>)(.*?)(</joint>)',
+        re.DOTALL)
+    m = jpat.search(txt)
+    if not m:
+        return False
+    head, body = edit(m.group(1), m.group(2))
+    if head is None:
+        return False                     # edit declined (e.g. wrong joint type)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(txt[:m.start()] + head + body + m.group(3) + txt[m.end():])
+    return True
+
+
+def _append_into_body(body, line):
+    """Insert ``line`` (an indented element + newline) just before the body's
+    trailing indentation (the run before ``</joint>``)."""
+    import re
+    cut = re.search(r'[ \t]*$', body).start()
+    return body[:cut] + line + body[cut:]
+
+
+def _body_indent(body):
+    import re
+    m = re.search(r'\n([ \t]+)<', body)
+    return m.group(1) if m else "    "
+
+
+def _set_limit_in_urdf(pkg_dir, urdf_rel, child, lower, upper, continuous):
+    """Set a joint's ``<limit>`` (or make it continuous) directly in the served
+    URDF, found by child link.  Skips the inertia-recomputing build (joints.yaml
+    still persists the value).  Returns True if applied."""
+    import re
+
+    def edit(head, body):
+        if continuous:
+            head = re.sub(r'(\btype=")[^"]*(")', r'\1continuous\2', head)
+            # continuous carries no lower/upper -- drop them, keep effort/velocity
+            body = re.sub(
+                r'<limit\b[^>]*?>',
+                lambda mm: re.sub(r'\s*\b(?:lower|upper)="[^"]*"', '', mm.group(0)),
+                body)
+            return head, body
+        tm = re.search(r'\btype="([^"]*)"', head)
+        if tm and tm.group(1) not in ("revolute", "prismatic"):
+            return None, None            # a limit only applies to revolute/prismatic
+        lo, hi = _fmt_num(lower), _fmt_num(upper)
+        lm = re.search(r'<limit\b[^>]*?>', body)
+        if lm:
+            seg = _set_attr_in_tag(lm.group(0), "lower", lo)
+            seg = _set_attr_in_tag(seg, "upper", hi)
+            body = body[:lm.start()] + seg + body[lm.end():]
+        else:
+            pad = _body_indent(body)
+            body = _append_into_body(
+                body, f'{pad}<limit lower="{lo}" upper="{hi}" '
+                      f'effort="10" velocity="3.14"/>\n')
+        return head, body
+
+    return _edit_joint_block(pkg_dir, urdf_rel, child, edit)
+
+
+def _set_mimic_in_urdf(pkg_dir, urdf_rel, child, master, multiplier, offset, clear):
+    """Add / replace / remove a joint's ``<mimic>`` directly in the served URDF,
+    found by child link (build-skipping; joints.yaml still persists it).  Returns
+    True if the joint was found."""
+    import re
+
+    def edit(head, body):
+        body = re.sub(r'[ \t]*<mimic\b[^>]*?>[ \t]*\n?', '', body)  # drop existing
+        if not clear and master:
+            pad = _body_indent(body)
+            body = _append_into_body(
+                body, f'{pad}<mimic joint="{master}" '
+                      f'multiplier="{_fmt_num(multiplier)}" '
+                      f'offset="{_fmt_num(offset)}"/>\n')
+        return head, body
+
+    return _edit_joint_block(pkg_dir, urdf_rel, child, edit)
 
 
 def _urdf_names(pkg_dir, urdf_rel, tag):
@@ -1108,8 +1550,29 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _info(self):
         cls = type(self)
-        return {"name": cls.robot_name, "urdf": "/pkg/" + cls.urdf_rel} \
-            if cls.urdf_rel else {"name": None, "urdf": None}
+        if not cls.urdf_rel:
+            return {"name": None, "urdf": None, "mode": None}
+        # 'cad' = joints.yaml + build() path; 'urdf' = direct overlay editing
+        # (the frontend gates URDF-only controls such as inertial editing on this)
+        return {"name": cls.robot_name, "urdf": "/pkg/" + cls.urdf_rel,
+                "mode": "cad" if _cad_mode(cls.pkg_dir) else "urdf"}
+
+    def _um_reply(self, fn, *args):
+        """Run a URDF-mode edit and JSON-reply, turning a bad-input error into a
+        400 the editor surfaces (rather than the generic 500) -- TypeError covers
+        a malformed body, e.g. a null in the com/inertia arrays.  Snapshots the
+        pre-edit overlay for undo, but only once the edit actually succeeds."""
+        snap = (_um_overlay_json(_um["state"])
+                if _um["state"] is not None else None)
+        try:
+            result = fn(_um["state"], *args)
+        except (ValueError, TypeError) as e:
+            return self._send_json({"error": str(e)}, 400)
+        if snap is not None:
+            _um["undo"].append(snap)
+            del _um["undo"][:-50]
+            _um["redo"].clear()
+        return self._send_json(result)
 
     # -- routes -----------------------------------------------------------
     def do_GET(self):
@@ -1143,6 +1606,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 cls = type(self)
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):       # URDF-input mode
+                    return self._send_json(_um_components(_um["state"]))
                 from sw2robot.exporter.state import GraphState
                 gs = GraphState.load(
                     os.path.join(cls.pkg_dir, "graph.json"))
@@ -1225,6 +1690,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                      "dirs": dirs[:400], "files": files[:400]})
             if path == "/api/history":
                 cls = type(self)
+                if cls.pkg_dir and not _cad_mode(cls.pkg_dir):   # URDF-mode stack
+                    return self._send_json(
+                        {"undo": ["edit"] * len(_um["undo"]),
+                         "redo": ["edit"] * len(_um["redo"])})
                 h = _hist(cls.pkg_dir) if cls.pkg_dir else {"undo": [],
                                                             "redo": []}
                 return self._send_json(
@@ -1242,7 +1711,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path == "/api/collision/init":
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
-                urdf_path = os.path.join(cls.pkg_dir, cls.urdf_rel)
+                # URDF-input mode: collide against the live overlay (type/axis
+                # edits included), not the pristine on-disk base
+                urdf_path, _ = _um_live_urdf(cls.pkg_dir, cls.urdf_rel)
                 key = (urdf_path, os.path.getmtime(urdf_path))
                 with _coll_lock:
                     if _coll["key"] != key or (
@@ -1266,13 +1737,21 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # process, so polling no longer thrashes its GIL).  One at a time.
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
-                # parse BEFORE claiming the job, so a bad step/max can't wedge
-                # the "running" flag (no worker would start to clear it)
+                # parse + materialize BEFORE claiming the job, so a bad step/max
+                # or a live-URDF write failure can't wedge the "running" flag
+                # (no worker would start to clear it)
                 try:
                     step = float((query.get("step") or ["10"])[0])
                     mx = float((query.get("max") or ["360"])[0])  # ±2π
                 except ValueError:
                     return self._send_json({"error": "bad step/max"}, 400)
+                # URDF-input mode: sweep the live overlay (type edits included)
+                try:
+                    pkg = cls.pkg_dir
+                    _, rel = _um_live_urdf(cls.pkg_dir, cls.urdf_rel)
+                except Exception as e:
+                    return self._send_json(
+                        {"error": f"could not prepare URDF: {e}"}, 500)
                 with _limjob_lock:
                     if _limjob["running"]:
                         return self._send_json(
@@ -1280,7 +1759,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     _limjob.update(running=True, log=[], error=None,
                                    results=None, n=0, total=0, joint=None,
                                    phase="loading")
-                pkg, rel = cls.pkg_dir, cls.urdf_rel
 
                 # NB: must NOT be named `_job` -- that shadows the module-global
                 # `_job` (the extraction job) across this whole method and breaks
@@ -1339,7 +1817,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json({"error": str(e)}, 400)
                 cls.pkg_dir, cls.urdf_rel = pkg, rel
                 cls.robot_name = os.path.splitext(os.path.basename(rel))[0]
-                print(f"[sw2robot.web] open: {cls.robot_name} ({pkg})")
+                # drop the previous package's overlay + its hidden live URDF, then
+                # load the new one (plain URDF -> in-memory overlay; a CAD package
+                # uses the joints.yaml + build() path, no overlay)
+                _um_close()
+                if not _cad_mode(pkg):
+                    _um_load(pkg, rel)
+                print(f"[sw2robot.web] open: {cls.robot_name} ({pkg})"
+                      f"{'' if _cad_mode(pkg) else ' [urdf-input mode]'}")
                 _preconvert_meshes(pkg)
                 return self._send_json(self._info())
             if path == "/api/export/zip":
@@ -1357,13 +1842,29 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 ros_version = int(ros)
                 pkg_name = (query.get("name") or [""])[0].strip() or None
                 urdf_name = (query.get("urdf") or [""])[0].strip() or None
+                # the ROS exporter hardcodes the urdf/<robot_name>.urdf + meshes/
+                # layout; in URDF-input mode the opened file may sit elsewhere, so
+                # fail clearly instead of with a confusing missing-file 500
+                if not _cad_mode(cls.pkg_dir) \
+                        and os.path.normpath(os.path.join(cls.pkg_dir, cls.urdf_rel)) \
+                        != os.path.normpath(os.path.join(
+                            cls.pkg_dir, "urdf", cls.robot_name + ".urdf")):
+                    return self._send_json(
+                        {"error": "export needs the standard "
+                         "<pkg>/urdf/<name>.urdf + <pkg>/meshes/ layout; open the "
+                         "URDF from inside a urdf/ folder"}, 400)
                 try:
-                    pkg, data = _export_zip(cls.pkg_dir, cls.robot_name, fmt,
-                                            ros_version=ros_version,
-                                            pkg_name=pkg_name,
-                                            urdf_name=urdf_name,
-                                            colors=_read_colors(
-                                                cls.pkg_dir, cls.urdf_rel))
+                    # URDF-input mode keeps the on-disk URDF pristine and serves
+                    # edits live; materialize them so the exporter picks them up
+                    colors = (_read_colors(cls.pkg_dir, cls.urdf_rel)
+                              if _cad_mode(cls.pkg_dir)
+                              else _um_colors(_um["state"]))
+                    with _um_materialized(cls.pkg_dir, cls.urdf_rel):
+                        pkg, data = _export_zip(cls.pkg_dir, cls.robot_name, fmt,
+                                                ros_version=ros_version,
+                                                pkg_name=pkg_name,
+                                                urdf_name=urdf_name,
+                                                colors=colors)
                 except ValueError as e:
                     return self._send_json({"error": str(e)}, 400)
                 fname = (f"{cls.robot_name}_glb.zip" if fmt == "glb"
@@ -1379,7 +1880,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             if path.startswith("/pkg/"):
                 if not cls.pkg_dir:
                     return self.send_error(404, "no package open")
-                full = self._resolve(cls.pkg_dir, path[len("/pkg/"):])
+                rel = path[len("/pkg/"):]
+                # URDF-input mode: the URDF URL is the overlay-applied URDF,
+                # computed on the fly so the on-disk file stays the pristine base
+                # (decode first -- urdf_rel is decoded, but the URL may carry %20)
+                if (urllib.parse.unquote(rel) == cls.urdf_rel
+                        and _um["state"] is not None
+                        and not _cad_mode(cls.pkg_dir)):
+                    from . import core
+                    served = _rewrite_package_urls(
+                        core.build_urdf(_um["state"], sanitize=False),
+                        cls.urdf_rel, cls.pkg_dir)
+                    return self._send_bytes(served.encode("utf-8"),
+                                            "application/xml")
+                full = self._resolve(cls.pkg_dir, rel)
                 if full is None or not os.path.isfile(full):
                     return self.send_error(404)
                 if full.lower().endswith(".3dxml") \
@@ -1434,6 +1948,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 limits = body.get("limits") or []
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._um_reply(_um_set_limits, limits)
                 name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
                 yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
                 if not os.path.exists(yml):
@@ -1443,25 +1959,25 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f.read()
                 linv = _link_names_inverse(txt)   # display -> component
                 applied, missed = [], []
+                changed_yaml = False
                 for lm in limits:
-                    c = linv.get(lm.get("child"), lm.get("child"))
-                    if not c:
-                        continue
-                    txt, k = _set_joint_limit(
-                        txt, c, float(lm.get("lower", 0.0)),
-                        float(lm.get("upper", 0.0)),
-                        bool(lm.get("continuous")))
-                    (applied if k else missed).append(c)
-                if applied:
-                    _snapshot(cls.pkg_dir, yml, f"auto limits x{len(applied)}")
+                    child = lm.get("child")
+                    lo = float(lm.get("lower", 0.0))
+                    hi = float(lm.get("upper", 0.0))
+                    cont = bool(lm.get("continuous"))
+                    # persist to joints.yaml (survives re-extract / undo) ...
+                    txt, ky = _set_joint_limit(txt, linv.get(child, child),
+                                               lo, hi, cont)
+                    changed_yaml = changed_yaml or bool(ky)
+                    # ... but apply it INSTANTLY by editing the served URDF in
+                    # place, skipping the inertia-recomputing full build()
+                    ok = _set_limit_in_urdf(cls.pkg_dir, cls.urdf_rel,
+                                            child, lo, hi, cont)
+                    (applied if ok else missed).append(child)
+                if changed_yaml:
+                    _snapshot(cls.pkg_dir, yml, f"limits x{len(applied)}")
                     with open(yml, "w", encoding="utf-8") as f:
                         f.write(txt)
-                    from sw2robot.exporter.export import build
-                    try:
-                        build(cls.pkg_dir, config_path=yml)
-                    except Exception as e:
-                        return self._send_json(
-                            {"error": f"rebuild failed: {e}"}, 500)
                 print(f"[sw2robot.web] set_limits: {len(applied)} applied, "
                       f"{len(missed)} not matched")
                 return self._send_json({"applied": applied, "missed": missed})
@@ -1476,6 +1992,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 names = body.get("joints") or []
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._um_reply(_um_set_axis, names)
                 applied, missed = [], []
                 for jn in names:
                     try:
@@ -1494,6 +2012,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 changes = body.get("changes") or []
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._um_reply(_um_set_types, changes)
                 name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
                 yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
                 if not os.path.exists(yml):
@@ -1546,6 +2066,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 changes = body.get("changes") or []
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._um_reply(_um_set_mimic, changes)
                 name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
                 yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
                 if not os.path.exists(yml):
@@ -1556,27 +2078,28 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f.read()
                 linv = _link_names_inverse(txt)   # display -> component
                 applied, missed = [], []
+                changed_yaml = False
                 for ch in changes:
-                    child = linv.get(ch.get("child"), ch.get("child"))
+                    child = ch.get("child")
                     master = ch.get("master")
                     clear = bool(ch.get("clear"))
                     if not child or (not clear and not master):
                         missed.append(ch)
                         continue
-                    txt, ok = _set_mimic_yaml(
-                        txt, child, master,
-                        ch.get("multiplier", 1.0), ch.get("offset", 0.0), clear)
+                    mult = float(ch.get("multiplier", 1.0))
+                    off = float(ch.get("offset", 0.0))
+                    # persist to joints.yaml ...
+                    txt, ky = _set_mimic_yaml(txt, linv.get(child, child),
+                                              master, mult, off, clear)
+                    changed_yaml = changed_yaml or bool(ky)
+                    # ... and apply instantly in the served URDF (no rebuild)
+                    ok = _set_mimic_in_urdf(cls.pkg_dir, cls.urdf_rel, child,
+                                            master, mult, off, clear)
                     (applied if ok else missed).append(ch)
-                if applied:
+                if changed_yaml:
                     _snapshot(cls.pkg_dir, yml, f"mimic x{len(applied)}")
                     with open(yml, "w", encoding="utf-8") as f:
                         f.write(txt)
-                    from sw2robot.exporter.export import build
-                    try:
-                        build(cls.pkg_dir, config_path=yml)
-                    except Exception as e:
-                        return self._send_json(
-                            {"error": f"rebuild failed: {e}"}, 500)
                 print(f"[sw2robot.web] set_mimic: {len(applied)} applied, "
                       f"{len(missed)} not matched")
                 return self._send_json(
@@ -1845,6 +2368,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 color = body.get("color")         # None / '' removes the override
                 if not cls.pkg_dir or not link:
                     return self._send_json({"error": "no package/link"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._um_reply(_um_set_color, link, color)
                 norm = None
                 if color:
                     h = str(color).strip().lstrip("#").lower()
@@ -1879,6 +2404,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 print(f"[sw2robot.web] set_color: {comp} -> {norm}")
                 return self._send_json({"link": comp, "color": norm})
+            if parsed.path == "/api/set_inertial":
+                # per-link inertial override (mass / com / inertia).  URDF-input
+                # mode only: a CAD package derives inertia from the mesh + density
+                # at build time, so it has no overlay to write to here.
+                cls = type(self)
+                n = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(n) or b"{}")
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                if _cad_mode(cls.pkg_dir):
+                    return self._send_json(
+                        {"error": "inertial editing is only available in "
+                                  "URDF-input mode"}, 400)
+                return self._um_reply(_um_set_inertial, body)
             if parsed.path == "/api/rename":
                 # rename a link or joint to a user-chosen name.  Stored as a
                 # component->display overlay in joints.yaml (link_names /
@@ -1900,6 +2439,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json(
                         {"error": f"invalid name '{new}' -- letters / digits / "
                                   f"underscore, not starting with a digit"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._um_reply(_um_rename, kind, old, new)
                 pkg = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
                 yml = os.path.join(cls.pkg_dir, pkg + ".joints.yaml")
                 if not os.path.exists(yml):
@@ -2091,6 +2632,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 cls = type(self)
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._um_reply(_um_reset_names)
                 pkg = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
                 yml = os.path.join(cls.pkg_dir, pkg + ".joints.yaml")
                 if not os.path.exists(yml):
@@ -2120,11 +2663,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 cls = type(self)
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
+                src = "undo" if parsed.path.endswith("undo") else "redo"
+                dst = "redo" if src == "undo" else "undo"
+                if not _cad_mode(cls.pkg_dir):       # URDF-input mode: overlay stack
+                    if not _um[src]:
+                        return self._send_json({"error": f"nothing to {src}"}, 400)
+                    _um[dst].append(_um_overlay_json(_um["state"]))
+                    _um_restore(_um[src].pop())
+                    return self._send_json(
+                        {"done": src, "undo": len(_um["undo"]),
+                         "redo": len(_um["redo"])})
                 name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
                 yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
                 h = _hist(cls.pkg_dir)
-                src = "undo" if parsed.path.endswith("undo") else "redo"
-                dst = "redo" if src == "undo" else "undo"
                 if not h[src]:
                     return self._send_json({"error": f"nothing to {src}"},
                                            400)
@@ -2197,7 +2748,10 @@ def serve(package_dir=None, root_dir=None, port=8090, open_browser=True):
         pkg, rel = _resolve_package(package_dir)
         _Handler.pkg_dir, _Handler.urdf_rel = pkg, rel
         _Handler.robot_name = os.path.splitext(os.path.basename(rel))[0]
-        print(f"[sw2robot.web] serving '{_Handler.robot_name}' from {pkg}")
+        if not _cad_mode(pkg):           # plain URDF -> overlay editing mode
+            _um_load(pkg, rel)
+        print(f"[sw2robot.web] serving '{_Handler.robot_name}' from {pkg}"
+              f"{'' if _cad_mode(pkg) else ' [urdf-input mode]'}")
     else:
         print(f"[sw2robot.web] no package yet -- pick one in the browser "
               f"(root: {_Handler.root_dir})")

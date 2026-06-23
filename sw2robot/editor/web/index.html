@@ -65,12 +65,12 @@
   #linkinfo { border: 1px solid #456; border-radius: 4px; padding: 6px 8px;
               background: #1c2228cc; font-size: 11.5px; display: none;
               position: absolute; top: 76px; left: 8px; z-index: 5;
-              width: 280px; max-height: 45%; overflow-y: auto;
-              /* let orbit/drag pass THROUGH the card; only its controls
-                 are interactive (a big opaque card was a dead zone) */
-              pointer-events: none; }
-  #linkinfo select, #linkinfo button, #linkinfo input,
-  #linkinfo .jp-rename { pointer-events: auto; }
+              width: 280px; max-height: calc(100vh - 92px); overflow-y: auto;
+              /* interactive so the card scrolls (a tall per-link panel -- joint
+                 editor + colour + inertial -- can exceed the viewport) and all
+                 its controls are clickable; orbit/drag still work everywhere
+                 outside this small top-left card */
+              pointer-events: auto; }
   #linkinfo h2 { font-size: 12px; margin: 0 0 4px; color: #7fd0ff; }
   #linkinfo table { border-collapse: collapse; width: 100%; }
   #linkinfo td { padding: 1px 4px 1px 0; vertical-align: top; }
@@ -762,6 +762,17 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     'li.mass': { en: 'mass', ja: '質量' },
     'li.com': { en: 'CoM 🟣', ja: '重心 🟣' },
     'li.inertia': { en: 'inertia', ja: '慣性' },
+    'li.editMass': { en: 'mass (kg)', ja: '質量 (kg)' },
+    'li.editCom': { en: 'CoM (m) 🟣', ja: '重心 (m) 🟣' },
+    'li.editInertia': { en: 'inertia (kg·m²)', ja: '慣性 (kg·m²)' },
+    'li.inertialApply': { en: 'apply inertial', ja: '慣性を適用' },
+    'li.settingInertial': { en: a => `setting inertial of ${a.name} …`,
+      ja: a => `${a.name} の慣性を設定中 …` },
+    'li.inertialOk': { en: 'inertial updated ✓', ja: '慣性を更新しました ✓' },
+    'li.inertialBadNum': { en: 'inertial: every field must be a number',
+      ja: '慣性: すべての欄に数値を入力してください' },
+    'li.inertialFail': { en: a => `set inertial failed: ${a.e}`,
+      ja: a => `慣性の設定に失敗: ${a.e}` },
     'li.color': { en: 'color', ja: '色' },
     'li.setColor': { en: 'set color', ja: '色を変更' },
     'li.colorReset': { en: 'reset', ja: '戻す' },
@@ -3052,7 +3063,10 @@ function fillLinkInfo(name) {
   if (size) {
     add(t('li.bbox'), `${mm(size.x)} × ${mm(size.y)} × ${mm(size.z)} mm`);
   }
-  if (inert) {
+  // CAD packages show inertia read-only (it is derived from mesh + density);
+  // a directly-opened URDF lets the user edit it (URDF-input mode).
+  const urdfMode = currentInfo?.mode === 'urdf';
+  if (inert && !urdfMode) {
     add(t('li.mass'), inert.mass >= 0.1
       ? `${inert.mass.toFixed(3)} kg` : `${(inert.mass * 1000).toFixed(1)} g`);
     add(t('li.com'), `(${inert.com.map(mm).join(', ')}) mm`);
@@ -3061,6 +3075,28 @@ function fillLinkInfo(name) {
       add(t('li.inertia'), `ixx=${ii.ixx.toExponential(2)} ` +
           `iyy=${ii.iyy.toExponential(2)} izz=${ii.izz.toExponential(2)}`);
     }
+  }
+  if (urdfMode) {
+    // editable inertial -- mass (kg), CoM origin (m), inertia tensor (kg·m²),
+    // matching the URDF's own SI units; applied together via the button below
+    const im = inert || { mass: 0.1, com: [0, 0, 0], inertia: null };
+    const ii = im.inertia
+      || { ixx: 1e-4, ixy: 0, ixz: 0, iyy: 1e-4, iyz: 0, izz: 1e-4 };
+    const niSt = 'width:62px;background:#15171a;color:#ddd;border:1px solid #444;'
+      + 'border-radius:3px;font-size:11px';
+    const ni = (id, v) =>
+      `<input type="number" step="any" id="${id}" value="${v}" style="${niSt}">`;
+    add(t('li.editMass'), `${ni('li_mass', im.mass)} kg`);
+    add(t('li.editCom'),
+      `${ni('li_cx', im.com[0])}${ni('li_cy', im.com[1])}${ni('li_cz', im.com[2])} m`);
+    add(t('li.editInertia'),
+      `ixx${ni('li_ixx', ii.ixx)} iyy${ni('li_iyy', ii.iyy)} izz${ni('li_izz', ii.izz)}`
+      + `<br>ixy${ni('li_ixy', ii.ixy)} ixz${ni('li_ixz', ii.ixz)} `
+      + `iyz${ni('li_iyz', ii.iyz)}`);
+    rowsHtml.push('<tr><td></td><td><button id="li_inertial_apply" '
+      + 'style="font-size:11px;background:#15171a;color:#ddd;border:1px solid #444;'
+      + `border-radius:3px;padding:2px 10px;cursor:pointer">${t('li.inertialApply')}`
+      + '</button></td></tr>');
   }
   const c = mat?.color?.getHexString?.();
   // editable colour: the picker shows the persisted override if any, else the
@@ -3164,6 +3200,37 @@ function fillLinkInfo(name) {
   }
   el.querySelectorAll('.palsw').forEach(s =>
     s.addEventListener('click', () => setLinkColor(name, s.dataset.c)));
+  const inApply = el.querySelector('#li_inertial_apply');
+  if (inApply) {
+    inApply.addEventListener('click', async () => {
+      const num = id => parseFloat(el.querySelector('#' + id).value);
+      const mass = num('li_mass');
+      const com = [num('li_cx'), num('li_cy'), num('li_cz')];
+      const inertia = [num('li_ixx'), num('li_ixy'), num('li_ixz'),
+                       num('li_iyy'), num('li_iyz'), num('li_izz')];
+      if (![mass, ...com, ...inertia].every(Number.isFinite)) {
+        log(t('li.inertialBadNum'), 'err');   // an empty field -> NaN; don't post
+        return;
+      }
+      const body = { link: name, mass, com, inertia };
+      op('setInertial', { link: name });
+      log(t('li.settingInertial', { name }));
+      try {
+        const resp = await fetch('/api/set_inertial', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body) });
+        const r = await resp.json();
+        if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+        log(t('li.inertialOk'), 'ok');
+        loadRobot(currentInfo, { keepPose: true });   // re-read the edited URDF
+        refreshHistory();
+        const reselect = name;
+        setTimeout(() => selectLink(reselect), 1500);  // reopen panel after rebuild
+      } catch (e) {
+        log(t('li.inertialFail', { e: e.message ?? e }), 'err');
+      }
+    });
+  }
   el.style.display = 'block';   // '' would fall back to the stylesheet's
                                 // display:none and never show
 }

@@ -18,6 +18,10 @@ examples/*/CMakeLists.txt
 # test / tooling
 tests/e2e/node_modules/
 tests/e2e/package-lock.json
+# runtime artifacts the editor writes into a served URDF package (keep the
+# e2e fixtures pristine -- the overlay sidecar + live copy are regenerated)
+tests/e2e/fixtures/**/*.sw2robot.json
+tests/e2e/fixtures/**/.*.live.urdf
 _server*.txt
 _client_report.json
 _sldasm_index.json

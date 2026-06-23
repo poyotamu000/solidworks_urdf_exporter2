@@ -19,6 +19,7 @@ issues (lower>=upper, duplicate servo ids) are surfaced by ``validate()``.
 
 from __future__ import annotations
 
+import math
 import re
 import shutil
 import xml.etree.ElementTree as ET
@@ -44,6 +45,8 @@ __all__ = [
     "save_state",
     "set_actuator",
     "set_axis_flip",
+    "set_color",
+    "set_inertial",
     "set_joint_type",
     "set_limits",
     "set_mimic",
@@ -120,9 +123,9 @@ def load_state(path) -> RobotCompilerState:
 
 def load_edits(state: RobotCompilerState, path=None) -> int:
     """Merge a saved edit overlay into ``state`` IN PLACE, keeping ``state``'s
-    freshly-built joints/URDF.  Only edits whose joint still exists are applied
-    (so a rebuilt module with changed names is handled gracefully).  Returns the
-    number of edits applied; 0 if no sidecar exists."""
+    freshly-built joints/URDF.  Only edits whose joint/link still exists are
+    applied (so a rebuilt module with changed names is handled gracefully).
+    Returns the number of edits applied; 0 if no sidecar exists."""
     p = state_path(state, path)
     if not p.is_file():
         return 0
@@ -132,6 +135,11 @@ def load_edits(state: RobotCompilerState, path=None) -> int:
     for jn, edit in saved.edits.items():
         if jn in valid:
             state.edits[jn] = edit
+            n += 1
+    valid_links = {l["name"] for l in state.links}
+    for ln, ledit in saved.link_edits.items():
+        if ln in valid_links:
+            state.link_edits[ln] = ledit
             n += 1
     return n
 
@@ -333,6 +341,11 @@ def _require_joint(state, joint):
         raise ValueError(f"no such joint: {joint}")
 
 
+def _require_link(state, link):
+    if link not in {l["name"] for l in state.links}:
+        raise ValueError(f"no such link: {link}")
+
+
 def rename_joint(state: RobotCompilerState, joint: str, new_name: str) -> None:
     _require_joint(state, joint)
     new_name = (new_name or "").strip()
@@ -437,10 +450,74 @@ def reverse_direction(state: RobotCompilerState, joint: str) -> None:
     _require_joint(state, joint)
     e = state.edit_for(joint)
     parsed = next((j for j in state.joints if j["name"] == joint), {})
-    lo = e.lower if e.lower is not None else parsed.get("lowerLimit", 0.0)
-    hi = e.upper if e.upper is not None else parsed.get("upperLimit", 0.0)
     e.flip_axis = not e.flip_axis
-    e.lower, e.upper = -hi, -lo
+    # only revolute/prismatic joints carry a travel range -- don't fabricate a
+    # degenerate [0, 0] limit on a continuous/fixed joint that has none
+    if state.effective_type(parsed) in ("revolute", "prismatic"):
+        lo = e.lower if e.lower is not None else parsed.get("lowerLimit", 0.0)
+        hi = e.upper if e.upper is not None else parsed.get("upperLimit", 0.0)
+        e.lower, e.upper = -hi, -lo
+
+
+# --------------------------------------------------------------- link edits
+_HEX6 = re.compile(r"[0-9a-f]{6}")
+
+
+def set_color(state: RobotCompilerState, link: str, color: str | None) -> None:
+    """Set a link's visual colour as ``#RRGGBB`` (baked into the URDF
+    ``<visual><material>`` by :func:`build_urdf`).  ``color=None`` / ``''``
+    clears the override (keeping whatever the base URDF carries)."""
+    _require_link(state, link)
+    if not color:
+        if link in state.link_edits:     # clear without creating a stray entry
+            state.link_edits[link].color = None
+        return
+    h = str(color).strip().lstrip("#").lower()
+    if not _HEX6.fullmatch(h):
+        raise ValueError(f"invalid color {color!r}: want #RRGGBB")
+    state.link_edit_for(link).color = "#" + h
+
+
+def set_inertial(state: RobotCompilerState, link: str,
+                 mass: float | None = None,
+                 com: list | None = None,
+                 inertia: list | None = None) -> None:
+    """Override a link's inertial properties (any subset).  ``mass`` kg (> 0),
+    ``com`` the inertial-origin ``[x, y, z]``, ``inertia`` the tensor
+    ``[ixx, ixy, ixz, iyy, iyz, izz]``.  Unset fields keep the base URDF value;
+    pass a value to change just that one."""
+    _require_link(state, link)
+    # validate EVERYTHING before touching state, so a rejected request leaves no
+    # partial override behind (matches the fail-fast contract of the setters)
+    if mass is not None:
+        mass = float(mass)
+        if not math.isfinite(mass) or mass <= 0:
+            raise ValueError(f"mass must be a finite number > 0 (got {mass})")
+    if com is not None:
+        com = [float(x) for x in com]
+        if len(com) != 3:
+            raise ValueError("com must be [x, y, z]")
+        if not all(math.isfinite(x) for x in com):
+            raise ValueError(f"com must be finite (got {com})")
+    if inertia is not None:
+        inertia = [float(x) for x in inertia]
+        if len(inertia) != 6:
+            raise ValueError("inertia must be [ixx, ixy, ixz, iyy, iyz, izz]")
+        # physics sanity (positive-definite + triangle inequality): the same
+        # check the exporter applies to generated inertials, so a hand-entered
+        # tensor can't export a simulator-breaking link.  The tensor checks are
+        # mass-independent, so use a positive placeholder when mass is unset here.
+        from sw2robot.exporter.inertia import validate_inertia
+        probs = validate_inertia(mass if mass is not None else 1.0, inertia)
+        if probs:
+            raise ValueError("invalid inertia: " + "; ".join(probs))
+    e = state.link_edit_for(link)
+    if mass is not None:
+        e.mass = mass
+    if com is not None:
+        e.com = com
+    if inertia is not None:
+        e.inertia = inertia
 
 
 # --------------------------------------------------------------- validation
@@ -479,6 +556,71 @@ def validate(state: RobotCompilerState) -> list:
 # --------------------------------------------------------------- #4 export
 def _set_xyz(elem, vec):
     elem.set("xyz", " ".join(f"{v:.8g}" for v in vec))
+
+
+def _hex_to_rgba(hex_color: str) -> str:
+    """``#RRGGBB`` -> a URDF ``rgba`` string with opaque alpha."""
+    h = hex_color.lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    return f"{r:.6g} {g:.6g} {b:.6g} 1"
+
+
+def _apply_color(link_elem, hex_color: str) -> None:
+    """Set ``<material><color rgba>`` on every ``<visual>`` of the link (creating
+    the material/color when absent) -- URDF's per-visual colour model.  A no-op
+    when the link has no ``<visual>`` (nothing to paint)."""
+    rgba = _hex_to_rgba(hex_color)
+    mat_name = "color_" + hex_color.lstrip("#")
+    for vis in link_elem.findall("visual"):
+        mat = vis.find("material")
+        if mat is None:
+            mat = ET.SubElement(vis, "material")
+        mat.set("name", mat_name)
+        col = mat.find("color")
+        if col is None:
+            col = ET.SubElement(mat, "color")
+        col.set("rgba", rgba)
+
+
+def _apply_inertial(link_elem, mass, com, inertia) -> None:
+    """Override the subset of ``<inertial>`` (mass / origin xyz / inertia tensor)
+    that is not None, creating the ``<inertial>`` and its children as needed.
+
+    A partial edit on a link that has NO ``<inertial>`` would otherwise emit an
+    invalid block (URDF requires both ``<mass>`` and ``<inertia>``), so when the
+    block is freshly created any field this edit did not supply is backfilled
+    with the same neutral placeholder the exporter uses (mass 0.1 kg, diagonal
+    inertia 1e-4)."""
+    ine = link_elem.find("inertial")
+    created = ine is None
+    if created:
+        ine = ET.SubElement(link_elem, "inertial")
+    if com is not None:
+        org = ine.find("origin")
+        if org is None:
+            org = ET.SubElement(ine, "origin")
+            org.set("rpy", "0 0 0")
+        _set_xyz(org, com)
+    if mass is not None:
+        m = ine.find("mass")
+        if m is None:
+            m = ET.SubElement(ine, "mass")
+        m.set("value", f"{mass:.8g}")
+    if inertia is not None:
+        tensor = ine.find("inertia")
+        if tensor is None:
+            tensor = ET.SubElement(ine, "inertia")
+        for k, v in zip(("ixx", "ixy", "ixz", "iyy", "iyz", "izz"), inertia):
+            tensor.set(k, f"{v:.8g}")
+    if created:                       # guarantee a complete, valid <inertial>
+        if ine.find("mass") is None:
+            ET.SubElement(ine, "mass").set("value", "0.1")
+        if ine.find("inertia") is None:
+            tensor = ET.SubElement(ine, "inertia")
+            for k in ("ixx", "iyy", "izz"):
+                tensor.set(k, "0.0001")
+            for k in ("ixy", "ixz", "iyz"):
+                tensor.set(k, "0")
 
 
 def _safe_name(name: str) -> str:
@@ -531,12 +673,16 @@ def _sanitize_urdf_names(root) -> None:
             mim.set("joint", jmap[mim.get("joint")])
 
 
-def build_urdf(state: RobotCompilerState) -> str:
-    """The CAD URDF with the interactive overlay baked in (rename, limits, mimic,
-    axis flip, joint type), so the exported package and configs stay consistent.
+def build_urdf(state: RobotCompilerState, sanitize: bool = True) -> str:
+    """The CAD URDF with the interactive overlay baked in -- per-joint (rename,
+    limits, mimic, axis flip, joint type) AND per-link (colour, inertial) -- so
+    the exported package and configs stay consistent.
 
-    Link/joint names are passed through :func:`_sanitize_urdf_names` last, so the
-    final URDF is guaranteed free of hyphens and other unsafe characters."""
+    With ``sanitize`` (default), link/joint names are passed through
+    :func:`_sanitize_urdf_names` last, so a CAD-derived URDF is guaranteed free
+    of hyphens and other unsafe characters.  Pass ``sanitize=False`` when editing
+    a URDF the user opened directly: its names are already its own contract (the
+    viewer shows them, edits reference them), so they must be preserved verbatim."""
     root = ET.fromstring(Path(state.urdf_path).read_text(encoding="utf-8"))
     renames = {j: e.rename for j, e in state.edits.items() if e.rename}
 
@@ -551,6 +697,11 @@ def build_urdf(state: RobotCompilerState) -> str:
                     el = je.find(tag)
                     if el is not None:
                         je.remove(el)
+        # backfill the <axis> BEFORE the flip, so flipping a joint that this same
+        # edit just made movable (it had no axis) still takes effect
+        if je.get("type") in ("revolute", "prismatic", "continuous") \
+                and je.find("axis") is None:
+            ET.SubElement(je, "axis").set("xyz", "0 0 1")
         if e.flip_axis:
             ax = je.find("axis")
             if ax is not None:
@@ -583,6 +734,17 @@ def build_urdf(state: RobotCompilerState) -> str:
             mim.set("joint", e.mimic_joint)
             mim.set("multiplier", f"{e.mimic_multiplier:g}")
             mim.set("offset", f"{e.mimic_offset:g}")
+        # a joint made movable (e.g. fixed -> revolute) must satisfy URDF's
+        # requirement of a <limit> for revolute/prismatic; add a placeholder when
+        # the type edit didn't supply one (the <axis> was backfilled above), so
+        # the type change alone never yields an invalid URDF.
+        ftype = je.get("type")
+        if ftype in ("revolute", "prismatic") and je.find("limit") is None:
+            lim = ET.SubElement(je, "limit")
+            lim.set("lower", "-3.14159" if ftype == "revolute" else "0")
+            lim.set("upper", "3.14159" if ftype == "revolute" else "0.1")
+            lim.set("effort", "10")
+            lim.set("velocity", "3.14")
 
     # repoint any mimic that referenced a now-renamed joint
     for je in root.findall("joint"):
@@ -590,8 +752,20 @@ def build_urdf(state: RobotCompilerState) -> str:
         if mim is not None and mim.get("joint") in renames:
             mim.set("joint", renames[mim.get("joint")])
 
+    # per-link overlay: visual colour + inertial (keyed by the base-URDF name,
+    # applied before the name sanitize so references stay consistent)
+    for le in root.findall("link"):
+        led = state.link_edits.get(le.get("name"))
+        if led is None:
+            continue
+        if led.color:
+            _apply_color(le, led.color)
+        if led.mass is not None or led.com is not None or led.inertia is not None:
+            _apply_inertial(le, led.mass, led.com, led.inertia)
+
     # final guarantee: no hyphens/spaces/etc. in any emitted link or joint name
-    _sanitize_urdf_names(root)
+    if sanitize:
+        _sanitize_urdf_names(root)
     return ET.tostring(root, encoding="unicode")
 
 
