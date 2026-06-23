@@ -357,7 +357,8 @@
       <button id="posedrag" class="toggle" data-i18n-title="t.posedrag"
               title="OFF: ドラッグで視点回転 / ON: リンクをドラッグして関節を動かす">
         🖐 pose</button>
-      <button id="playmode" class="toggle" data-i18n-title="t.playmode"
+      <button id="playmode" class="toggle" data-i18n="ui.playmode"
+              data-i18n-title="t.playmode"
               title="動かすモード: 右パネルを可動関節のスライダーだけにする（たくさんのリンクを隠してシンプルに動かせる）">
         ▶ 動かす</button>
       <button id="keycast" class="toggle" data-i18n-title="t.keycast"
@@ -432,7 +433,8 @@
          border-radius:6px;padding:5px 12px;font-size:12px;
          box-shadow:0 2px 10px #0006">
       <span id="mimicbartext"></span>
-      <button id="mimicapply" style="background:#6a4fb0;color:#fff;
+      <button id="mimicapply" data-i18n="ui.mimicapply"
+              style="background:#6a4fb0;color:#fff;
               border-color:#9b80e0">適用 (Enter)</button>
       <button id="mimiccancel">✕</button>
     </div>
@@ -454,7 +456,7 @@
     <div id="linkinfo"></div>
     <div id="keyoverlay" aria-hidden="true"></div>
   </div>
-  <div id="resizer" title="ドラッグでパネル幅を調整"></div>
+  <div id="resizer" data-i18n-title="t.resizer" title="ドラッグでパネル幅を調整"></div>
   <div id="panel">
     <div id="langbar" style="display:flex;gap:4px;justify-content:flex-end;
          margin-bottom:2px" data-i18n-title="lang.title" title="display language">
@@ -472,7 +474,8 @@
         🎯 Extract the assembly open in SolidWorks</button>
       <div id="swstat" style="font-size:11px;color:#8a93a3"></div>
       <div style="display:flex;gap:4px">
-        <button id="fsbrowse" style="flex:1" data-i18n-title="t.fsbrowse"
+        <button id="fsbrowse" style="flex:1" data-i18n="ui.fsbrowse"
+                data-i18n-title="t.fsbrowse"
                 title="サーバー側のファイルブラウザ（最近のファイル＋フルパス貼り付け）">
           🗄 開く…</button>
       </div>
@@ -1091,6 +1094,10 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     'ui.btRevolute': { en: 'revolute', ja: '回転' },
     'ui.btContinuous': { en: 'continuous', ja: '連続回転' },
     'ui.btPrismatic': { en: 'prismatic', ja: '直動' },
+    'ui.playmode': { en: '▶ play', ja: '▶ 動かす' },
+    'ui.mimicapply': { en: 'Apply (Enter)', ja: '適用 (Enter)' },
+    'ui.fsbrowse': { en: '🗄 Open…', ja: '🗄 開く…' },
+    't.resizer': { en: 'drag to resize the panel', ja: 'ドラッグでパネル幅を調整' },
     'ui.useactive': { en: '🎯 Extract the assembly open in SolidWorks', ja: '🎯 SolidWorksで開いているアセンブリを抽出' },
     't.fsbrowse': { en: 'server-side file browser: recent files + paste a full path',
                     ja: 'サーバー側ファイルブラウザ：最近のファイル＋フルパス貼り付け' },
