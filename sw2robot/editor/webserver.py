@@ -2784,7 +2784,7 @@ def main():
     ap.add_argument("--root", default=None,
                     help="directory scanned for /api/list and where new "
                          "extractions are written (default: ./output in a "
-                         "source checkout, %TEMP%\\sw2robot\\output for the "
+                         "source checkout, %%TEMP%%\\sw2robot\\output for the "
                          "frozen .exe)")
     ap.add_argument("--port", type=int, default=8090)
     ap.add_argument("--no-browser", action="store_true",

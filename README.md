@@ -56,6 +56,48 @@ Python or clone this repo. Grab the prebuilt editor and run it:
 Closing the console window stops the server and tears down the SolidWorks
 instance it spawned.
 
+## Quick start — macOS / Linux (no SolidWorks)
+
+SolidWorks does not run on macOS / Linux, so the `extract` step (assembly →
+graph) is Windows-only. **Everything else — open & edit an already-extracted
+package, open & edit *any* URDF, build, and export — runs natively** on macOS
+and Linux.
+
+**Option A — download the prebuilt editor** (no Python). Grab the asset for
+your OS from the [latest release](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases/latest)
+(under *Assets*):
+
+**macOS (Apple Silicon)** — `sw2robot-web-macos-arm64-v<version>.zip`. Unzip it
+to get `sw2robot-web.app`; double-click to launch (it opens the editor in your
+browser at `http://localhost:8090`).
+
+```bash
+# Gatekeeper blocks unsigned apps on first launch — clear the quarantine once,
+# then double-click, or run it from a terminal to see the server log / URL:
+xattr -dr com.apple.quarantine sw2robot-web.app
+./sw2robot-web.app/Contents/MacOS/sw2robot-web --port 8090
+```
+
+**Linux (x64)** — `sw2robot-web-linux-x64-v<version>` (a single binary):
+
+```bash
+chmod +x sw2robot-web-linux-x64-v<version>          # mark it executable once
+./sw2robot-web-linux-x64-v<version> --port 8090     # opens http://localhost:8090
+```
+
+**Option B — run from source** (see [Install from source](#install-from-source-developers)
+below):
+
+```bash
+pip install -e ".[ui]"
+# edit an already-extracted package, or open any URDF directly:
+python -m sw2robot.editor.webserver path/to/robot.urdf --port 8090
+```
+
+The editor opens in URDF-input mode when you point it at a `.urdf` file: re-root,
+retype joints, set mimic/limits/materials, add end-coord ports, and re-export a
+ROS package — then closing the tab leaves your original `.urdf` untouched.
+
 ## Editor — features & keyboard shortcuts
 
 Everything below edits the package server-side and rebuilds the URDF in place

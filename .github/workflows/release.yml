@@ -1,22 +1,24 @@
 name: Build & Release
 
-# Tag-driven release: push a vX.Y.Z tag and this builds the PyInstaller
-# .exe and attaches it to a GitHub Release.  workflow_dispatch builds the
-# binary WITHOUT releasing (handy for smoke-testing the freeze; grab it
+# Tag-driven release: push a vX.Y.Z tag and this builds a PyInstaller binary
+# per OS and attaches them all to a GitHub Release.  workflow_dispatch builds
+# the binaries WITHOUT releasing (handy for smoke-testing the freeze; grab them
 # from the run's artifacts).
 #
 #   after the bump-version PR is merged:
 #     git switch main && git pull
 #     git tag v0.1.0 && git push origin v0.1.0
 #
-# NOTE: PyInstaller cannot cross-compile, so each arch builds on its own
-# native runner.  The x64 build bundles the editor-ui extra (live
-# self-collision + auto joint-limits via skrobot/fcl).  The Windows ARM64
-# build is currently commented out in the matrix below (windows-11-arm
-# hosted runners aren't available on a private repo) -- re-enable it once
-# the repo is public; it would ship the base web editor only, since
-# python-fcl has no win-arm64 wheel.  fail-fast is off so one arch failing
-# never blocks the others.
+# NOTE: PyInstaller cannot cross-compile, so each OS/arch builds on its own
+# native runner.  Windows (.exe), macOS (Apple Silicon) and Linux (x64) each
+# bundle the editor-ui extra (live self-collision + auto joint-limits via
+# skrobot/fcl).  Only Windows can run the SolidWorks `extract` step; the macOS
+# and Linux binaries do view / edit / build / export -- including the
+# URDF-input editing mode -- without SolidWorks.  The Windows ARM64 build is
+# commented out (windows-11-arm hosted runners are limited on private repos) --
+# re-enable it once public; it would ship the base web editor only, since
+# python-fcl has no win-arm64 wheel.  fail-fast is off so one OS failing never
+# blocks the others.
 
 on:
   push:
@@ -33,20 +35,38 @@ concurrency:
 
 jobs:
   build:
-    name: Build ${{ matrix.arch }} exe
+    name: Build ${{ matrix.os }}-${{ matrix.arch }} binary
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - runner: windows-latest
+            os: windows
             arch: x64
+            ext: '.exe'
             build_args: '--editor-ui'
-          # ARM64 is disabled while the repo is private (windows-11-arm
+          # macos-latest is Apple Silicon (macOS 14+).  No SolidWorks/COM, so
+          # this binary does view / edit / build / export incl. URDF-input mode.
+          # build_exe.py emits a windowed .app (Finder/Dock icon); we ship it
+          # zipped, so the released asset is a .zip.
+          - runner: macos-latest
+            os: macos
+            arch: arm64
+            ext: '.zip'
+            build_args: '--editor-ui'
+          - runner: ubuntu-latest
+            os: linux
+            arch: x64
+            ext: ''
+            build_args: '--editor-ui'
+          # ARM64 Windows is disabled while the repo is private (windows-11-arm
           # hosted runners are limited/unavailable on private repos).
           # Re-enable once public, or swap in a self-hosted ARM runner.
           # - runner: windows-11-arm
+          #   os: windows
           #   arch: arm64
+          #   ext: '.exe'
           #   build_args: ''
     steps:
       - uses: actions/checkout@v4
@@ -61,17 +81,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install . pyinstaller pycollada scipy networkx
 
-      - name: Install editor-ui dependencies (x64 only)
-        if: matrix.arch == 'x64'
+      - name: Install editor-ui dependencies
+        if: contains(matrix.build_args, '--editor-ui')
         # latest scikit-robot (the pyproject floor of 0.0.30 is just a minimum;
-        # it predates the FK/collision API used here) + python-fcl
+        # it predates the FK/collision API used here) + python-fcl.  Wheels
+        # exist for win-x64, macos-arm64 and linux-x64.
         run: pip install scikit-robot python-fcl
 
-      # Put the release version right before the .exe extension so the binary
-      # is self-identifying (sw2robot-web-windows-x64-v0.1.9.exe).  On a vX.Y.Z
-      # tag that is the tag; a workflow_dispatch build (no tag) falls back to
+      # Put the release version right before the extension so the binary is
+      # self-identifying (sw2robot-web-macos-arm64-v0.1.9).  On a vX.Y.Z tag
+      # that is the tag; a workflow_dispatch build (no tag) falls back to
       # dev-<short sha> so the name is still unambiguous.
-      - name: Compose exe name
+      - name: Compose binary name
         id: exe
         shell: bash
         run: |
@@ -80,24 +101,36 @@ jobs:
           else
             ver="dev-${GITHUB_SHA::7}"
           fi
-          echo "name=sw2robot-web-windows-${{ matrix.arch }}-${ver}" >> "$GITHUB_OUTPUT"
+          echo "name=sw2robot-web-${{ matrix.os }}-${{ matrix.arch }}-${ver}" >> "$GITHUB_OUTPUT"
 
-      - name: Build the web editor .exe
+      - name: Build the web editor binary
         run: python build_exe.py ${{ matrix.build_args }} --name ${{ steps.exe.outputs.name }}
+
+      # macOS builds a windowed .app (a directory) so it carries a Finder/Dock
+      # icon -- zip it (ditto preserves the bundle + its quarantine-friendly
+      # structure) into the single .zip we release.  Windows (.exe) and Linux
+      # (bare binary) are already single files, so this step is macOS-only.
+      - name: Package macOS .app into a zip
+        if: matrix.os == 'macos'
+        shell: bash
+        run: |
+          ditto -c -k --keepParent \
+            "dist/${{ steps.exe.outputs.name }}.app" \
+            "dist/${{ steps.exe.outputs.name }}.zip"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.exe.outputs.name }}
-          path: dist/${{ steps.exe.outputs.name }}.exe
+          path: dist/${{ steps.exe.outputs.name }}${{ matrix.ext }}
           if-no-files-found: error
 
   release:
     name: Publish GitHub Release
     needs: build
     # Only cut a Release on a vX.Y.Z tag (workflow_dispatch just leaves
-    # artifacts).  always() so a failed ARM build doesn't block the x64
-    # release -- we publish whatever artifacts did build.
+    # artifacts).  always() so a failed build on one OS doesn't block the
+    # others -- we publish whatever artifacts did build.
     if: ${{ always() && !cancelled() && startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     steps:
@@ -114,4 +147,5 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: artifacts/*.exe
+          # one binary per OS: *.exe (Windows) + extensionless macOS/Linux ones
+          files: artifacts/sw2robot-web-*
