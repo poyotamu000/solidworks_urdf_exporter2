@@ -21,8 +21,13 @@ zip it in memory and the CLI can write it to disk.
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import io
+import json
 import os
 import re
+import threading
 import xml.etree.ElementTree as ET
 
 from .urdf_writer import (
@@ -131,6 +136,266 @@ _CONVERT = {"dae": _mesh_to_dae_bytes, "stl": _mesh_to_stl_bytes,
 _CTX_FMT = (("visual", "dae"), ("collision", "stl"))
 # a uniform GLB variant (both contexts) for native-mesh / three.js consumers
 GLB_CTX_FMT = (("visual", "glb"), ("collision", "glb"))
+
+
+# ----------------------------------------------------- CoACD collision meshes
+# Optionally replace each <collision>'s single (concave) mesh with a set of
+# convex parts via CoACD (approximate convex decomposition).  Convex collision
+# geometry is what physics engines (Gazebo/Bullet/MuJoCo) actually want; reusing
+# the visual mesh works but is slow and can mis-collide on concave shapes.
+#
+# CoACD is an OPTIONAL dependency (the `coacd` extra) and decomposition is slow
+# (tens of seconds per link), so this is opt-in and the result is cached on disk
+# keyed by the source mesh content + parameters -- a re-export is then instant.
+
+# CoACD parameters per quality preset.  CoACD's cost is dominated by the MCTS
+# search, which runs to ``max_convex_hull`` cuts whenever ``threshold`` is too
+# low to stop earlier -- so a low threshold + high part cap + many MCTS
+# iterations makes EVERY part (even a tiny one) pay the full ~2-minute search.
+# Measured on the feetech_hand parts: the old 'balanced' (0.1 / 8 / mcts 100)
+# took 100-150 s on small parts; 'balanced' below is ~8-60 s (2-5x faster) with
+# 'fine' kept for a tighter fit when the wait is worth it.
+_COACD_PRESETS = {
+    "balanced": {"threshold": 0.2, "max_convex_hull": 6,
+                 "preprocess_resolution": 30, "mcts_iterations": 30},
+    "fine": {"threshold": 0.1, "max_convex_hull": 8,
+             "preprocess_resolution": 40, "mcts_iterations": 60},
+}
+# bump when the decomposition output format changes so stale caches are ignored
+_COACD_CACHE_VERSION = 1
+
+# per-cache-key locks: when several links share ONE source mesh (e.g. 5 instances
+# of the same servo), the parallel preview would otherwise run + write the same
+# cache files concurrently and race (a Windows file-in-use error).  Serialise per
+# key so the first thread computes + writes and the rest read the cache.
+_coacd_cache_locks = {}
+_coacd_cache_locks_guard = threading.Lock()
+
+
+def _coacd_key_lock(key):
+    with _coacd_cache_locks_guard:
+        lk = _coacd_cache_locks.get(key)
+        if lk is None:
+            lk = _coacd_cache_locks[key] = threading.Lock()
+        return lk
+
+
+def coacd_available():
+    """True if the optional ``coacd`` package is importable."""
+    import importlib.util
+    return importlib.util.find_spec("coacd") is not None
+
+
+def _run_coacd(vertices, faces, params):
+    """Run CoACD and return ``[(verts, faces), ...]`` convex parts.  Thin
+    indirection over the ``coacd`` package so tests can monkeypatch it without
+    installing CoACD or paying its (tens-of-seconds) runtime."""
+    import coacd
+
+    coacd.set_log_level("error")
+    mesh = coacd.Mesh(vertices, faces)
+    return coacd.run_coacd(mesh, merge=True, **params)
+
+
+def _coacd_part_stls(src, quality, cache_dir):
+    """``[stl_bytes, ...]`` -- the source mesh ``src`` decomposed into convex
+    collision parts (each a watertight STL in metres) per the ``quality`` preset.
+
+    Cached under ``cache_dir/<key>/`` keyed by the source file content + params,
+    so repeated exports of an unchanged mesh skip the slow CoACD run."""
+    import numpy as np
+    import trimesh
+
+    params = _COACD_PRESETS[quality]
+    with open(src, "rb") as f:
+        src_bytes = f.read()
+    h = hashlib.sha1(src_bytes)
+    h.update(json.dumps([quality, params, _COACD_CACHE_VERSION],
+                        sort_keys=True).encode())
+    key = h.hexdigest()[:16]
+    part_dir = os.path.join(cache_dir, key)
+    manifest = os.path.join(part_dir, "parts.json")
+
+    def _read_cache():
+        try:
+            with open(manifest) as f:
+                names = json.load(f)
+            return [open(os.path.join(part_dir, n), "rb").read() for n in names]
+        except (OSError, ValueError):
+            return None         # missing/corrupt/partial -- needs a (re)build
+
+    cached = _read_cache()
+    if cached is not None:
+        return cached
+
+    # hold the per-key lock across the check+build so parallel links that share
+    # this source mesh don't all run CoACD / write the same files at once
+    with _coacd_key_lock(key):
+        cached = _read_cache()          # another thread may have built it first
+        if cached is not None:
+            return cached
+        mesh = _load_mesh_metres(src)
+        parts = _run_coacd(mesh.vertices, mesh.faces, params)
+        os.makedirs(part_dir, exist_ok=True)
+        out, names = [], []
+        for i, (verts, faces) in enumerate(parts):
+            # CoACD parts are convex; take the convex hull to drop any sliver
+            # faces and guarantee a clean watertight collision mesh
+            part = trimesh.Trimesh(vertices=np.asarray(verts),
+                                   faces=np.asarray(faces),
+                                   process=False).convex_hull
+            part.units = "meter"
+            data = part.export(file_type="stl")
+            name = f"part_{i}.stl"
+            with open(os.path.join(part_dir, name), "wb") as f:
+                f.write(data)
+            out.append(data)
+            names.append(name)
+        with open(manifest, "w") as f:
+            json.dump(names, f)
+        return out
+
+
+# a fixed high-contrast palette so adjacent convex parts read apart in the viewer
+_COACD_PALETTE = (
+    (228, 26, 28), (55, 126, 184), (77, 175, 74), (152, 78, 163),
+    (255, 127, 0), (210, 210, 40), (166, 86, 40), (247, 129, 191),
+    (102, 194, 165), (252, 141, 98), (141, 160, 203), (153, 153, 153),
+)
+
+
+def _origin_matrix(origin_el):
+    """4x4 transform for a URDF ``<origin>`` element (xyz + fixed-axis rpy), or
+    identity when absent -- to bake a ``<collision>``'s origin into its part
+    vertices so a preview mesh sits right when attached at the link frame."""
+    import numpy as np
+    import trimesh
+
+    if origin_el is None:
+        return np.eye(4)
+    xyz = [float(v) for v in (origin_el.get("xyz") or "0 0 0").split()]
+    rpy = [float(v) for v in (origin_el.get("rpy") or "0 0 0").split()]
+    m = trimesh.transformations.euler_matrix(*rpy, axes="sxyz")
+    m[:3, 3] = xyz[:3]
+    return m
+
+
+def coacd_preview_glbs(pkg_dir, robot_name, quality="balanced", progress=None,
+                       urdf_path=None, should_cancel=None, on_start=None,
+                       max_workers=None):
+    """Decompose every link's ``<collision>`` mesh with CoACD and write one
+    colour-coded preview GLB per link under ``meshes/.coacd_cache/preview/`` (the
+    convex parts, each part a distinct colour, the collision ``<origin>`` baked
+    in so the GLB sits at the link frame).  Shares the on-disk part cache with
+    the ROS export, so generating the preview also warms a later ``collision=
+    'coacd'`` export.
+
+    Links are decomposed CONCURRENTLY in a thread pool -- CoACD releases the GIL,
+    so this scales with cores (measured ~4x on a 12-core box).  ``max_workers``
+    defaults to ``cpu_count - 2`` (capped at 8).
+
+    ``on_start(link_name)`` (optional) is called when a link's decomposition
+    begins -- with the pool, several links are in flight at once, so a watcher
+    can track the set.  ``progress(done, total, link_name, rel_glb_or_None)`` is
+    called when a link FINISHES (``done`` = links finished so far, ``rel_glb``
+    the package-relative GLB path or None for links with no mesh).  Both may be
+    called from worker threads; keep them quick + thread-safe.  Returns
+    ``{link_name: rel_glb}`` for the links that produced one.
+
+    ``should_cancel`` is an optional zero-arg predicate; once it returns true no
+    further links are started (in-flight ones finish -- CoACD can't be
+    interrupted mid-link).  Raises a clear error if CoACD is unavailable."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    import numpy as np
+    import trimesh
+
+    if quality not in _COACD_PRESETS:
+        raise ValueError(f"unsupported collision_quality: {quality!r} "
+                         f"(use one of {sorted(_COACD_PRESETS)})")
+    if not coacd_available():
+        raise ValueError("CoACD collision decomposition needs the optional "
+                         "'coacd' package -- install it with: pip install coacd")
+    cache_dir = os.path.join(pkg_dir, "meshes", ".coacd_cache")
+    preview_dir = os.path.join(cache_dir, "preview")
+    os.makedirs(preview_dir, exist_ok=True)
+    own_pkgs = _own_pkg_names(pkg_dir)
+    urdf_path = urdf_path or os.path.join(pkg_dir, "urdf", robot_name + ".urdf")
+    root = ET.parse(urdf_path).getroot()
+    links = root.findall("link")
+    total = len(links)
+    if max_workers is None:
+        max_workers = max(1, min(8, (os.cpu_count() or 2) - 2))
+
+    # resolve each link's collision mesh sources up front (cheap, no CoACD), so
+    # the pool tasks are pure decomposition work
+    mesh_links, plain_links = [], []
+    for i, link in enumerate(links):
+        name = link.get("name") or f"link{i}"
+        blocks = []
+        for block in link.findall("collision"):
+            ms = list(block.iter("mesh"))
+            if len(ms) != 1:
+                continue
+            _b, src, _e = _resolve_mesh(pkg_dir, ms[0].get("filename"),
+                                        own_pkgs=own_pkgs)
+            if src:
+                blocks.append((src, _origin_matrix(block.find("origin"))))
+        (mesh_links if blocks else plain_links).append((name, blocks))
+
+    out = {}
+    lock = threading.Lock()
+    state = {"done": 0}
+
+    def _finish(name, rel):
+        with lock:
+            state["done"] += 1
+            d = state["done"]
+            if rel:
+                out[name] = rel
+        if progress:
+            progress(d, total, name, rel)
+
+    def _decompose(item):
+        name, blocks = item
+        if should_cancel and should_cancel():
+            return name, None
+        if on_start:
+            on_start(name)
+        scene = trimesh.Scene()
+        part_i = 0
+        for src, mat in blocks:
+            for data in _coacd_part_stls(src, quality, cache_dir):
+                part = trimesh.load(io.BytesIO(data), file_type="stl")
+                part.apply_transform(mat)
+                rgb = _COACD_PALETTE[part_i % len(_COACD_PALETTE)]
+                part.visual = trimesh.visual.ColorVisuals(
+                    mesh=part,
+                    face_colors=np.tile([*rgb, 255], (len(part.faces), 1)))
+                scene.add_geometry(part)
+                part_i += 1
+        if not part_i:
+            return name, None
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+        with open(os.path.join(preview_dir, safe + ".glb"), "wb") as f:
+            f.write(scene.export(file_type="glb"))
+        return name, f"meshes/.coacd_cache/preview/{safe}.glb"
+
+    # links without a convertible mesh just advance the counter
+    for name, _blocks in plain_links:
+        _finish(name, None)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = {ex.submit(_decompose, m): m for m in mesh_links}
+        for fut in as_completed(futs):
+            name, rel = fut.result()
+            _finish(name, rel)
+            if should_cancel and should_cancel():
+                for f in futs:        # drop not-yet-started links (running ones
+                    f.cancel()        # can't be killed; the pool waits for them)
+                break
+    return out
 
 
 def _collada_meshes(mesh):
@@ -312,7 +577,8 @@ def ros_urdf_stem(pkg, urdf_name=None):
 
 def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
                           ctx_fmt=_CTX_FMT, ros_version=1, pkg_name=None,
-                          urdf_name=None, colors=None):
+                          urdf_name=None, colors=None, collision="copy",
+                          collision_quality="balanced"):
     """``pkg_dir`` (a built package) -> ``[(arcname, bytes), ...]`` for a portable
     ROS package, all behind ``package://`` URLs.  The package is named
     ``pkg_name`` if given (validated, see :func:`ros_pkg_name`), else
@@ -328,6 +594,14 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
     ``<visual>`` mesh a solid colour, overriding its CAD colours; collision STL
     is colourless and unaffected.
 
+    ``collision`` chooses how ``<collision>`` geometry is produced: ``'copy'``
+    (default) reuses the visual mesh as one STL (the current behaviour);
+    ``'coacd'`` runs CoACD approximate convex decomposition, replacing each
+    ``<collision>``'s mesh with a set of convex part STLs (better for physics
+    engines).  ``collision_quality`` (``'balanced'`` | ``'fine'``) picks the
+    CoACD preset.  ``'coacd'`` needs the optional ``coacd`` package; its absence
+    raises a clear error.  Decomposition is cached under ``meshes/.coacd_cache``.
+
     ``ros_version`` picks the build system: ``1`` (default) writes a catkin
     ``package.xml`` (format 2) + ``CMakeLists.txt``; ``2`` writes an ament_cmake
     ``package.xml`` (format 3) + ``CMakeLists.txt`` and bundles a
@@ -339,6 +613,19 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
     before any entries are emitted, so a half-rewritten package never ships."""
     if ros_version not in (1, 2):
         raise ValueError(f"unsupported ros_version: {ros_version}")
+    if collision not in ("copy", "coacd"):
+        raise ValueError(f"unsupported collision mode: {collision!r} "
+                         "(use 'copy' or 'coacd')")
+    if collision == "coacd":
+        if collision_quality not in _COACD_PRESETS:
+            raise ValueError(
+                f"unsupported collision_quality: {collision_quality!r} "
+                f"(use one of {sorted(_COACD_PRESETS)})")
+        if not coacd_available():
+            raise ValueError(
+                "CoACD collision decomposition needs the optional 'coacd' "
+                "package -- install it with: pip install coacd")
+    coacd_cache_dir = os.path.join(pkg_dir, "meshes", ".coacd_cache")
     pkg = ros_pkg_name(robot_name, pkg_name)
     urdf_stem = ros_urdf_stem(pkg, urdf_name)
     # the opened package's own name(s) -- only package:// refs to one of these
@@ -399,11 +686,68 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
         done[key] = name
         return name
 
+    def _emit_coacd(base, src):
+        # CoACD-decompose a source mesh into convex collision part STLs; returns
+        # the list of emitted mesh names (one per convex part), or None on error.
+        # Keyed (in `done`) by source + quality so a mesh shared by several links
+        # decomposes once.
+        key = (os.path.abspath(src), "coacd", collision_quality)
+        if key in done:
+            return done[key]
+        try:
+            blobs = _coacd_part_stls(src, collision_quality, coacd_cache_dir)
+        except Exception as e:
+            errors.append(f"{base}: coacd decompose failed ({e!r})")
+            return None
+        names = []
+        for i, data in enumerate(blobs):
+            name, j = f"{base}_collision_{i}.stl", 1
+            while name in used_names:
+                j += 1
+                name = f"{base}_collision_{i}_{j}.stl"
+            used_names.add(name)
+            files.append((f"{pkg}/meshes/{name}", data))
+            names.append(name)
+        done[key] = names
+        return names
+
+    def _expand_collision_coacd(link):
+        # replace each <collision> whose single mesh is a convertible source with
+        # N <collision> blocks (one per convex part), preserving its <origin>.
+        # Blocks we can't decompose (primitive geometry, external/missing mesh,
+        # multi-mesh) are left to the normal per-mesh path below.
+        for block in list(link.findall("collision")):
+            meshes = list(block.iter("mesh"))
+            if len(meshes) != 1:
+                continue                   # primitive or multi-mesh -- leave it
+            base, src, _ext = _resolve_mesh(pkg_dir, meshes[0].get("filename"),
+                                            own_pkgs=own_pkgs)
+            if base is None:
+                continue                   # external ref -- leave as-is
+            if src is None:
+                errors.append(f"no source mesh for '{base}'")
+                continue
+            names = _emit_coacd(base, src)
+            if not names:
+                continue
+            idx = list(link).index(block)
+            link.remove(block)
+            # deep-copy the original block per part so <origin> + formatting carry
+            for k, name in enumerate(names):
+                nb = copy.deepcopy(block)
+                next(nb.iter("mesh")).set(
+                    "filename", f"package://{pkg}/meshes/{name}")
+                link.insert(idx + k, nb)
+
     for link in root.findall("link"):
         # colour overrides are keyed by LINK name in URDF-input mode and by the
         # component/mesh basename in the CAD path -- accept either
         link_color = colors.get(link.get("name"))
+        if collision == "coacd":
+            _expand_collision_coacd(link)
         for ctx, fmt in ctx_fmt:
+            if ctx == "collision" and collision == "coacd":
+                continue                   # handled by _expand_collision_coacd
             for block in link.findall(ctx):
                 for mesh in block.iter("mesh"):
                     base, src, _ext = _resolve_mesh(pkg_dir, mesh.get("filename"),
@@ -451,16 +795,21 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
 
 def write_ros_description_package(pkg_dir, robot_name, dest_dir,
                                   email="auto@example.com", ros_version=1,
-                                  pkg_name=None, urdf_name=None, colors=None):
+                                  pkg_name=None, urdf_name=None, colors=None,
+                                  collision="copy",
+                                  collision_quality="balanced"):
     """Write the ROS package under ``dest_dir`` and return its directory path.
     The package is named ``pkg_name`` if given, else ``<robot_name>_description``;
     the URDF inside is named ``urdf_name`` if given, else the package name.
-    ``ros_version`` (1 = catkin, 2 = ament_cmake) and ``colors`` (per-link
-    colour overrides) are passed through to :func:`build_ros_description`."""
+    ``ros_version`` (1 = catkin, 2 = ament_cmake), ``colors`` (per-link colour
+    overrides) and ``collision`` / ``collision_quality`` (CoACD collision-mesh
+    decomposition) are passed through to :func:`build_ros_description`."""
     pkg = ros_pkg_name(robot_name, pkg_name)
     files = build_ros_description(pkg_dir, robot_name, email=email,
                                   ros_version=ros_version, pkg_name=pkg,
-                                  urdf_name=urdf_name, colors=colors)
+                                  urdf_name=urdf_name, colors=colors,
+                                  collision=collision,
+                                  collision_quality=collision_quality)
     root = os.path.abspath(dest_dir)
     for arc, data in files:
         dst = os.path.join(root, *arc.split("/"))

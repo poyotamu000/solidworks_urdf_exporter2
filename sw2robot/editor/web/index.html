@@ -209,6 +209,7 @@
   #log .t   { color: #5a6472; margin-right: 6px; }
   #log .ok  { color: #79c98b; }
   #log .err { color: #ff8484; }
+  #log .warn { color: #e7c060; }
   #log .wrn { color: #e8c468; }
   #hovertip { position: absolute; display: none; pointer-events: none;
               background: rgba(20,22,26,.85); color: #fff; padding: 2px 8px;
@@ -233,6 +234,11 @@
   @keyframes lbslide {
     0% { margin-left: 0; } 50% { margin-left: 70%; }
     100% { margin-left: 0; } }
+  /* spinning gear for the CoACD "computing" banner */
+  #coacdstat { display: none; }
+  #coacdstat.on { display: flex; }
+  .coacd-spin { animation: coacdspin 1.1s linear infinite; }
+  @keyframes coacdspin { to { transform: rotate(360deg); } }
   #loadbar .lb-sub { font-size: 11px; color: #8a93a3; margin-top: 6px;
                      overflow: hidden; text-overflow: ellipsis;
                      white-space: nowrap; }
@@ -346,6 +352,9 @@
         origin</button>
       <button id="tf" class="toggle" data-i18n-title="t.tf"
               title="TF view: frame triads at every link + parent lines, meshes dimmed">tf</button>
+      <button id="collview" class="toggle" data-i18n="ui.collview"
+              data-i18n-title="t.collview"
+              title="show/hide the CoACD collision meshes (generate them first with the export panel's ⚙ Generate collision)">▦ coll</button>
       <button id="alignmode" class="toggle" data-i18n-title="t.align"
               title="click a face: root origin moves there, +Z = face normal">⊕ align</button>
       <button id="portmode" class="toggle" data-i18n-title="t.port"
@@ -376,6 +385,28 @@
          border-radius:4px;padding:3px 10px;font-size:12px;
          pointer-events:none;white-space:nowrap;overflow:hidden;
          text-overflow:ellipsis"></div>
+    <!-- CoACD collision-generation progress banner (top centre, below the view
+         buttons): shows it is computing + which link, with a stop button -->
+    <div id="coacdstat" style="position:absolute;left:50%;top:64px;
+         transform:translateX(-50%);z-index:6;min-width:280px;max-width:80%;
+         flex-direction:column;align-items:stretch;gap:5px;
+         background:#10243aee;color:#bfe0ff;border:1px solid #2d6aa3;
+         border-radius:4px;padding:5px 10px;font-size:12px;
+         pointer-events:auto;white-space:nowrap">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="coacd-spin" style="display:inline-block">⚙</span>
+        <span id="coacdstattext"
+              style="flex:1;overflow:hidden;text-overflow:ellipsis">CoACD …</span>
+        <button id="coacdstop" data-i18n="ui.coacdstop"
+                style="padding:1px 8px;font-size:11px;
+                       background:#3a1414;color:#ffb3b3;border:1px solid #a33;
+                       border-radius:3px;cursor:pointer">■ stop</button>
+      </div>
+      <div style="height:5px;background:#0a1622;border-radius:3px;overflow:hidden">
+        <div id="coacdbar" style="height:100%;width:0%;background:#4f9dde;
+             border-radius:3px;transition:width .25s"></div>
+      </div>
+    </div>
     <div id="emptyprompt" style="position:absolute;left:50%;top:50%;
          transform:translate(-50%,-50%);z-index:4;display:none;
          text-align:center;color:#7a828e;pointer-events:none">
@@ -588,6 +619,36 @@ Leave empty to match the package name (e.g. bambulab_description.urdf)."
                style="flex:1;min-width:0;background:#15171a;color:#cfe3ff;
                       border:1px solid #2d4a35;border-radius:3px;padding:2px 5px;
                       font-size:11px" placeholder="robot_description">
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;flex-wrap:wrap">
+        <label style="display:flex;gap:4px;align-items:center;color:#8a93a3;cursor:pointer"
+               data-i18n-title="t.coacd"
+               title="Replace <collision> meshes with CoACD convex parts (what physics
+engines want). Slower: tens of seconds per link, but cached after the first run.
+Applies to the ROS1/ROS2 packages (not glb); needs the 'coacd' package server-side.">
+          <input id="coacd" type="checkbox">
+          <span data-i18n="ui.coacd">CoACD collision</span>
+        </label>
+        <select id="cquality"
+                style="background:#15171a;color:#cfe3ff;border:1px solid #2d4a35;
+                       border-radius:3px;padding:2px 4px;font-size:11px">
+          <option value="balanced" data-i18n="ui.cqbalanced">balanced</option>
+          <option value="fine" data-i18n="ui.cqfine">fine</option>
+        </select>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;flex-wrap:wrap">
+        <button id="coacdgen" data-i18n="ui.coacdgen" data-i18n-title="t.coacdgen"
+                title="Run CoACD now and preview each link's convex collision parts
+in the viewer as they finish. Caches the result, so a later CoACD export is instant.">
+          ⚙ Generate collision</button>
+        <label style="display:flex;gap:4px;align-items:center;color:#8a93a3;cursor:pointer"
+               data-i18n-title="t.coacdshow"
+               title="Overlay the generated convex collision parts (semi-transparent,
+colour-coded) on top of the visual meshes.">
+          <input id="coacdshow" type="checkbox">
+          <span data-i18n="ui.coacdshow">show collision</span>
+        </label>
+        <span id="coacdprog" style="color:#8a93a3;font-size:11px"></span>
       </div>
       <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center">
         <a id="expdae" href="/api/export/zip?meshes=dae&ros=1" download>
@@ -1145,6 +1206,40 @@ skrobot / native-mesh consumers (not RViz-loadable)">⬇ glb</button></a>
     'ui.expros2': { en: '⬇ ROS2 package', ja: '⬇ ROS2 パッケージ' },
     't.expglb': { en: 'uniform .glb meshes (colour kept) for three.js / skrobot / native-mesh consumers (not RViz-loadable)',
                   ja: '均一な .glb メッシュ（色は保持）three.js / skrobot / ネイティブメッシュ向け（RVizでは読込不可）' },
+    'ui.coacd': { en: 'CoACD collision', ja: 'CoACD 衝突形状' },
+    't.coacd': { en: 'Replace <collision> meshes with CoACD convex parts (what physics engines want). Slower: tens of seconds per link, but cached after the first run. Applies to the ROS1/ROS2 packages (not glb); needs the coacd package server-side.',
+                 ja: '<collision> メッシュを CoACD の凸パーツ群に置き換えます（物理エンジン向け）。1リンクあたり数十秒と遅いですが、初回以降はキャッシュされます。ROS1/ROS2 パッケージのみ（glb は対象外）。サーバー側に coacd パッケージが必要です。' },
+    'ui.cqbalanced': { en: 'balanced', ja: 'バランス' },
+    'ui.cqfine': { en: 'fine', ja: '高精細' },
+    'ui.coacdgen': { en: '⚙ Generate collision', ja: '⚙ 衝突形状を生成' },
+    't.coacdgen': { en: "Run CoACD now and preview each link's convex collision parts in the viewer as they finish. Caches the result, so a later CoACD export is instant.",
+                    ja: 'いま CoACD を実行し、各リンクの凸collisionパーツを完成した順にビューアでプレビューします。結果はキャッシュされ、後の CoACD エクスポートは瞬時です。' },
+    'ui.coacdshow': { en: 'show collision', ja: '衝突形状を表示' },
+    'ui.collview': { en: '▦ coll', ja: '▦ 衝突' },
+    't.collview': { en: 'show/hide the CoACD collision meshes (generate them first with the export panel’s ⚙ Generate collision)',
+                    ja: 'CoACD 衝突メッシュの表示/非表示（先にエクスポート欄の ⚙ 衝突形状を生成 で作成）' },
+    't.coacdshow': { en: 'Overlay the generated convex collision parts (semi-transparent, colour-coded) on top of the visual meshes.',
+                     ja: '生成した凸collisionパーツ（半透明・色分け）を visual メッシュの上に重ねて表示します。' },
+    'coacd.start': { en: 'starting …', ja: '開始中 …' },
+    'coacd.started': { en: a => `CoACD collision generation started (${a.q})`,
+                       ja: a => `CoACD 衝突形状の生成を開始しました（${a.q}）` },
+    'coacd.prog': { en: a => `CoACD: ${a.done}/${a.total} links${a.link ? ' · ' + a.link : ''} …`,
+                    ja: a => `CoACD: ${a.done}/${a.total} リンク${a.link ? ' · ' + a.link : ''} …` },
+    'coacd.working': { en: a => `CoACD ${a.done}/${a.total} · decomposing ${a.link} … (tens of seconds)`,
+                       ja: a => `CoACD ${a.done}/${a.total} · ${a.link} を分解中 …（数十秒）` },
+    'coacd.link': { en: a => `CoACD ${a.done}/${a.total} · ${a.link} ✓`,
+                    ja: a => `CoACD ${a.done}/${a.total} · ${a.link} ✓` },
+    'coacd.done': { en: a => `✓ collision ready (${a.n} links)`,
+                    ja: a => `✓ 衝突形状ができました（${a.n} リンク）` },
+    'coacd.applied': { en: '↪ using CoACD parts for live collision + URDF/ROS export',
+                       ja: '↪ ライブ衝突判定とURDF/ROSエクスポートにCoACDパーツを使用します' },
+    'ui.coacdstop': { en: '■ stop', ja: '■ 停止' },
+    'coacd.stopping': { en: 'stopping after the current link …',
+                        ja: '現在のリンクを終えたら停止します …' },
+    'coacd.cancelled': { en: a => `■ collision generation stopped (${a.n} links done)`,
+                         ja: a => `■ 衝突形状の生成を停止しました（${a.n} リンク完了）` },
+    'coacd.fail': { en: a => `collision generation failed: ${a.e}`,
+                    ja: a => `衝突形状の生成に失敗しました: ${a.e}` },
     'ui.hint': { en: 'left-drag: orbit · right-drag: pan · wheel: zoom · click to select a link · move joints with the panel sliders (🖐 pose ON lets you drag a link to move its joint)',
                  ja: 'left-drag: 視点回転 · right-drag: pan · wheel: zoom · クリックでリンク選択 · 関節はパネルのスライダーで操作（🖐 pose ON でリンクをドラッグして関節を動かせます）' },
   };
@@ -2809,6 +2904,8 @@ function applyCollision(links, pairs) {
     if (!collisionLinks.has(n)) { _tintLink(n, 'col'); }
   }
   collisionLinks = links;
+  coacdRevealColliding(links);   // show colliding links' collision mesh even
+                                 // when the CoACD overlay is globally hidden
   if (pairs.length) {
     // "this angle collides": name the joint being moved + its angle
     const j = lastActiveJoint && viewer.robot?.joints?.[lastActiveJoint];
@@ -3822,14 +3919,218 @@ expurdf?.addEventListener('input', () => {
 // few seconds, during which a plain <a download> gives NO feedback.  Drive it
 // over fetch instead: show an "exporting ..." loadbar, then hand the finished
 // blob to a throwaway download link.
+// CoACD convex-decomposition of <collision> meshes: opt-in, ROS packages only
+// (the glb export keeps its uniform-mesh layout).
+const coacdBox = document.getElementById('coacd');
+const cqualitySel = document.getElementById('cquality');
+
+// ---- CoACD collision preview: generate per-link convex parts in the
+// background, popping each link's mesh into the viewer as it lands, and a toggle
+// to overlay them (semi-transparent) on the visual meshes.
+const coacdGenBtn = document.getElementById('coacdgen');
+const coacdShow = document.getElementById('coacdshow');
+const coacdProg = document.getElementById('coacdprog');
+const coacdStat = document.getElementById('coacdstat');       // top banner
+const coacdStatText = document.getElementById('coacdstattext');
+const coacdStopBtn = document.getElementById('coacdstop');
+const coacdBar = document.getElementById('coacdbar');         // determinate fill
+
+// blink the links currently being decomposed (several run in parallel), so it
+// is obvious which parts are still computing -- toggle their hover tint on one
+// shared timer
+let coacdBlinkSet = new Set(), coacdBlinkTimer = null, coacdBlinkOn = false;
+function coacdSetBlink(links) {
+  const next = new Set(links || []);
+  for (const l of coacdBlinkSet) {            // restore links no longer running
+    if (!next.has(l)) { try { highlightLink(l, false); } catch (_e) { /* gone */ } }
+  }
+  coacdBlinkSet = next;
+  if (next.size === 0) {
+    if (coacdBlinkTimer) { clearInterval(coacdBlinkTimer); coacdBlinkTimer = null; }
+    coacdBlinkOn = false;
+    return;
+  }
+  if (!coacdBlinkTimer) {
+    coacdBlinkTimer = setInterval(() => {
+      coacdBlinkOn = !coacdBlinkOn;
+      for (const l of coacdBlinkSet) {
+        if (viewer.robot?.links?.[l]) {
+          try { highlightLink(l, coacdBlinkOn); } catch (_e) { /* gone */ }
+        }
+      }
+    }, 500);
+  }
+}
+const coacdGroups = {};        // link name -> THREE.Object3D attached to the link
+let coacdPoll = null;
+let coacdFinalized = false;    // ran the post-generation hookup (export + collision)
+let coacdLastCurrent = null;   // last link the server reported as in-progress
+const coacdLogged = new Set(); // links already logged as ready (avoid repeats)
+
+function coacdClearOverlay() {
+  for (const [link, grp] of Object.entries(coacdGroups)) {
+    grp.parent?.remove(grp);
+    grp.traverse(o => { o.geometry?.dispose?.(); o.material?.dispose?.(); });
+    delete coacdGroups[link];
+  }
+}
+function coacdSetShown(on) {
+  for (const grp of Object.values(coacdGroups)) { grp.visible = on; }
+}
+// When the overlay is globally HIDDEN, still reveal the collision mesh of any
+// link that is currently self-colliding -- so even with "coll" off you can see
+// WHICH part hit and where.  When the overlay is shown globally, the toggle
+// owns visibility and this is a no-op.
+function coacdRevealColliding(links) {
+  if (!collViewBtn || collViewBtn.classList.contains('active')) { return; }
+  for (const [link, grp] of Object.entries(coacdGroups)) {
+    grp.visible = !!(links && links.has && links.has(link));
+  }
+}
+function coacdLoadLink(link, url) {
+  if (coacdGroups[link]) { return; }          // already loaded this link
+  const target = viewer.robot?.links?.[link];
+  if (!target || !GLTFLoader) { return; }
+  new GLTFLoader().load(url, g => {
+    const grp = g.scene;
+    grp.traverse(o => {
+      if (!o.isMesh) { return; }
+      o.renderOrder = 2000;                     // draw over the visual mesh
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      for (const m of mats) {
+        if (!m) { continue; }
+        m.transparent = true; m.opacity = 0.5;
+        m.depthWrite = false; m.vertexColors = true;
+      }
+    });
+    grp.visible = !!coacdShow?.checked;
+    coacdGroups[link] = grp;
+    target.add(grp);
+  }, null, () => { /* a link mesh failing to load is non-fatal */ });
+}
+async function coacdTick() {
+  let s;
+  try { s = await (await fetch('/api/collision/coacd/status')).json(); }
+  catch (_e) { return; }
+  // pop each newly-finished link into the viewer + log it once
+  for (const [link, url] of Object.entries(s.parts || {})) {
+    coacdLoadLink(link, url);
+    if (!coacdLogged.has(link)) {
+      coacdLogged.add(link);
+      log(t('coacd.link', { done: coacdLogged.size, total: s.total || 0, link }),
+          'ok');
+    }
+  }
+  const total = s.total || 0, done = s.done || 0;
+  // also surface the link currently being decomposed (the slow step), so a
+  // multi-minute link does not look frozen
+  if (s.running && s.current && s.current !== coacdLastCurrent
+      && !coacdLogged.has(s.current)) {
+    coacdLastCurrent = s.current;
+    log(t('coacd.working', { done, total, link: s.current }));
+  }
+  // links the SERVER produced parts for (authoritative: the overlay GLBs load
+  // asynchronously, so coacdGroups may still be empty right when the job ends)
+  const produced = Object.keys(s.parts || {}).length;
+  if (coacdBar) {                              // determinate progress fill
+    coacdBar.style.width = total ? Math.round(done / total * 100) + '%' : '0%';
+  }
+  // blink ALL links currently being decomposed (they run in parallel)
+  const inflight = s.running ? (s.inflight || []) : [];
+  coacdSetBlink(inflight);
+  if (s.error) {
+    coacdProg.textContent = '';
+    log(t('coacd.fail', { e: s.error }), 'err');
+  } else if (s.running) {
+    const label = inflight.length
+      ? inflight.slice(0, 2).join(', ')
+        + (inflight.length > 2 ? ` +${inflight.length - 2}` : '')
+      : (s.current || '');
+    const msg = t('coacd.prog', { done, total, link: label });
+    coacdProg.textContent = msg;
+    if (coacdStatText) { coacdStatText.textContent = msg; }   // top banner
+    coacdStat?.classList.add('on');
+  } else if (s.cancelled) {
+    coacdProg.textContent = t('coacd.cancelled', { n: produced });
+    log(t('coacd.cancelled', { n: produced }), 'warn');
+  } else {
+    coacdProg.textContent = t('coacd.done', { n: produced });
+    log(t('coacd.done', { n: produced }), 'ok');
+  }
+  if (!s.running) {
+    coacdStat?.classList.remove('on');
+    clearInterval(coacdPoll); coacdPoll = null;
+    if (coacdGenBtn) { coacdGenBtn.disabled = false; }
+    if (coacdStopBtn) { coacdStopBtn.disabled = false; }
+    if (produced > 0 && !coacdFinalized) {
+      coacdFinalized = true;
+      // 1) the URDF/ROS export should now ship these convex parts as <collision>
+      if (coacdBox && !coacdBox.checked) { coacdBox.checked = true; }
+      // 2) rebuild the live self-collision model so the red highlight uses the
+      //    CoACD parts (the server dropped the old one when the job finished)
+      initCollision();
+      log(t('coacd.applied'), 'ok');
+    }
+  }
+}
+coacdStopBtn?.addEventListener('click', async () => {
+  coacdStopBtn.disabled = true;
+  if (coacdStatText) { coacdStatText.textContent = t('coacd.stopping'); }
+  log(t('coacd.stopping'));
+  try { await fetch('/api/collision/coacd/cancel'); } catch (_e) { /* ignore */ }
+});
+coacdGenBtn?.addEventListener('click', async () => {
+  if (coacdPoll) { return; }
+  coacdClearOverlay();
+  coacdLogged.clear(); coacdLastCurrent = null;
+  coacdFinalized = false;
+  setCollisionShown(true);                       // watch it build by default
+  coacdGenBtn.disabled = true;
+  if (coacdStopBtn) { coacdStopBtn.disabled = false; }
+  coacdProg.textContent = t('coacd.start');
+  if (coacdStatText) { coacdStatText.textContent = t('coacd.start'); }
+  if (coacdBar) { coacdBar.style.width = '0%'; }
+  coacdStat?.classList.add('on');                // show "computing" banner now
+  const q = cqualitySel?.value || 'balanced';
+  try {
+    const r = await (await fetch(
+      `/api/collision/coacd/init?quality=${encodeURIComponent(q)}`)).json();
+    if (r.error) { throw new Error(r.error); }
+    log(t('coacd.started', { q }));
+    coacdPoll = setInterval(coacdTick, 1000);
+    coacdTick();
+  } catch (e) {
+    coacdGenBtn.disabled = false;
+    coacdProg.textContent = '';
+    coacdStat?.classList.remove('on');
+    log(t('coacd.fail', { e: e.message ?? e }), 'err');
+  }
+});
+// one source of truth for "is the collision overlay shown", driven by EITHER
+// the top-toolbar toggle or the export-panel checkbox (kept in sync)
+const collViewBtn = document.getElementById('collview');
+function setCollisionShown(on) {
+  if (coacdShow) { coacdShow.checked = on; }
+  collViewBtn?.classList.toggle('active', on);
+  coacdSetShown(on);
+  // hiding the overlay shouldn't hide a CURRENT collision -- keep colliding
+  // links' meshes visible
+  if (!on) { coacdRevealColliding(collisionLinks); }
+}
+coacdShow?.addEventListener('change', () => setCollisionShown(coacdShow.checked));
+collViewBtn?.addEventListener('click',
+  () => setCollisionShown(!collViewBtn.classList.contains('active')));
 expLinks.forEach(a => a.addEventListener('click', async ev => {
   ev.preventDefault();
   const base = a.getAttribute('href').split('&name=')[0].split('&urdf=')[0];
   const name = (exppkg?.value || '').trim();
   const urdf = (expurdf?.value || '').trim();
+  // coacd applies to the ROS (.dae) packages, not the uniform glb export
+  const coacd = a.id !== 'expglb' && !!coacdBox?.checked;
   const url = base
     + (name ? `&name=${encodeURIComponent(name)}` : '')
-    + (urdf ? `&urdf=${encodeURIComponent(urdf)}` : '');
+    + (urdf ? `&urdf=${encodeURIComponent(urdf)}` : '')
+    + (coacd ? `&collision=coacd&cquality=${cqualitySel?.value || 'balanced'}` : '');
   const what = a.id === 'expglb' ? 'glb'
     : a.id === 'expros2' ? 'ROS 2' : 'ROS 1';
   showLoadbar(t('export.bar', { what }), { indet: true });

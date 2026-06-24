@@ -39,8 +39,14 @@ jobs:
           version: "0.15.17"   # pinned; bump deliberately
 
   test:
-    name: pytest
-    runs-on: ubuntu-latest
+    name: pytest (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # report each OS independently -- a macOS wheel gap shouldn't hide a
+      # genuine Linux pass (and vice versa)
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -52,9 +58,12 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          # ui -> skrobot (loads the exported URDF + resolves package:// meshes),
-          # test -> catkin_pkg (validates the exported package.xml)
-          pip install ".[ui,test]" pytest
+          # ui    -> skrobot (loads the exported URDF + resolves package:// meshes)
+          # test  -> catkin_pkg (validates the exported package.xml)
+          # coacd -> exercise the REAL convex-decomposition wheel (the smoke test
+          #          in test_coacd_smoke.py), so a missing/broken coacd wheel on
+          #          Linux or macOS fails CI instead of surfacing at runtime
+          pip install ".[ui,test,coacd]" pytest
 
       - name: Run tests
         run: pytest -q
