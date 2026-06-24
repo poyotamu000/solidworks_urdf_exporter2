@@ -510,7 +510,8 @@ def _read_root_pose(txt):
 
 
 def _export_zip(pkg_dir, robot_name, mesh_fmt="dae", ros_version=1,
-                pkg_name=None, urdf_name=None, colors=None):
+                pkg_name=None, urdf_name=None, colors=None,
+                collision="copy", collision_quality="balanced"):
     """ZIP a portable ROS package (package:// URLs), named ``pkg_name`` if given
     else ``<robot_name>_description``; the URDF inside is named ``urdf_name`` if
     given, else the package name.
@@ -542,7 +543,10 @@ def _export_zip(pkg_dir, robot_name, mesh_fmt="dae", ros_version=1,
                                                ros_version=ros_version,
                                                pkg_name=pkg,
                                                urdf_name=urdf_name,
-                                               colors=colors, **kwargs):
+                                               colors=colors,
+                                               collision=collision,
+                                               collision_quality=collision_quality,
+                                               **kwargs):
             z.writestr(arc, data)
     return pkg, buf.getvalue()
 
@@ -1330,7 +1334,7 @@ _coll_lock = threading.Lock()
 _coll = {"key": None, "ctx": None, "building": False, "error": None}
 
 
-def _build_collision(urdf_path, key):
+def _build_collision(urdf_path, key, pkg_dir=None):
     try:
         import numpy as np
         from skrobot.models.urdf import RobotModelFromURDF
@@ -1338,10 +1342,19 @@ def _build_collision(urdf_path, key):
         from . import autoinit
         robot = RobotModelFromURDF(urdf_file=urdf_path)
         meshes = autoinit.link_meshes(robot)
-        # confirm=True: hull broadphase + exact-mesh verification, so the live
-        # red highlight matches the exact-mesh joint-limit sweep (fat hulls
-        # would otherwise light up red before the joint reaches its limit).
-        sc = autoinit.SelfCollision(robot, meshes, confirm=True)
+        # prefer the CoACD convex parts (generated via the export panel) when
+        # present: accurate AND convex-fast, so no exact-mesh confirm is needed.
+        # Otherwise fall back to hull broadphase + exact-mesh verification, which
+        # matches the exact-mesh limit sweep (fat hulls alone light up red before
+        # the joint reaches its limit).
+        parts = {}
+        if pkg_dir:
+            preview = os.path.join(pkg_dir, "meshes", ".coacd_cache", "preview")
+            parts = autoinit.load_coacd_parts(preview, list(meshes))
+        if parts:
+            sc = autoinit.SelfCollision(robot, meshes, parts=parts)
+        else:
+            sc = autoinit.SelfCollision(robot, meshes, confirm=True)
         joints = {}
         for j in robot.joint_list:
             if type(j).__name__ in ("RotationalJoint", "LinearJoint"):
@@ -1354,13 +1367,79 @@ def _build_collision(urdf_path, key):
             if _coll["key"] == key:      # not re-targeted meanwhile
                 _coll.update(ctx={"sc": sc, "joints": joints},
                              building=False, error=None)
-        print(f"[sw2robot.web] collision model ready: {len(meshes)} hulls, "
+        print(f"[sw2robot.web] collision model ready: "
+              f"{len(parts)} CoACD-part links + "
+              f"{len(meshes) - len(parts)} hulls, "
               f"{len(sc.baseline)} baseline pairs")
     except Exception as e:
         with _coll_lock:
             if _coll["key"] == key:
                 _coll.update(ctx=None, building=False, error=repr(e))
         print(f"[sw2robot.web] collision model FAILED: {e!r}")
+
+
+# ---- CoACD collision-mesh generation (background, observable) ---------------
+# CoACD decomposition is slow (tens of seconds per link), so run it as a
+# background job that produces a colour-coded preview GLB per link as it goes;
+# the client polls progress and pops each link's collision mesh into the viewer
+# as it lands.  Parts are cached on disk, so a later collision='coacd' export is
+# instant.  One job at a time.
+_coacd_job = {"running": False, "done": 0, "total": 0, "current": None,
+              "inflight": [], "parts": {}, "error": None, "quality": None,
+              "cancel": False, "cancelled": False}
+_coacd_lock = threading.Lock()
+
+
+def _reset_coacd_job():
+    with _coacd_lock:
+        _coacd_job.update(running=False, done=0, total=0, current=None,
+                          inflight=[], parts={}, error=None, quality=None,
+                          cancel=False, cancelled=False)
+
+
+def _run_coacd_job(pkg_dir, robot_name, urdf_rel, quality):
+    from sw2robot.exporter.ros_export import coacd_preview_glbs
+
+    def _on_start(link):                  # a link's decomposition began
+        with _coacd_lock:
+            if link not in _coacd_job["inflight"]:
+                _coacd_job["inflight"].append(link)
+            _coacd_job["current"] = link
+
+    def _progress(done, total, link, rel):    # a link finished
+        with _coacd_lock:
+            _coacd_job["done"] = done
+            _coacd_job["total"] = total
+            if link in _coacd_job["inflight"]:
+                _coacd_job["inflight"].remove(link)
+            if rel:
+                _coacd_job["parts"][link] = "/pkg/" + rel
+
+    def _should_cancel():
+        with _coacd_lock:
+            return _coacd_job["cancel"]
+    try:
+        # materialise URDF-mode edits to disk for the job (no-op in CAD mode),
+        # restoring the pristine base when it ends
+        with _um_materialized(pkg_dir, urdf_rel):
+            coacd_preview_glbs(pkg_dir, robot_name, quality=quality,
+                               progress=_progress, on_start=_on_start,
+                               should_cancel=_should_cancel)
+        with _coacd_lock:
+            stopped = _coacd_job["cancel"]
+            _coacd_job.update(running=False, current=None, inflight=[],
+                              cancelled=stopped)
+        # the live self-collision model can now use these convex parts -- drop
+        # the current one so the next /api/collision/init rebuilds with them
+        with _coll_lock:
+            _coll.update(key=None, ctx=None)
+        print(f"[sw2robot.web] coacd preview "
+              f"{'cancelled' if stopped else 'ready'}: "
+              f"{len(_coacd_job['parts'])} links")
+    except Exception as e:
+        with _coacd_lock:
+            _coacd_job.update(running=False, error=repr(e))
+        print(f"[sw2robot.web] coacd preview FAILED: {e!r}")
 
 
 # ---- auto joint limits: self-collision sweep over the live collision model.
@@ -1731,7 +1810,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         _coll.update(key=key, ctx=None, building=True,
                                      error=None)
                         threading.Thread(target=_build_collision,
-                                         args=(urdf_path, key),
+                                         args=(urdf_path, key, cls.pkg_dir),
                                          daemon=True).start()
                     ready = _coll["ctx"] is not None
                     return self._send_json({
@@ -1830,6 +1909,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # load the new one (plain URDF -> in-memory overlay; a CAD package
                 # uses the joints.yaml + build() path, no overlay)
                 _um_close()
+                _reset_coacd_job()        # drop the previous package's preview
                 if not _cad_mode(pkg):
                     _um_load(pkg, rel)
                 print(f"[sw2robot.web] open: {cls.robot_name} ({pkg})"
@@ -1849,6 +1929,15 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json(
                         {"error": f"unsupported ros version: {ros}"}, 400)
                 ros_version = int(ros)
+                collision = (query.get("collision") or ["copy"])[0]
+                if collision not in ("copy", "coacd"):
+                    return self._send_json(
+                        {"error": f"unsupported collision mode: {collision}"}, 400)
+                cquality = (query.get("cquality") or ["balanced"])[0]
+                if cquality not in ("balanced", "fine"):
+                    return self._send_json(
+                        {"error": f"unsupported collision quality: {cquality}"},
+                        400)
                 pkg_name = (query.get("name") or [""])[0].strip() or None
                 urdf_name = (query.get("urdf") or [""])[0].strip() or None
                 # the ROS exporter hardcodes the urdf/<robot_name>.urdf + meshes/
@@ -1873,7 +1962,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                                 ros_version=ros_version,
                                                 pkg_name=pkg_name,
                                                 urdf_name=urdf_name,
-                                                colors=colors)
+                                                colors=colors,
+                                                collision=collision,
+                                                collision_quality=cquality)
                 except ValueError as e:
                     return self._send_json({"error": str(e)}, 400)
                 fname = (f"{cls.robot_name}_glb.zip" if fmt == "glb"
@@ -1886,6 +1977,45 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return None
+            if path == "/api/collision/coacd/init":
+                cls = type(self)
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                quality = (query.get("quality") or ["balanced"])[0]
+                if quality not in ("balanced", "fine"):
+                    return self._send_json(
+                        {"error": f"unsupported collision quality: {quality}"},
+                        400)
+                # same standard-layout requirement as the ZIP export: the
+                # generator reads urdf/<name>.urdf + meshes/
+                if not _cad_mode(cls.pkg_dir) \
+                        and os.path.normpath(os.path.join(cls.pkg_dir, cls.urdf_rel)) \
+                        != os.path.normpath(os.path.join(
+                            cls.pkg_dir, "urdf", cls.robot_name + ".urdf")):
+                    return self._send_json(
+                        {"error": "collision generation needs the standard "
+                         "<pkg>/urdf/<name>.urdf + <pkg>/meshes/ layout"}, 400)
+                with _coacd_lock:
+                    if _coacd_job["running"]:
+                        return self._send_json({"error": "already running"}, 409)
+                _reset_coacd_job()
+                with _coacd_lock:
+                    _coacd_job.update(running=True, quality=quality)
+                threading.Thread(
+                    target=_run_coacd_job,
+                    args=(cls.pkg_dir, cls.robot_name, cls.urdf_rel, quality),
+                    daemon=True).start()
+                return self._send_json({"running": True, "quality": quality})
+            if path == "/api/collision/coacd/cancel":
+                # request stop; the job ends at the next link boundary (CoACD
+                # itself is not interruptible mid-link)
+                with _coacd_lock:
+                    if _coacd_job["running"]:
+                        _coacd_job["cancel"] = True
+                return self._send_json({"cancelling": True})
+            if path == "/api/collision/coacd/status":
+                with _coacd_lock:
+                    return self._send_json(dict(_coacd_job))
             if path.startswith("/pkg/"):
                 if not cls.pkg_dir:
                     return self.send_error(404, "no package open")

@@ -850,3 +850,105 @@ def test_export_materializes_overlay_then_restores(server):
     with webserver._um_materialized(state.package_dir, rel):
         assert "<material" in disk.read_text(encoding="utf-8")  # edits visible
     assert "<material" not in disk.read_text(encoding="utf-8")  # restored
+
+
+def test_coacd_preview_endpoints(server, monkeypatch):
+    """The observable CoACD job: /init starts it, /status streams per-link
+    progress + served preview-GLB URLs, and the GLBs are fetchable.  CoACD itself
+    is stubbed so the test is fast and needs no compiled wheel."""
+    import os
+    import time
+
+    from sw2robot.exporter import ros_export
+
+    links = [TIP_LINK, FIXED_JOINT.split("__")[1] if "__" in FIXED_JOINT
+             else SCREW_LINK]
+
+    def fake_preview(pkg_dir, robot_name, quality="balanced", progress=None,
+                     urdf_path=None, should_cancel=None, on_start=None,
+                     max_workers=None):
+        pdir = os.path.join(pkg_dir, "meshes", ".coacd_cache", "preview")
+        os.makedirs(pdir, exist_ok=True)
+        out = {}
+        for i, link in enumerate(links, 1):
+            with open(os.path.join(pdir, link + ".glb"), "wb") as f:
+                f.write(b"glTF-fake-" + link.encode())
+            rel = f"meshes/.coacd_cache/preview/{link}.glb"
+            out[link] = rel
+            if progress:
+                progress(i, len(links), link, rel)
+        return out
+
+    monkeypatch.setattr(ros_export, "coacd_preview_glbs", fake_preview)
+
+    # bad quality -> 400, no job started
+    code, _ = _get_status(server, "/api/collision/coacd/init?quality=ultra")
+    assert code == 400
+
+    r = _get_json(server, "/api/collision/coacd/init?quality=balanced")
+    assert r.get("running") is True and r.get("quality") == "balanced"
+
+    deadline, s = time.time() + 10, {}
+    while time.time() < deadline:
+        s = _get_json(server, "/api/collision/coacd/status")
+        if not s.get("running"):
+            break
+        time.sleep(0.05)
+    assert s.get("running") is False and s.get("error") is None
+    assert set(s.get("parts", {})) == set(links)
+    assert s.get("done") == s.get("total") == len(links)
+
+    # every reported part URL is under /pkg/ and serves the preview GLB bytes
+    url = s["parts"][links[0]]
+    assert url.startswith("/pkg/meshes/.coacd_cache/preview/")
+    code, body = _get_status(server, url)
+    assert code == 200 and body.startswith(b"glTF-fake-")
+
+
+def test_coacd_cancel_stops_at_link_boundary(server, monkeypatch):
+    """/cancel stops the job at the next link boundary, leaving it not-running,
+    flagged cancelled, with fewer than all links done."""
+    import os
+    import time
+
+    from sw2robot.exporter import ros_export
+
+    total = 8
+
+    def slow_preview(pkg_dir, robot_name, quality="balanced", progress=None,
+                     urdf_path=None, should_cancel=None, on_start=None,
+                     max_workers=None):
+        pdir = os.path.join(pkg_dir, "meshes", ".coacd_cache", "preview")
+        os.makedirs(pdir, exist_ok=True)
+        out = {}
+        for i in range(total):
+            if should_cancel and should_cancel():
+                break
+            link = f"l{i}"
+            if progress:
+                progress(i, total, link, None)
+            time.sleep(0.15)               # simulate the slow per-link CoACD
+            with open(os.path.join(pdir, link + ".glb"), "wb") as f:
+                f.write(b"x")
+            rel = f"meshes/.coacd_cache/preview/{link}.glb"
+            out[link] = rel
+            if progress:
+                progress(i + 1, total, link, rel)
+        return out
+
+    monkeypatch.setattr(ros_export, "coacd_preview_glbs", slow_preview)
+
+    assert _get_json(
+        server, "/api/collision/coacd/init?quality=balanced")["running"] is True
+    time.sleep(0.4)                          # let a couple links finish
+    assert _get_json(server, "/api/collision/coacd/cancel")["cancelling"] is True
+
+    deadline, s = time.time() + 10, {}
+    while time.time() < deadline:
+        s = _get_json(server, "/api/collision/coacd/status")
+        if not s.get("running"):
+            break
+        time.sleep(0.05)
+    assert s.get("running") is False
+    assert s.get("cancelled") is True
+    assert 0 < s.get("done") < total         # stopped early, after some progress

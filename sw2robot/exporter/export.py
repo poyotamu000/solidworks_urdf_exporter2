@@ -159,7 +159,7 @@ def extract(assembly_path, out_dir=None, robot_name=None, visible=False,
 # ---------------------------------------------------------------- build
 def build(pkg_dir, config_path=None, base_hint=None, exclude=None,
           ros_pkg=False, density=None, ros_version=1, ros_pkg_name=None,
-          ros_urdf_name=None):
+          ros_urdf_name=None, collision="copy", collision_quality="balanced"):
     _tolerant_console()
     graph = GraphState.load(os.path.join(pkg_dir, GRAPH_FILE))
     robot_name = graph.robot_name
@@ -200,7 +200,8 @@ def build(pkg_dir, config_path=None, base_hint=None, exclude=None,
         desc_dir = write_ros_description_package(
             pkg_dir, robot_name, os.path.dirname(os.path.abspath(pkg_dir)),
             ros_version=ros_version, pkg_name=ros_pkg_name,
-            urdf_name=ros_urdf_name, colors=colors)
+            urdf_name=ros_urdf_name, colors=colors,
+            collision=collision, collision_quality=collision_quality)
 
     print(f"\nDONE. Package: {pkg_dir}")
     print(f"  URDF:   {urdf_path}")
@@ -216,11 +217,13 @@ def build(pkg_dir, config_path=None, base_hint=None, exclude=None,
 # ---------------------------------------------------------------- export
 def export(assembly_path, out_dir=None, robot_name=None, visible=False,
            config_path=None, base_hint=None, exclude=None, ros_pkg=False,
-           ros_version=1, ros_pkg_name=None, ros_urdf_name=None):
+           ros_version=1, ros_pkg_name=None, ros_urdf_name=None,
+           collision="copy", collision_quality="balanced"):
     pkg_dir = extract(assembly_path, out_dir, robot_name, visible)
     return build(pkg_dir, config_path=config_path, base_hint=base_hint,
                  exclude=exclude, ros_pkg=ros_pkg, ros_version=ros_version,
-                 ros_pkg_name=ros_pkg_name, ros_urdf_name=ros_urdf_name)
+                 ros_pkg_name=ros_pkg_name, ros_urdf_name=ros_urdf_name,
+                 collision=collision, collision_quality=collision_quality)
 
 
 def _exclude_list(s):
@@ -251,13 +254,24 @@ def main():
     ap.add_argument("--ros-urdf-name", default=None,
                     help="stem for the URDF file inside the --ros-pkg package "
                          "(default: the package name)")
+    ap.add_argument("--collision", choices=("copy", "coacd"), default="copy",
+                    help="--ros-pkg <collision> geometry: 'copy' (default) "
+                         "reuses the visual mesh as one STL; 'coacd' runs "
+                         "approximate convex decomposition into convex part "
+                         "STLs (needs: pip install coacd)")
+    ap.add_argument("--collision-quality", choices=("balanced", "fine"),
+                    default="balanced",
+                    help="CoACD preset for --collision coacd: 'balanced' "
+                         "(default, ~5-6 parts/link, ~8-60s) or 'fine' "
+                         "(~8 parts, tighter fit, ~2-3x slower)")
     args = ap.parse_args()
     export(args.assembly, args.out, args.name, args.visible,
            config_path=args.config, base_hint=args.base,
            exclude=_exclude_list(args.exclude),
            ros_pkg=args.ros_pkg or args.ros2,
            ros_version=2 if args.ros2 else 1,
-           ros_pkg_name=args.ros_pkg_name, ros_urdf_name=args.ros_urdf_name)
+           ros_pkg_name=args.ros_pkg_name, ros_urdf_name=args.ros_urdf_name,
+           collision=args.collision, collision_quality=args.collision_quality)
 
 
 if __name__ == "__main__":

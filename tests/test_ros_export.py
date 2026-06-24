@@ -218,6 +218,164 @@ def test_colour_override_repaints_visual_mesh(tmp_path):
     assert (0.07, 0.53, 1.0) not in plain_triples
 
 
+def _two_unit_boxes():
+    """Two trivial convex parts (unit cubes), as CoACD returns ``(verts, faces)``
+    pairs -- a stand-in for a real decomposition so tests stay fast + CoACD-free."""
+    import trimesh
+
+    a = trimesh.creation.box(extents=(1, 1, 1))
+    b = trimesh.creation.box(extents=(1, 1, 1))
+    b.apply_translation((2, 0, 0))
+    return [(a.vertices, a.faces), (b.vertices, b.faces)]
+
+
+def test_coacd_collision_expands_into_convex_parts(tmp_path, monkeypatch):
+    """collision='coacd' replaces the single <collision> mesh with one block per
+    convex part, each pointing at its own part STL; <visual> is untouched."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter import ros_export
+
+    # stub CoACD itself so the test is fast and needs no compiled wheel
+    monkeypatch.setattr(ros_export, "coacd_available", lambda: True)
+    monkeypatch.setattr(ros_export, "_run_coacd",
+                        lambda v, f, params: _two_unit_boxes())
+
+    pkg_dir = _make_pkg(tmp_path, robot="c")
+    files = dict(ros_export.build_ros_description(pkg_dir, "c",
+                                                  collision="coacd"))
+
+    # two convex collision parts emitted, visual still a single .dae
+    assert "c_description/meshes/part_collision_0.stl" in files
+    assert "c_description/meshes/part_collision_1.stl" in files
+    assert "c_description/meshes/part.dae" in files
+    assert "c_description/meshes/part.stl" not in files   # no copied collision
+
+    link = ET.fromstring(
+        files["c_description/urdf/c_description.urdf"].decode()).find("link")
+    cols = link.findall("collision")
+    assert len(cols) == 2                                  # expanded 1 -> 2
+    refs = {c.find(".//mesh").get("filename") for c in cols}
+    assert refs == {"package://c_description/meshes/part_collision_0.stl",
+                    "package://c_description/meshes/part_collision_1.stl"}
+    # visual is left as the one .dae mesh
+    assert (link.find("visual").find(".//mesh").get("filename")
+            == "package://c_description/meshes/part.dae")
+
+
+def test_coacd_decomposition_is_cached(tmp_path, monkeypatch):
+    """The slow CoACD run is cached on disk: a second export of the same mesh
+    reuses ``meshes/.coacd_cache`` instead of re-running the decomposition."""
+    from sw2robot.exporter import ros_export
+
+    calls = {"n": 0}
+
+    def _counting_coacd(v, f, params):
+        calls["n"] += 1
+        return _two_unit_boxes()
+
+    monkeypatch.setattr(ros_export, "coacd_available", lambda: True)
+    monkeypatch.setattr(ros_export, "_run_coacd", _counting_coacd)
+
+    pkg_dir = _make_pkg(tmp_path, robot="c")
+    ros_export.build_ros_description(pkg_dir, "c", collision="coacd")
+    ros_export.build_ros_description(pkg_dir, "c", collision="coacd")
+    assert calls["n"] == 1                                 # second run hit cache
+    assert os.path.isdir(os.path.join(pkg_dir, "meshes", ".coacd_cache"))
+
+
+def test_coacd_missing_package_errors(tmp_path, monkeypatch):
+    """Requesting collision='coacd' without the optional package fails with a
+    clear, install-pointing error rather than a confusing import traceback."""
+    import pytest
+
+    from sw2robot.exporter import ros_export
+
+    monkeypatch.setattr(ros_export, "coacd_available", lambda: False)
+    pkg_dir = _make_pkg(tmp_path, robot="c")
+    with pytest.raises(ValueError, match="pip install coacd"):
+        ros_export.build_ros_description(pkg_dir, "c", collision="coacd")
+
+
+def test_coacd_invalid_quality_rejected(tmp_path, monkeypatch):
+    import pytest
+
+    from sw2robot.exporter import ros_export
+
+    monkeypatch.setattr(ros_export, "coacd_available", lambda: True)
+    pkg_dir = _make_pkg(tmp_path, robot="c")
+    with pytest.raises(ValueError, match="collision_quality"):
+        ros_export.build_ros_description(pkg_dir, "c", collision="coacd",
+                                         collision_quality="ultra")
+
+
+def test_preview_warms_export_cache(tmp_path, monkeypatch):
+    """Generating the preview and then exporting with collision='coacd' share the
+    on-disk part cache: CoACD runs ONCE per source mesh, and the ROS export ships
+    those same convex parts as <collision>."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter import ros_export
+
+    calls = {"n": 0}
+
+    def _counting(v, f, params):
+        calls["n"] += 1
+        return _two_unit_boxes()
+
+    monkeypatch.setattr(ros_export, "coacd_available", lambda: True)
+    monkeypatch.setattr(ros_export, "_run_coacd", _counting)
+
+    pkg_dir = _make_pkg(tmp_path, robot="c")
+    # 1) generate the preview (decomposes the one mesh -> 1 CoACD run)
+    ros_export.coacd_preview_glbs(pkg_dir, "c", quality="balanced")
+    assert calls["n"] == 1
+    # 2) export with collision='coacd' -- reuses the cache, no second CoACD run
+    files = dict(ros_export.build_ros_description(pkg_dir, "c",
+                                                  collision="coacd"))
+    assert calls["n"] == 1                        # cache shared (no recompute)
+
+    # the export's <collision> blocks point at the convex parts
+    assert "c_description/meshes/part_collision_0.stl" in files
+    assert "c_description/meshes/part_collision_1.stl" in files
+    link = ET.fromstring(
+        files["c_description/urdf/c_description.urdf"].decode()).find("link")
+    assert len(link.findall("collision")) == 2
+
+
+def test_coacd_preview_glbs_per_link(tmp_path, monkeypatch):
+    """coacd_preview_glbs writes one colour-coded GLB per link with a collision
+    mesh, reports progress per link, and shares the export's part cache."""
+    import trimesh
+
+    from sw2robot.exporter import ros_export
+
+    monkeypatch.setattr(ros_export, "coacd_available", lambda: True)
+    monkeypatch.setattr(ros_export, "_run_coacd",
+                        lambda v, f, params: _two_unit_boxes())
+
+    pkg_dir = _make_pkg(tmp_path, robot="c")
+    seen = []
+    out = ros_export.coacd_preview_glbs(
+        pkg_dir, "c", quality="balanced",
+        progress=lambda d, t, link, rel: seen.append((d, t, link, rel)))
+
+    assert "base_link" in out
+    rel = out["base_link"]
+    assert rel.startswith("meshes/.coacd_cache/preview/")
+    glb_path = os.path.join(pkg_dir, *rel.split("/"))
+    assert os.path.isfile(glb_path)
+    # progress: one link, done == total, rel reported
+    assert seen and seen[-1][0] == seen[-1][1] and seen[-1][3] == rel
+    # the preview GLB is loadable and non-empty (two unit boxes merged)
+    m = trimesh.load(io.BytesIO(open(glb_path, "rb").read()), file_type="glb")
+    m = (m.to_geometry() if isinstance(m, trimesh.Scene)
+         and hasattr(m, "to_geometry") else m)
+    assert len(m.faces) > 0
+    # the part cache the export also uses was populated
+    assert os.path.isdir(os.path.join(pkg_dir, "meshes", ".coacd_cache"))
+
+
 def test_working_package_is_not_modified(tmp_path):
     """The converter only READS the package -- the source urdf/mesh are untouched
     (the working URDF must stay mesh-relative for the viewer / auto-limits)."""

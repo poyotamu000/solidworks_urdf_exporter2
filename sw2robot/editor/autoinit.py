@@ -85,46 +85,113 @@ def link_meshes(robot):
     return out
 
 
+def load_coacd_parts(preview_dir, link_names):
+    """``{link name -> [convex part trimesh, ...]}`` loaded from the CoACD preview
+    GLBs (``<preview_dir>/<safe link>.glb``), each part in the link-local frame
+    (the collision ``<origin>`` was baked in at generation).  Links without a
+    preview GLB are omitted, so the caller falls back to their convex hull.
+
+    These convex parts are what makes the live self-collision both fast (FCL does
+    convex-convex with GJK) AND accurate (N parts approximate the concave shape
+    far better than one fat hull), so no exact-mesh confirmation is needed."""
+    import os
+    import re
+
+    import trimesh
+
+    out = {}
+    if not preview_dir or not os.path.isdir(preview_dir):
+        return out
+    for name in link_names:
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+        path = os.path.join(preview_dir, safe + ".glb")
+        if not os.path.isfile(path):
+            continue
+        try:
+            scene = trimesh.load(path)
+        except Exception:
+            continue
+        parts = []
+        if isinstance(scene, trimesh.Scene):
+            # place each geometry in the scene (= link-local) frame via its graph
+            # transform, so the parts line up exactly with the rendered overlay
+            for node in scene.graph.nodes_geometry:
+                tf, gname = scene.graph.get(node)
+                g = scene.geometry[gname].copy()
+                g.apply_transform(tf)
+                if len(g.vertices):
+                    parts.append(g)
+        elif hasattr(scene, "vertices") and len(scene.vertices):
+            parts.append(scene)
+        if parts:
+            out[name] = parts
+    return out
+
+
 class SelfCollision:
-    """Convex-hull self-collision model over a skrobot robot.
+    """Self-collision model over a skrobot robot.
 
     ``meshes`` maps link name -> local-frame trimesh (the UI already has these).
+    ``parts`` (optional) maps link name -> list of CONVEX part meshes (CoACD
+    decomposition); when given, those drive the broadphase -- fast convex-convex
+    queries that need no exact-mesh confirmation (a link without parts falls back
+    to its convex hull).  Otherwise the old convex-hull model is used.
     """
 
     def __init__(self, robot, meshes, margin=REST_MARGIN, hull=True,
-                 confirm=False):
+                 confirm=False, parts=None):
         from trimesh.collision import CollisionManager
 
         self.robot = robot
         self.margin = float(margin)
-        self.confirm = bool(confirm)
         self._link = {l.name: l for l in robot.link_list}
         self.names = [n for n in meshes if n in self._link]
-        # hull=True: convex-hull proxies (fast, ~2 ms/query) for the live drag
-        # check.  hull=False: the ACTUAL meshes -- slower but exact, for the
-        # limit sweep (hulls touch at rest and mask collisions that only the
-        # real concave geometry develops, giving limits that are too wide).
-        #
-        # confirm=True: hulls for the cheap BROADPHASE, but every candidate pair
-        # is then verified on the EXACT mesh below -- so the live highlight
-        # reports the same collisions as the exact-mesh limit sweep, instead of
-        # the fatter hulls lighting up red well before the joint reaches its
-        # (mesh-derived) limit.
-        use_hull = hull or self.confirm
-        self._hulls = {n: (_hull(meshes[n]) if use_hull else meshes[n])
-                       for n in self.names}
         self.cm = CollisionManager()
-        for n in self.names:
-            self.cm.add_object(n, self._hulls[n],
-                               transform=self._link[n].worldcoords().T())
-        # second manager over the exact meshes, queried pairwise (not as a
-        # broadphase) only on the candidates the hull broadphase flags.
+        # object id -> link name; an object id is the link name (single-mesh /
+        # hull) or "<link>\x00<i>" (the i-th CoACD convex part of that link)
+        self._obj2link = {}
         self._raw = None
-        if self.confirm:
-            self._raw = CollisionManager()
+
+        if parts:
+            # CoACD convex parts: accurate AND convex-fast, so no exact-mesh
+            # confirm.  A link without parts falls back to its hull.
+            self.confirm = False
             for n in self.names:
-                self._raw.add_object(
-                    n, meshes[n], transform=self._link[n].worldcoords().T())
+                ps = parts.get(n)
+                tf = self._link[n].worldcoords().T()
+                if ps:
+                    for i, pm in enumerate(ps):
+                        oid = f"{n}\x00{i}"
+                        self.cm.add_object(oid, pm, transform=tf)
+                        self._obj2link[oid] = n
+                else:
+                    self.cm.add_object(n, _hull(meshes[n]), transform=tf)
+                    self._obj2link[n] = n
+        else:
+            # hull=True: convex-hull proxies (fast, ~2 ms/query) for the live
+            # drag check.  hull=False: the ACTUAL meshes -- slower but exact, for
+            # the limit sweep (hulls touch at rest and mask collisions that only
+            # the real concave geometry develops, giving limits too wide).
+            #
+            # confirm=True: hulls for the cheap BROADPHASE, but every candidate
+            # pair is verified on the EXACT mesh below -- so the live highlight
+            # matches the exact-mesh limit sweep instead of the fatter hulls
+            # lighting up red before the joint reaches its (mesh-derived) limit.
+            self.confirm = bool(confirm)
+            use_hull = hull or self.confirm
+            self._hulls = {n: (_hull(meshes[n]) if use_hull else meshes[n])
+                           for n in self.names}
+            for n in self.names:
+                self.cm.add_object(n, self._hulls[n],
+                                   transform=self._link[n].worldcoords().T())
+                self._obj2link[n] = n
+            # second manager over the exact meshes, queried pairwise (not as a
+            # broadphase) only on the candidates the hull broadphase flags.
+            if self.confirm:
+                self._raw = CollisionManager()
+                for n in self.names:
+                    self._raw.add_object(
+                        n, meshes[n], transform=self._link[n].worldcoords().T())
         # trimesh 4.x's add_object(transform=) sets the fcl object's pose but
         # does NOT refresh the broadphase AABB-tree node, so a part that only
         # overlaps once moved to its world pose can be missed by
@@ -141,6 +208,18 @@ class SelfCollision:
                 self.baseline.add(
                     frozenset((j.parent_link.name, j.child_link.name)))
 
+    def _link_pairs(self, name_pairs) -> set:
+        """Map broadphase OBJECT-name pairs to LINK pairs, dropping intra-link
+        pairs (two CoACD parts of the SAME link overlap at their shared seams --
+        not a collision)."""
+        out = set()
+        for p in name_pairs:
+            a, b = tuple(p)
+            la, lb = self._obj2link.get(a, a), self._obj2link.get(b, b)
+            if la != lb:
+                out.add(frozenset((la, lb)))
+        return out
+
     def _pairs(self, margin) -> set:
         _, names, data = self.cm.in_collision_internal(
             return_names=True, return_data=True)
@@ -152,7 +231,7 @@ class SelfCollision:
             # hull depth would drop real collisions.  Boolean containment (mesh
             # overlap => hull overlap) is what makes the candidate set complete;
             # each is then verified on the exact mesh at the real margin.
-            cand = {frozenset(p) for p in names}
+            cand = self._link_pairs(names)
             # new_pairs() subtracts the rest baseline anyway, so don't spend an
             # exact-mesh query on the dozens of links that touch at rest -- drop
             # them from the candidates first.  (During __init__, before the
@@ -163,10 +242,14 @@ class SelfCollision:
                 cand = cand - base
             return self._confirm(cand, margin) if cand else cand
         if margin <= 0:
-            return {frozenset(p) for p in names}
+            return self._link_pairs(names)
         depth = {}
         for d in data:
-            k = frozenset(d.names)
+            a, b = tuple(d.names)
+            la, lb = self._obj2link.get(a, a), self._obj2link.get(b, b)
+            if la == lb:
+                continue
+            k = frozenset((la, lb))
             depth[k] = max(depth.get(k, 0.0), abs(d.depth))
         return {k for k, v in depth.items() if v > margin}
 
@@ -197,8 +280,14 @@ class SelfCollision:
         return out
 
     def _sync(self):
-        for n in self.names:
-            self.cm.set_transform(n, self._link[n].worldcoords().T())
+        # set each broadphase object to its link's world pose (several objects
+        # may share a link when CoACD parts are used)
+        cache = {}
+        for oid, link in self._obj2link.items():
+            tf = cache.get(link)
+            if tf is None:
+                tf = cache[link] = self._link[link].worldcoords().T()
+            self.cm.set_transform(oid, tf)
 
     def new_pairs(self) -> set:
         """Colliding link pairs (beyond the rest baseline) at the current pose."""
@@ -226,7 +315,13 @@ class SelfCollision:
             d, names = self.cm.min_distance_internal(return_names=True)
         except Exception:
             return float("inf"), None
-        return float(d), (tuple(sorted(names)) if names else None)
+        if not names:
+            return float(d), None
+        a, b = tuple(names)
+        la, lb = self._obj2link.get(a, a), self._obj2link.get(b, b)
+        if la == lb:                  # closest pair is two parts of one link
+            return float("inf"), None
+        return float(d), tuple(sorted((la, lb)))
 
 
 def sweep_limits(robot, meshes, step_deg=6.0, max_deg=180.0, margin_deg=2.0,

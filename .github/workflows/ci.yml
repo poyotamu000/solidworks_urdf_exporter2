@@ -38,6 +38,10 @@ jobs:
         with:
           version: "0.15.17"   # pinned; bump deliberately
 
+  # NOTE: this job's check is named exactly "pytest" and is a required check in
+  # branch protection -- do NOT rename it or put it behind a matrix (a matrix
+  # renames the checks to "pytest (ubuntu-latest)" etc., which the required
+  # "pytest" gate would then wait for forever).  macOS lives in a SEPARATE job.
   test:
     name: pytest
     runs-on: ubuntu-latest
@@ -52,9 +56,33 @@ jobs:
       - name: Install
         run: |
           python -m pip install --upgrade pip
-          # ui -> skrobot (loads the exported URDF + resolves package:// meshes),
-          # test -> catkin_pkg (validates the exported package.xml)
-          pip install ".[ui,test]" pytest
+          # ui    -> skrobot (loads the exported URDF + resolves package:// meshes)
+          # test  -> catkin_pkg (validates the exported package.xml)
+          # coacd -> exercise the REAL convex-decomposition wheel (the smoke test
+          #          in test_coacd_smoke.py), so a missing/broken coacd wheel
+          #          fails CI instead of surfacing at runtime
+          pip install ".[ui,test,coacd]" pytest
+
+      - name: Run tests
+        run: pytest -q
+
+  # Separate (non-required) job so the cross-platform coacd/python-fcl wheels are
+  # exercised on macOS without touching the required "pytest" check name above.
+  test-macos:
+    name: pytest (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[ui,test,coacd]" pytest
 
       - name: Run tests
         run: pytest -q
