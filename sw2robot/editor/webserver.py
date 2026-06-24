@@ -1309,9 +1309,12 @@ def _run_extract(sldasm):
             pass
         _job["log"].append("cancelled.")
     except Exception as e:
+        import traceback
+
         from sw2robot.exporter.swcom import SolidWorksUnavailable
         _job["error"] = f"{type(e).__name__}: {e}"
         print(f"[sw2robot.web] extract FAILED: {e!r}")
+        traceback.print_exc()     # full traceback -> the exact failing line
         # Drop the cached session on anything that smells like a lost/failed
         # SolidWorks connection -- a couldn't-start/license error, a COM RPC
         # failure, or a dead instance -- so the NEXT extraction starts clean

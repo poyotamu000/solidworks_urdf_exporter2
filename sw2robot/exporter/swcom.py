@@ -269,6 +269,28 @@ def byref_long(initial=0):
     return win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, initial)
 
 
+def open_doc6(app, path, dtype, options=SW_OPEN_SILENT):
+    """``IModelDoc2.OpenDoc6`` -> ``(doc, error_code, warning_code)``, tolerant of
+    the way win32com marshals its two ``[out]`` long params across versions.
+
+    The historical approach passes ``VARIANT(VT_BYREF|VT_I4)`` objects; pywin32
+    >= ~311 then raises ``TypeError: int() argument ... not 'VARIANT'`` while
+    coercing them inside ``InvokeTypes``.  Fall back to passing plain ints -- the
+    gen_py wrapper builds the byref itself and returns the updated values
+    alongside the document.  (A real COM failure -- e.g. an RPC disconnect when
+    SolidWorks dies -- is NOT a TypeError, so it propagates to the caller.)"""
+    try:
+        errors, warnings = byref_long(), byref_long()
+        doc = app.OpenDoc6(path, dtype, options, "", errors, warnings)
+        return doc, errors.value, warnings.value
+    except TypeError:
+        res = app.OpenDoc6(path, dtype, options, "", 0, 0)
+        if isinstance(res, (tuple, list)):
+            vals = [*res, 0, 0, 0]
+            return vals[0], vals[1], vals[2]
+        return res, 0, 0
+
+
 def doc_type_for(path):
     ext = os.path.splitext(path)[1].lower()
     if ext == ".sldasm":
@@ -435,60 +457,89 @@ class SolidWorks:
         path = os.path.abspath(path)
         if not os.path.exists(path):
             raise FileNotFoundError(path)
-        # A temp copy loses SolidWorks' "same folder as the assembly"
-        # reference-resolution rule; assemblies whose STORED part paths are
-        # stale then open with almost everything unresolved (home_drone
-        # came up as a single component).  Register the original's folder
-        # family as document search paths so rule (2) replaces rule (4).
         import time as _time
         t0 = _time.time()
-        self._register_search_folders(path)
-        tmpdir = tempfile.mkdtemp(prefix="sw2urdf_")
-        self._tempdirs.append(tmpdir)
-        tmp = os.path.join(tmpdir, os.path.basename(path))
-        shutil.copy2(path, tmp)
-        # Co-locate the assembly's sibling CAD files in the SAME temp dir so
-        # SolidWorks' "same folder as the assembly" rule resolves them by name.
-        # The search-folder registration above does NOT always override the
-        # absolute paths a downloaded (Pack-and-Go) assembly bakes in -- those
-        # then open with every component unresolved even though the parts sit
-        # right next to the .SLDASM.  A flat copy of the folder fixes that; deep
-        # sub-folder layouts still fall back to the search folders.
-        if doc_type_for(path) == SW_DOC_ASSEMBLY:
-            try:
-                siblings = os.listdir(os.path.dirname(path))
-            except OSError:
-                siblings = []
-            n_sib = 0
-            for fn in siblings:
-                if fn.startswith("~$") or not fn.lower().endswith(
-                        (".sldprt", ".sldasm", ".slddrw")):
-                    continue                    # lock files / non-CAD
-                s = os.path.join(os.path.dirname(path), fn)
-                d = os.path.join(tmpdir, fn)
-                if os.path.isfile(s) and not os.path.exists(d):
-                    try:
-                        shutil.copy2(s, d)
-                        n_sib += 1
-                    except OSError:
-                        pass
-            if n_sib:
-                print(f"      co-located {n_sib} sibling CAD file(s) for "
-                      f"reference resolution")
-        t1 = _time.time()
-
-        errors = byref_long()
-        warnings = byref_long()
-        doc = self.app.OpenDoc6(tmp, doc_type_for(tmp), SW_OPEN_SILENT, "",
-                                errors, warnings)
-        t2 = _time.time()
+        doc = None
+        # If the SAME assembly is already open in the user's reused session, use
+        # THAT document: it is already fully resolved (the user can see it), so
+        # we extract exactly what SolidWorks shows instead of a fragile copy +
+        # reference re-resolution that can come up with 0 components for a
+        # .SLDASM whose parts live elsewhere.  Read-only: extraction never saves,
+        # and attach mode never closes the user's docs.
+        if getattr(self, "_attached", False):
+            existing = self._find_open_doc(path)
+            if existing is not None:
+                print("      reusing the already-open document from your "
+                      "SolidWorks session (references already resolved)")
+                self._reused_open_doc = True
+                doc = existing
+        t1 = t0
         if doc is None:
-            raise RuntimeError(
-                f"OpenDoc6 failed for {tmp} "
-                f"(errors={errors.value}, warnings={warnings.value})")
-        self._open_docs.append(doc)
+            # A temp copy loses SolidWorks' "same folder as the assembly"
+            # reference-resolution rule; assemblies whose STORED part paths are
+            # stale then open with almost everything unresolved (home_drone came
+            # up as a single component).  Register the original's folder family
+            # as document search paths so rule (2) replaces rule (4).
+            self._register_search_folders(path)
+            tmpdir = tempfile.mkdtemp(prefix="sw2urdf_")
+            self._tempdirs.append(tmpdir)
+            # Open the copy under a UNIQUE title so it never clashes with the
+            # SAME assembly already open in the reused session -- OpenDoc6
+            # otherwise fails with swFileWithSameTitleAlreadyOpen (65536).
+            # Referenced parts are resolved by their own names (co-located
+            # below), so renaming the top assembly is safe.
+            stem, ext = os.path.splitext(os.path.basename(path))
+            tmp = os.path.join(tmpdir, f"{stem}_{os.path.basename(tmpdir)}{ext}")
+            shutil.copy2(path, tmp)
+            # Co-locate the assembly's sibling CAD files in the SAME temp dir so
+            # SolidWorks' "same folder as the assembly" rule resolves them by
+            # name.  The search-folder registration above does NOT always
+            # override the absolute paths a downloaded (Pack-and-Go) assembly
+            # bakes in -- those then open with every component unresolved even
+            # though the parts sit right next to the .SLDASM.  A flat copy fixes
+            # that; deep sub-folder layouts fall back to the search folders.
+            if doc_type_for(path) == SW_DOC_ASSEMBLY:
+                try:
+                    siblings = os.listdir(os.path.dirname(path))
+                except OSError:
+                    siblings = []
+                n_sib = 0
+                for fn in siblings:
+                    if fn.startswith("~$") or not fn.lower().endswith(
+                            (".sldprt", ".sldasm", ".slddrw")):
+                        continue                # lock files / non-CAD
+                    s = os.path.join(os.path.dirname(path), fn)
+                    d = os.path.join(tmpdir, fn)
+                    if os.path.isfile(s) and not os.path.exists(d):
+                        try:
+                            shutil.copy2(s, d)
+                            n_sib += 1
+                        except OSError:
+                            pass
+                if n_sib:
+                    print(f"      co-located {n_sib} sibling CAD file(s) for "
+                          f"reference resolution")
+            t1 = _time.time()
+            doc, ecode, wcode = open_doc6(self.app, tmp, doc_type_for(tmp))
+            if doc is None:
+                # 65536 = swFileWithSameTitleAlreadyOpen: a doc with this title
+                # is already open in the reused session (we copy under a unique
+                # title, so rare -- but a referenced part sharing a title with
+                # the user's open work can still trip it)
+                if ecode == 65536:
+                    raise RuntimeError(
+                        "SolidWorks refused to open the assembly because a "
+                        "document with the same name is already open in your "
+                        "running SolidWorks (error 65536). Close that document "
+                        "in SolidWorks (or close SolidWorks entirely so sw2robot "
+                        "opens it in a clean hidden instance), then retry.")
+                raise RuntimeError(
+                    f"OpenDoc6 failed for {tmp} "
+                    f"(errors={ecode}, warnings={wcode})")
+            self._open_docs.append(doc)
+        t2 = _time.time()
         t3 = t2
-        if doc_type_for(tmp) == SW_DOC_ASSEMBLY:
+        if doc_type_for(path) == SW_DOC_ASSEMBLY:
             asm = as_iface(doc, "IAssemblyDoc")
             try:
                 asm.ResolveAllLightWeightComponents(True)
@@ -543,7 +594,17 @@ class SolidWorks:
                         cand.append(p)
             except Exception:
                 pass
-            folders = ";".join(dict.fromkeys(cand))
+            # KEEP the user's existing referenced-document search paths and only
+            # ADD ours -- SolidWorks resolves this assembly's parts through those
+            # configured paths interactively, so replacing them (the old
+            # behaviour) made everything open unresolved when the .SLDASM sits
+            # somewhere its parts are not (e.g. a lone copy in Downloads).
+            prev = ""
+            if getattr(self, "_saved_search_prefs", None):
+                prev = self._saved_search_prefs[0] or ""
+            prev_list = [p for p in str(prev).split(";") if p]
+            merged = list(dict.fromkeys(cand + prev_list))
+            folders = ";".join(merged)
             try:
                 self.app.SetUserPreferenceToggle(
                     constants.swUseFolderSearchRule, True)
@@ -551,7 +612,8 @@ class SolidWorks:
                 pass
             self.app.SetSearchFolders(constants.swDocumentType, folders)
             print(f"      reference search folders set ({len(cand)} dirs "
-                  f"around {os.path.basename(src_dir)})")
+                  f"around {os.path.basename(src_dir)} + "
+                  f"{len(prev_list)} existing)")
         except Exception as e:
             print(f"      WARN: could not set search folders ({e!r}); "
                   f"stale part references may not resolve")
@@ -571,6 +633,30 @@ class SolidWorks:
             del self._saved_search_prefs
         except Exception:
             pass
+
+    def _find_open_doc(self, path):
+        """An already-open ModelDoc2 whose title matches ``path``'s file name, or
+        None.  Lets a reused session extract from the user's resolved document
+        instead of opening a (possibly unresolvable) copy."""
+        want = os.path.splitext(os.path.basename(path))[0].lower()
+        docs = safe_call(self.app, "GetDocuments")
+        if docs is None:
+            # fall back to the linked-list walk on versions without GetDocuments
+            docs = []
+            d = safe_call(self.app, "GetFirstDocument")
+            seen = 0
+            while d is not None and seen < 1000:
+                docs.append(d)
+                d = safe_call(d, "GetNext")
+                seen += 1
+        for d in (docs or []):
+            try:
+                title = safe_prop(d, "GetTitle") or ""
+            except Exception:
+                continue
+            if os.path.splitext(title)[0].lower() == want:
+                return d
+        return None
 
     def close_doc(self, doc):
         title = safe_prop(doc, "GetTitle")

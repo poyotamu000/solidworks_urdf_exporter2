@@ -17,8 +17,8 @@ from .swcom import (
     SW_SAVEAS_COPY,
     SW_SAVEAS_SILENT,
     as_iface,
-    byref_long,
     doc_type_for,
+    open_doc6,
     safe_call,
     safe_prop,
 )
@@ -49,10 +49,10 @@ def _open_doc(app, path):
         return None
     _recent_opens.append(path)
     del _recent_opens[:-2]                  # keep the last two
-    err = byref_long(); warn = byref_long()
     try:
-        return app.OpenDoc6(path, doc_type_for(path),
-                            SW_OPEN_SILENT | 0x80, "", err, warn)
+        doc, _err, _warn = open_doc6(app, path, doc_type_for(path),
+                                     SW_OPEN_SILENT | 0x80)
+        return doc
     except Exception as e:
         if getattr(e, "hresult", None) == _RPC_DISCONNECTED:
             _crash_suspects.update(_recent_opens)
