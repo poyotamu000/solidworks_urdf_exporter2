@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Iori Yanokura", email = "ab.ioryz@gmail.com" }]
 dependencies = [
     "numpy>=2",
-    "trimesh>=3.9",
+    "trimesh[easy]>=3.9",
     "lxml",
     "pydantic>=2",
     "pyyaml>=6",
