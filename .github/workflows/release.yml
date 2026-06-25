@@ -79,7 +79,9 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install . pyinstaller pycollada scipy networkx
+          # trimesh[easy] (a core dep) pulls pycollada/scipy/networkx, so a plain
+          # install covers the mesh-processing + .dae backends the freeze needs.
+          pip install . pyinstaller
 
       - name: Install editor-ui dependencies
         if: contains(matrix.build_args, '--editor-ui')
