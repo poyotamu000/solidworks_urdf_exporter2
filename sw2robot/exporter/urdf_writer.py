@@ -527,9 +527,10 @@ LOOP_COUPLING_RELAY_PY = '''#!/usr/bin/env python3
 A URDF is a tree, so a closed linkage (four-bar / parallel mechanism) has its
 loops cut and robot_state_publisher honours the cut joints\' <mimic> only
 linearly -- which a real loop is not.  This node parses the URDF and, on every
-joint-state, sets the DRIVEN (independent) joints, then Gauss-Newton-solves the
-DEPENDENT joints so each cut loop closes (the two link points the dropped hinge
-joined coincide), and republishes the corrected joint_states.  Exact and
+joint-state, sets the DRIVEN (independent) joints, then solves (damped
+least-squares, sub-stepped to stay on the assembly branch) the DEPENDENT joints
+so each cut loop closes (the two link points the dropped hinge joined coincide),
+and republishes the corrected joint_states.  Exact and
 general: any single-DOF-per-loop linkage, planar or spatial.  Needs only rclpy,
 sensor_msgs, numpy and yaml -- no extra install.
 
@@ -637,6 +638,7 @@ class LoopClosureRelay(Node):
                 lb_loc = (np.linalg.inv(t0b) @ np.append(q, 1.0))[:3]
                 self.wit.append((la, la_loc, lb, lb_loc))
         self._x = np.zeros(len(self.deps))        # warm start (tracks branch)
+        self._indep_prev = None                   # previous driven-joint values
         if not self.deps or not self.wit:
             self.get_logger().warn("no loop closures loaded; relaying unchanged")
         self._pub = self.create_publisher(JointState, "joint_states", 10)
@@ -652,20 +654,36 @@ class LoopClosureRelay(Node):
         return np.concatenate(out) if out else np.zeros(0)
 
     def _solve(self, q):
-        x = self._x.copy()
-        for _ in range(20):
+        x0 = self._x.copy()
+        x = x0.copy()
+        n = len(self.deps)
+        for _ in range(50):
             for i, dn in enumerate(self.deps):
                 q[dn] = x[i]
             r = self._resid(q)
-            if r.size == 0 or np.linalg.norm(r) < 1e-9:
+            if r.size == 0 or np.linalg.norm(r) < 1e-10:
                 break
-            jac = np.zeros((r.size, len(self.deps)))
+            jac = np.zeros((r.size, n))
             for i, dn in enumerate(self.deps):
                 xb = x[i]
                 q[dn] = xb + 1e-6
                 jac[:, i] = (self._resid(q) - r) / 1e-6
                 q[dn] = xb
-            x = x + np.linalg.lstsq(jac, -r, rcond=None)[0]
+            # damped least squares (Levenberg-Marquardt) + a step clamp keep the
+            # solver on the CURRENT assembly branch: near a singularity (a
+            # four-bar toggle) plain Gauss-Newton jumps/spins to the other mode
+            dx = np.linalg.solve(jac.T @ jac + 1e-6 * np.eye(n), -jac.T @ r)
+            s = float(np.linalg.norm(dx))
+            if s > 0.15:
+                dx *= 0.15 / s
+            x = x + dx
+        # at / past a toggle the loop has NO solution; rather than accept a
+        # diverged (wrapped) config that warm-start would then lock in forever,
+        # hold the last valid pose -- the linkage just stops at its limit
+        for i, dn in enumerate(self.deps):
+            q[dn] = x[i]
+        if np.linalg.norm(self._resid(q)) > 1e-5:
+            x = x0
         self._x = x
         return x
 
@@ -674,8 +692,22 @@ class LoopClosureRelay(Node):
         if not self.deps or not self.wit:
             self._pub.publish(msg)
             return
-        q = {n: pos[n] for n in self.indep if n in pos}
-        x = self._solve(q)
+        target = {n: pos[n] for n in self.indep if n in pos}
+        # SUB-STEP the driven joints from their previous values: a big jump (a
+        # fast slider drag, or clicking a far value) solved in one shot walks to
+        # the WRONG assembly branch and sticks; stepping it in small increments
+        # keeps the warm-started solver on the current branch.
+        prev = self._indep_prev if self._indep_prev is not None else target
+        maxd = max((abs(target[k] - prev.get(k, target[k])) for k in target),
+                   default=0.0)
+        steps = max(1, int(maxd / 0.05))          # ~3 deg per sub-step
+        x = self._x
+        for s in range(1, steps + 1):
+            f = s / steps
+            q = {k: prev.get(k, target[k])
+                 + (target[k] - prev.get(k, target[k])) * f for k in target}
+            x = self._solve(q)
+        self._indep_prev = dict(target)
         for i, dn in enumerate(self.deps):
             pos[dn] = float(x[i])
         out = JointState()

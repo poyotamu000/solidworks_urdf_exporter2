@@ -310,7 +310,7 @@ def test_ros2_loop_closures_ship_ik_relay_and_config(tmp_path):
     # relay node is valid python, pure-numpy URDF FK + the IK loop closure
     relay = files["fb_description/scripts/loop_closure_relay.py"].decode()
     compile(relay, "loop_closure_relay.py", "exec")
-    assert "joint_states_source" in relay and "lstsq" in relay
+    assert "joint_states_source" in relay and "_resid" in relay
     assert "skrobot" not in relay              # no pip-only dependency
 
     launch = files["fb_description/launch/display.launch.py"].decode()
