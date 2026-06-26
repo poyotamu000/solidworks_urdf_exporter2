@@ -66,6 +66,24 @@ def _parallelogram():
     return _graph([base, inl, cpl, outl], edges, ground=["base"])
 
 
+def _crank_rocker():
+    # a NON-parallelogram four-bar (unequal bars) -> a triple rocker that BINDS
+    # at a toggle within its travel, the case where a naive IK flips assembly
+    # branch.  Pivots A,B,C,D (m).
+    A, B, C, D = (0, 0, 0), (0.4, 0.4, 0), (1.2, 0.7, 0), (1.5, 0, 0)
+    base = _comp("base", fixed=True)
+    inl = _comp("inlink", A)
+    cpl = _comp("coupler", B)
+    outl = _comp("outlink", C)
+    edges = [
+        _hinge_z("base", "inlink", A),
+        _hinge_z("inlink", "coupler", B),
+        _hinge_z("coupler", "outlink", C),
+        _hinge_z("outlink", "base", D),
+    ]
+    return _graph([base, inl, cpl, outl], edges, ground=["base"])
+
+
 def test_four_bar_loop_becomes_driver_plus_two_mimics():
     model = build_model(_parallelogram())
     rev = [j for j in model.joints if j.jtype == "revolute"]
@@ -232,6 +250,83 @@ def test_runtime_ik_relay_closes_the_loop(tmp_path):
     assert np.linalg.norm(resid(Q)) < 1e-6         # loop closed
     for v in x:
         assert abs(abs(v) - np.radians(5.0)) < 1e-3   # parallelogram = +-1
+
+
+def test_runtime_ik_relay_holds_at_toggle_no_branch_flip(tmp_path):
+    # A non-parallelogram four-bar BINDS at a toggle.  Driving the driver out
+    # PAST the toggle and back must NOT flip the assembly branch / spin the
+    # dependent joints (the bug): the relay's damped + step-clamped solve holds
+    # the last valid pose past the toggle and tracks back to zero.
+    from sw2robot.exporter.urdf_writer import write_urdf
+    model = build_model(_crank_rocker())
+    lc = model.loop_closures
+    urdf = tmp_path / "cr.urdf"
+    write_urdf(model, str(urdf))
+    world = _fk_chain(str(urdf))
+    c = lc["closures"][0]
+    la, lb = c["link_a"], c["link_b"]
+    p = np.asarray(c["point"], float)
+    a = np.asarray(c["axis"], float) / np.linalg.norm(c["axis"])
+    t0a, t0b = world(la, {}), world(lb, {})
+    wit = [(la, (np.linalg.inv(t0a) @ np.append(q, 1.0))[:3],
+            lb, (np.linalg.inv(t0b) @ np.append(q, 1.0))[:3])
+           for q in (p, p + a * 0.03)]
+
+    def resid(Q):
+        return np.concatenate([(world(L, Q) @ np.append(ll, 1.0))[:3]
+                               - (world(M, Q) @ np.append(ml, 1.0))[:3]
+                               for L, ll, M, ml in wit])
+
+    deps = lc["dependent"]
+    drv = lc["independent"][0]
+
+    def solve(qd, warm):                       # == the shipped relay's _solve
+        x0 = warm.copy()
+        x = x0.copy()
+        nd = len(deps)
+        Q = {drv: qd}
+        for _ in range(50):
+            for i, dn in enumerate(deps):
+                Q[dn] = x[i]
+            r = resid(Q)
+            if np.linalg.norm(r) < 1e-10:
+                break
+            jac = np.zeros((len(r), nd))
+            for i, dn in enumerate(deps):
+                Q2 = dict(Q)
+                Q2[dn] = x[i] + 1e-7
+                jac[:, i] = (resid(Q2) - r) / 1e-7
+            dx = np.linalg.solve(jac.T @ jac + 1e-6 * np.eye(nd), -jac.T @ r)
+            s = float(np.linalg.norm(dx))
+            if s > 0.15:
+                dx *= 0.15 / s
+            x = x + dx
+        for i, dn in enumerate(deps):
+            Q[dn] = x[i]
+        if np.linalg.norm(resid(Q)) > 1e-5:    # can't close -> hold last valid
+            return x0
+        return x
+
+    # drive in BIG jumps per callback (a fast slider drag / clicking a far
+    # value) -- the case that flips: each callback sub-steps the driver like the
+    # relay's _cb, out well past the toggle and back to zero
+    state = {"warm": np.zeros(len(deps)), "prev": None}
+
+    def step(qd):
+        prev = state["prev"] if state["prev"] is not None else qd
+        nsub = max(1, int(abs(qd - prev) / 0.05))
+        for k in range(1, nsub + 1):
+            state["warm"] = solve(prev + (qd - prev) * k / nsub, state["warm"])
+        state["prev"] = qd
+        return state["warm"]
+
+    peak = 0.0
+    for qd in (0.0, 1.4, -1.4, 1.4, 0.7, 0.0):     # big jumps incl past toggle
+        peak = max(peak, float(np.max(np.abs(step(qd)))))
+    # never wrapped/spun (a flip sends deps to many radians), and it came back
+    assert peak < 2.5, f"dependent joints spun ({peak} rad) -- branch flip"
+    assert np.max(np.abs(state["warm"])) < 1e-3, \
+        "did not return to home after the toggle"
 
 
 def test_four_bar_driver_carries_no_mimic_and_loop_is_open():
