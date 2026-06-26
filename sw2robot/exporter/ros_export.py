@@ -120,27 +120,40 @@ def _apply_uniform_color(mesh, hex_color):
     return mesh
 
 
-def _mesh_to_dae_bytes(src, color=None):
+def _baked(mesh, transform):
+    """Apply a 4x4 ``<origin>`` transform into the mesh vertices (so the URDF
+    origin can be set to identity -- what MuJoCo wants)."""
+    if transform is not None:
+        import numpy as np
+        mesh.apply_transform(np.asarray(transform, float))
+    return mesh
+
+
+def _mesh_to_dae_bytes(src, color=None, transform=None):
     """COLLADA (.dae) bytes in metres, with colours baked into materials.
-    ``color`` (``'#RRGGBB'``) overrides the mesh's own colours when given."""
-    meshes = _collada_meshes(_apply_uniform_color(_load_mesh_metres(src), color))
+    ``color`` (``'#RRGGBB'``) overrides the mesh's own colours; ``transform``
+    (4x4) is baked into the vertices so the URDF origin can be zeroed."""
+    meshes = _collada_meshes(
+        _apply_uniform_color(_baked(_load_mesh_metres(src), transform), color))
     if len(meshes) == 1:
         return meshes[0].export(file_type="dae")
     from trimesh.exchange.dae import export_collada
     return export_collada(meshes)
 
 
-def _mesh_to_stl_bytes(src, color=None):
+def _mesh_to_stl_bytes(src, color=None, transform=None):
     """STL bytes in metres (colour is dropped -- collision geometry needs none,
-    so ``color`` is accepted for a uniform converter signature but ignored)."""
-    return _load_mesh_metres(src).export(file_type="stl")
+    so ``color`` is accepted for a uniform converter signature but ignored).
+    ``transform`` (4x4) is baked into the vertices."""
+    return _baked(_load_mesh_metres(src), transform).export(file_type="stl")
 
 
-def _mesh_to_glb_bytes(src, color=None):
+def _mesh_to_glb_bytes(src, color=None, transform=None):
     """GLB bytes in metres, keeping the original material/texture (for
     three.js / skrobot consumers, not RViz).  ``color`` (``'#RRGGBB'``)
-    overrides the mesh's own colours when given."""
-    return _apply_uniform_color(_load_mesh_metres(src), color).export(
+    overrides the mesh's own colours; ``transform`` (4x4) is baked in."""
+    return _apply_uniform_color(
+        _baked(_load_mesh_metres(src), transform), color).export(
         file_type="glb")
 
 
@@ -293,6 +306,98 @@ def _origin_matrix(origin_el):
     m = trimesh.transformations.euler_matrix(*rpy, axes="sxyz")
     m[:3, 3] = xyz[:3]
     return m
+
+
+def _fmt_num(v):
+    """Format a float for a URDF attribute, snapping FP noise to exact 0."""
+    v = float(v)
+    if abs(v) < 1e-9:
+        return "0"
+    return repr(round(v, 9))
+
+
+def _set_origin_el(el, M):
+    import numpy as np
+
+    from .geometry import matrix_to_xyz_rpy
+    o = el.find("origin")
+    if o is None:
+        o = ET.SubElement(el, "origin")
+    xyz, rpy = matrix_to_xyz_rpy(np.asarray(M, float))
+    o.set("xyz", " ".join(_fmt_num(v) for v in xyz))
+    o.set("rpy", " ".join(_fmt_num(v) for v in rpy))
+
+
+def _bake_origins(root, pkg_dir, own_pkgs):
+    """Normalise link origins for the portable package (MuJoCo-friendly):
+
+    * bake every ``<visual>``/``<collision>`` ``<origin>`` into its mesh and set
+      the origin to exactly ``0 0 0`` (skrobot ``--force-zero-origin``), which
+      also clears the floating-point noise tools dislike, and
+    * RE-CENTRE each FIXED link's frame on its visual geometry, so a sub-assembly
+      whose CAD origin sits far from its parts (the frame floating ~1 m away)
+      gets its frame moved onto the mesh -- the parent joint, child joints and
+      inertial origin absorb the shift, so every world pose is unchanged.
+
+    Returns ``{id(mesh_el): 4x4}`` so the mesh converter bakes the matching
+    transform into each mesh's vertices.  Best effort: a link whose mesh cannot
+    be loaded keeps its (zeroed) origin and is not re-centred."""
+    import numpy as np
+    bake = {}
+    child_joint, child_lists = {}, {}
+    for j in root.findall("joint"):
+        c, p = j.find("child").get("link"), j.find("parent").get("link")
+        child_joint[c] = j
+        child_lists.setdefault(p, []).append(j)
+
+    for link in root.findall("link"):
+        name = link.get("name")
+        pj = child_joint.get(name)
+        fixed = pj is not None and pj.get("type") == "fixed"
+        vis = link.find("visual")
+        v_mat = _origin_matrix(vis.find("origin")) if vis is not None \
+            else np.eye(4)
+        d = np.zeros(3)
+        if fixed and vis is not None:
+            me = vis.find(".//mesh")
+            if me is not None:
+                _b, src, _e = _resolve_mesh(pkg_dir, me.get("filename"),
+                                            own_pkgs=own_pkgs)
+                if src is not None:
+                    try:                       # centroid of the mesh in link frame
+                        cen = _load_mesh_metres(src).centroid
+                        d = (v_mat @ np.append(cen, 1.0))[:3]
+                    except Exception:
+                        d = np.zeros(3)
+        moved = float(np.linalg.norm(d)) > 1e-9
+        t_neg = np.eye(4)
+        t_neg[:3, 3] = -d
+        if moved:
+            # F' = F . T(+d): parent joint . T(+d); child joints, inertial . T(-d)
+            t_pos = np.eye(4)
+            t_pos[:3, 3] = d
+            _set_origin_el(pj, _origin_matrix(pj.find("origin")) @ t_pos)
+            for cj in child_lists.get(name, []):
+                _set_origin_el(cj, t_neg @ _origin_matrix(cj.find("origin")))
+            inel = link.find("inertial")
+            if inel is not None:
+                _set_origin_el(inel, t_neg @ _origin_matrix(inel.find("origin")))
+        for ctx in ("visual", "collision"):
+            for block in link.findall(ctx):
+                vb = _origin_matrix(block.find("origin"))
+                mb = t_neg @ vb                # bake into the mesh
+                # only bake when it actually moves vertices; an identity (or pure
+                # FP-noise) origin just gets zeroed -- no lossy mesh round-trip,
+                # so a verbatim .dae copy (+ its sidecar textures) is preserved
+                if not np.allclose(mb, np.eye(4), atol=1e-7):
+                    for mesh_el in block.iter("mesh"):
+                        bake[id(mesh_el)] = mb
+                o = block.find("origin")
+                if o is None:
+                    o = ET.SubElement(block, "origin")
+                o.set("xyz", "0 0 0")
+                o.set("rpy", "0 0 0")
+    return bake
 
 
 def coacd_preview_glbs(pkg_dir, robot_name, quality="balanced", progress=None,
@@ -625,7 +730,8 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
                           ctx_fmt=_CTX_FMT, ros_version=1, pkg_name=None,
                           urdf_name=None, colors=None, collision="copy",
                           collision_quality="balanced", merge_fixed=False,
-                          mesh_dir=None, loop_closures=None):
+                          mesh_dir=None, loop_closures=None,
+                          zero_origins=True):
     """``pkg_dir`` (a built package) -> ``[(arcname, bytes), ...]`` for a portable
     ROS package, all behind ``package://`` URLs.  The package is named
     ``pkg_name`` if given (validated, see :func:`ros_pkg_name`), else
@@ -719,6 +825,9 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
         from .merge import merge_fixed_links
         merge_fixed_links(root)
     colors = colors or {}
+    # bake visual/collision origins into meshes (-> origin 0 0 0, MuJoCo-ready)
+    # and re-centre fixed links on their geometry; {id(mesh_el): 4x4 transform}
+    bake = _bake_origins(root, pkg_dir, own_pkgs) if zero_origins else {}
 
     files = []
     # keyed by the SOURCE mesh (+fmt), so one source converted once is reused,
@@ -729,10 +838,13 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
     used_names = set()
     errors = []
 
-    def _emit(base, src, fmt, color):
-        # key on colour too: the same source reused by two links with DIFFERENT
-        # colour overrides must emit two distinct (differently-coloured) meshes
-        key = (os.path.abspath(src), fmt, color)
+    def _emit(base, src, fmt, color, transform=None):
+        # key on colour + bake transform too: the same source reused by two links
+        # with a DIFFERENT colour or a DIFFERENT baked origin must emit distinct
+        # meshes
+        tkey = None if transform is None else tuple(
+            round(float(x), 7) for x in transform.flatten())
+        key = (os.path.abspath(src), fmt, color, tkey)
         if key in done:
             return done[key]
         name, i = f"{base}.{fmt}", 1
@@ -740,10 +852,10 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
             i += 1
             name = f"{base}_{i}.{fmt}"
         try:
-            if src.lower().endswith(f".{fmt}") and not color:
-                # already the target format and no colour override: copy the mesh
-                # verbatim (a URDF re-export shipping its own .dae/.stl) -- avoids
-                # a lossy + sometimes-failing trimesh round-trip
+            if src.lower().endswith(f".{fmt}") and not color and transform is None:
+                # already the target format, no colour override, no bake: copy
+                # the mesh verbatim (a URDF re-export shipping its own .dae/.stl)
+                # -- avoids a lossy + sometimes-failing trimesh round-trip
                 with open(src, "rb") as f:
                     data = f.read()
                 if fmt == "dae":             # ship the .dae's sidecar textures too
@@ -756,7 +868,7 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
                                 files.append((arc, f.read()))
                             used_names.add(arc)
             else:
-                data = _CONVERT[fmt](src, color=color)
+                data = _CONVERT[fmt](src, color=color, transform=transform)
         except Exception as e:
             errors.append(f"{base}: {fmt} convert failed ({e!r})")
             return None
@@ -809,11 +921,14 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
             names = _emit_coacd(base, src)
             if not names:
                 continue
+            m_bake = bake.get(id(meshes[0]))
             idx = list(link).index(block)
             link.remove(block)
             # deep-copy the original block per part so <origin> + formatting carry
             for k, name in enumerate(names):
                 nb = copy.deepcopy(block)
+                if m_bake is not None:         # CoACD parts are in source frame:
+                    _set_origin_el(nb, m_bake)  # carry the bake transform here
                 next(nb.iter("mesh")).set(
                     "filename", f"package://{pkg}/{mesh_rel}/{name}")
                 link.insert(idx + k, nb)
@@ -836,7 +951,8 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
                     if src is None:
                         errors.append(f"no source mesh for '{base}'")
                         continue
-                    name = _emit(base, src, fmt, link_color or colors.get(base))
+                    name = _emit(base, src, fmt, link_color or colors.get(base),
+                                 transform=bake.get(id(mesh)))
                     if name is not None:
                         mesh.set("filename",
                                  f"package://{pkg}/{mesh_rel}/{name}")
@@ -889,7 +1005,7 @@ def write_ros_description_package(pkg_dir, robot_name, dest_dir,
                                   collision="copy",
                                   collision_quality="balanced",
                                   merge_fixed=False, mesh_dir=None,
-                                  loop_closures=None):
+                                  loop_closures=None, zero_origins=True):
     """Write the ROS package under ``dest_dir`` and return its directory path.
     The package is named ``pkg_name`` if given, else ``<robot_name>_description``;
     the URDF inside is named ``urdf_name`` if given, else the package name.
@@ -906,7 +1022,8 @@ def write_ros_description_package(pkg_dir, robot_name, dest_dir,
                                   collision=collision,
                                   collision_quality=collision_quality,
                                   merge_fixed=merge_fixed, mesh_dir=mesh_dir,
-                                  loop_closures=loop_closures)
+                                  loop_closures=loop_closures,
+                                  zero_origins=zero_origins)
     root = os.path.abspath(dest_dir)
     for arc, data in files:
         dst = os.path.join(root, *arc.split("/"))
