@@ -4597,16 +4597,19 @@ document.getElementById('redetectmimic')
 (function () {
   const el = document.getElementById('launchitcmd');
   if (!el) { return; }
-  // Robust across WSL networking modes (and a LAN box) without the user caring:
-  // try the browser's host, then localhost (mirrored WSL / same machine), then
-  // the WSL2 NAT gateway -- the first that responds wins, and launch_it.sh
-  // derives its zip URL from that same host, so it all stays consistent.
+  // Works in any shell (bash / zsh / fish) AND across WSL networking modes,
+  // without the user caring: the outer shell only sees `bash -c '...' | bash`
+  // (no process substitution), and the host detection runs inside that bash.
+  // It tries the browser host, then localhost (mirrored WSL / same machine),
+  // then the WSL2 NAT gateway; the first that responds wins, and launch_it.sh
+  // derives its zip URL from that same host so the whole flow stays consistent.
   const port = location.port || '8090';
   const lh = 'localhost:' + port;
-  const gw = `$(ip route show default 2>/dev/null|awk '{print $3}'):${port}`;
-  const hosts = (location.host === lh) ? [lh, gw] : [location.host, lh, gw];
-  const cmd = 'bash <(' + hosts.map(
-    h => `curl -fs http://${h}/api/launch_it.sh`).join(' || ') + ')';
+  const heads = (location.host === lh) ? [lh] : [location.host, lh];
+  const hostList = heads.join(' ')
+    + ` $(ip route show default 2>/dev/null | cut -d" " -f3):${port}`;
+  const cmd = `bash -c 'for H in ${hostList}; do `
+    + `curl -fs http://$H/api/launch_it.sh && break; done' | bash`;
   el.textContent = cmd;
   el.addEventListener('click', async () => {
     try {
