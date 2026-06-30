@@ -63,8 +63,8 @@ def _graph(comp_states, robot="r"):
 def test_build_model_sets_mass_only_on_fixed_child_only():
     """`mass_only:` config flags the matching part; the only-fixed guard keeps it
     on a fixed child and drops it (with a warning) on a movable one / the root."""
-    from sw2robot.exporter.state import ComponentState
     from sw2robot.exporter.model import build_model
+    from sw2robot.exporter.state import ComponentState
     comps = [
         ComponentState(name="base", link_name="base", world=_eye(), fixed=True,
                        sw_mass=1.0, sw_com=[0, 0, 0], sw_inertia=[1, 0, 0, 1, 0, 1]),
@@ -93,8 +93,8 @@ def test_build_model_sets_mass_only_on_fixed_child_only():
 
 
 def test_build_model_mass_only_unmatched_name_is_ignored():
-    from sw2robot.exporter.state import ComponentState
     from sw2robot.exporter.model import build_model
+    from sw2robot.exporter.state import ComponentState
     comps = [ComponentState(name="base", link_name="base", world=_eye(),
                             fixed=True, sw_mass=1.0, sw_com=[0, 0, 0],
                             sw_inertia=[1, 0, 0, 1, 0, 1])]
@@ -128,7 +128,7 @@ def test_um_set_types_maps_mass_only_to_fixed_plus_flag(tmp_path):
     """URDF-mode: a 'mass_only' type change sets the joint fixed AND flags the
     child link mass-only; switching to a real type clears the flag."""
     import sw2robot.editor.core as core
-    from sw2robot.editor.webserver import _um_set_types, _um
+    from sw2robot.editor.webserver import _um, _um_set_types
     urdf = ('<robot name="r"><link name="a"/><link name="b"/>'
             '<joint name="j" type="revolute"><parent link="a"/><child link="b"/>'
             '<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" '
@@ -152,9 +152,9 @@ def test_build_writes_mass_only_sidecar_for_export(tmp_path):
     """End-to-end through build(): the working URDF keeps the stripped link, and
     a mass_only.yaml sidecar lists its final name so the detached ROS export can
     fold it.  A build with no mass-only links leaves no stale sidecar behind."""
-    from sw2robot.exporter.state import ComponentState, GraphState
     from sw2robot.exporter.export import build
     from sw2robot.exporter.ros_export import _read_mass_only
+    from sw2robot.exporter.state import ComponentState, GraphState
 
     pkg = tmp_path / "pkg"
     pkg.mkdir()

@@ -384,7 +384,7 @@ def _um_set_types(state, changes):
         j = _um_joint_by_child(state, child)
         # "mass_only" is a front-end-only joint type -> fixed joint + the child
         # link flagged mass-only; any real type clears the flag.
-        if not j or t not in core.JOINT_TYPES + ("mass_only",):
+        if not j or t not in (*core.JOINT_TYPES, "mass_only"):
             missed.append(ch)
             continue
         core.set_joint_type(state, j, "fixed" if t == "mass_only" else t)
