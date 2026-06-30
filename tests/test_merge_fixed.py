@@ -242,3 +242,36 @@ def test_only_folds_just_the_named_link_not_the_whole_fixed_tree():
     links = {ln.get("name") for ln in root.findall("link")}
     assert "pcb" not in links            # the mass-only link folded
     assert "bracket" in links            # the ordinary fixed child is untouched
+
+
+def test_mass_only_folds_into_a_coordinate_frame_parent():
+    """A mass-only link whose fixed parent is a coordinate frame still folds: the
+    fold adds only <inertial> (no geometry), so the frame keeps its TF and is NOT
+    itself lumped away -- the child's weight reaches the frame instead of being
+    stranded on a geometry-less, never-folded link.  base--fixed-->frame--fixed-->pcb."""
+    urdf = """<?xml version="1.0"?>
+<robot name="f">
+  <link name="base"><inertial><mass value="2"/>
+    <inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/></inertial>
+    <visual><geometry><box size="1 1 1"/></geometry></visual></link>
+  <joint name="j1" type="fixed"><origin xyz="1 0 0" rpy="0 0 0"/>
+    <parent link="base"/><child link="frame"/></joint>
+  <link name="frame"/>
+  <joint name="j2" type="fixed"><origin xyz="0 1 0" rpy="0 0 0"/>
+    <parent link="frame"/><child link="pcb"/></joint>
+  <link name="pcb"><inertial><mass value="3"/>
+    <inertia ixx="2" ixy="0" ixz="0" iyy="2" iyz="0" izz="2"/></inertial></link>
+</robot>"""
+    root = ET.fromstring(urdf)
+    n, _ = merge_fixed_links(root, only={"pcb"})
+    assert n == 1
+    links = {ln.get("name") for ln in root.findall("link")}
+    assert "pcb" not in links            # the mass-only link folded into the frame
+    assert "base" in links and "frame" in links
+    frame = next(ln for ln in root.findall("link") if ln.get("name") == "frame")
+    # the frame stays a pure coordinate frame (TF preserved, no geometry added)
+    assert frame.find("visual") is None and frame.find("collision") is None
+    # and it is NOT itself lumped into base -- its fixed joint survives
+    assert "j1" in {j.get("name") for j in root.findall("joint")}
+    # pcb's weight reached the frame (mass-only kept the inertial)
+    assert abs(float(frame.find("inertial").find("mass").get("value")) - 3.0) < 1e-9

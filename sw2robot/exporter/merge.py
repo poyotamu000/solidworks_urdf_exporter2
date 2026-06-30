@@ -188,8 +188,17 @@ def merge_fixed_links(root, force_merge=None, only=None):
             if cl is None or pl is None \
                     or not (_has_geometry(cl) or cname in force_merge):
                 continue
-            if cname in original_frames or pname in original_frames:
-                continue                       # preserve coordinate frames
+            # frames are preserved: never merged away as a child, and normally
+            # never a merge TARGET either (a frame that received geometry could
+            # then be lumped away, dropping its TF).  EXCEPTION: a geometry-less
+            # mass-only child (force_merge) folding into a frame parent adds only
+            # <inertial>, never geometry, so the frame stays a frame -- allow it
+            # so the child's weight still reaches the parent instead of stranding.
+            if cname in original_frames:
+                continue
+            if pname in original_frames and not (
+                    cname in force_merge and not _has_geometry(cl)):
+                continue
             target = (j, pl, cl, pname, cname)
             break
         if target is None:
