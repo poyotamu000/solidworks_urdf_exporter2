@@ -2377,7 +2377,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # "mass_only" is a front-end-only joint type: it maps to a fixed
                 # joint PLUS the child component on the `mass_only:` list (weight
                 # kept, geometry dropped).  Picking any real type clears it.
-                accepted = core.JOINT_TYPES + ("mass_only",)
+                accepted = (*core.JOINT_TYPES, "mass_only")
                 mass_add, mass_remove = set(), set()
                 for ch in changes:
                     c, t = ch.get("child"), ch.get("type")
