@@ -784,9 +784,12 @@ def build_urdf(state: RobotCompilerState, sanitize: bool = True,
     # mass-only is valid only on a fixed child (its inertial lumps into the fixed
     # parent); honour it only there, so a stray flag can't make a movable link
     # invisible.  Joint types are final by now (the overlay loop above ran).
+    # only the mass-only path needs the child->joint-type map; skip building it
+    # (a full joint sweep) on the common no-mass-only refresh
+    any_mass_only = any(led.mass_only for led in state.link_edits.values())
     child_jtype = {je.find("child").get("link"): je.get("type")
                    for je in root.findall("joint")
-                   if je.find("child") is not None}
+                   if je.find("child") is not None} if any_mass_only else {}
     mass_only = set()
     for le in root.findall("link"):
         led = state.link_edits.get(le.get("name"))

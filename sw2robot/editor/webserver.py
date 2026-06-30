@@ -666,21 +666,41 @@ def _link_names_inverse(yml_txt):
     return inv
 
 
+def _set_yaml_list_block(txt, key, add=(), remove=(), clear=False,
+                         append_if_absent=True):
+    """Add/remove entries in a top-level ``key:`` list-of-strings block in a
+    joints.yaml (e.g. ``mass_only:`` / ``exclude:``).  ``clear`` empties the
+    block; ``append_if_absent`` puts a freshly created block at the end of the
+    file (vs the start).  Returns ``(new_text, members)`` where ``members`` is
+    the resulting list of names (block dropped entirely when it ends up empty)."""
+    m = re.search(r"(?m)^" + re.escape(key) + r":\n((?:- .*\n)*)", txt)
+    block = m.group(1) if m else ""
+    if clear:
+        block = ""
+    else:
+        for nm in set(add) | set(remove):       # drop existing entries first
+            block = re.sub(r"(?m)^- " + re.escape(nm) + r"\s*$\n?", "", block)
+        for nm in add:
+            block += f"- {nm}\n"
+    new = f"{key}:\n{block}" if block else ""
+    if m:
+        out = txt[:m.start()] + new + txt[m.end():]
+    elif not new:
+        out = txt                               # nothing to write -> no churn
+    elif append_if_absent:
+        out = (txt if txt.endswith("\n") or not txt else txt + "\n") + new
+    else:
+        out = new + txt
+    members = [ln[2:].strip() for ln in block.splitlines()]
+    return out, members
+
+
 def _set_mass_only_members(txt, add, remove):
     """Add/remove component names in the joints.yaml ``mass_only:`` list block.
     Returns the updated text (block dropped entirely when it ends up empty)."""
     if not add and not remove:
         return txt
-    m = re.search(r"(?m)^mass_only:\n((?:- .*\n)*)", txt)
-    block = m.group(1) if m else ""
-    for nm in set(add) | set(remove):           # drop existing entries first
-        block = re.sub(r"(?m)^- " + re.escape(nm) + r"\s*$\n?", "", block)
-    for nm in add:
-        block += f"- {nm}\n"
-    new = f"mass_only:\n{block}" if block else ""
-    if m:
-        return txt[:m.start()] + new + txt[m.end():]
-    return (txt if txt.endswith("\n") or not txt else txt + "\n") + new
+    return _set_yaml_list_block(txt, "mass_only", add=add, remove=remove)[0]
 
 
 def _read_colors(pkg_dir, urdf_rel):
@@ -2349,6 +2369,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         {"error": f"{name}.joints.yaml not found -- this "
                                   f"package predates config templates; "
                                   f"re-extract it once"}, 400)
+                from . import core
                 with open(yml, encoding="utf-8") as f:
                     txt = f.read()
                 linv = _link_names_inverse(txt)   # display -> component
@@ -2356,12 +2377,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # "mass_only" is a front-end-only joint type: it maps to a fixed
                 # joint PLUS the child component on the `mass_only:` list (weight
                 # kept, geometry dropped).  Picking any real type clears it.
+                accepted = core.JOINT_TYPES + ("mass_only",)
                 mass_add, mass_remove = set(), set()
                 for ch in changes:
                     c, t = ch.get("child"), ch.get("type")
                     c = linv.get(c, c)
-                    if t not in ("fixed", "revolute", "continuous",
-                                 "prismatic", "mass_only") or not c:
+                    if t not in accepted or not c:
                         missed.append(ch)
                         continue
                     eff = "fixed" if t == "mass_only" else t
@@ -2703,19 +2724,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                           else (f"exclude {names[0][:30]}"
                                 + (f" +{len(names) - 1}" if len(names) > 1
                                    else "")))
-                m = re.search(r"(?m)^exclude:\n((?:- .*\n)*)", txt)
-                block = m.group(1) if m else ""
-                if body.get("clear"):
-                    block = ""
-                else:
-                    for nm in names:
-                        block = re.sub(r"(?m)^- " + re.escape(nm)
-                                       + r"\s*$\n?", "", block)
-                        if body.get("on", True):
-                            block += f"- {nm}\n"
-                new = f"exclude:\n{block}" if block else ""
-                txt = (txt[:m.start()] + new + txt[m.end():]) if m \
-                    else (new + txt)
+                # a freshly created exclude: block goes at the top of the file
+                txt, excluded = _set_yaml_list_block(
+                    txt, "exclude", clear=body.get("clear", False),
+                    add=names if body.get("on", True) else (),
+                    remove=names, append_if_absent=False)
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
                 from sw2robot.exporter.export import build
@@ -2726,8 +2739,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         {"error": f"rebuild failed: {e}"}, 500)
                 print(f"[sw2robot.web] set_exclude: {names} "
                       f"on={body.get('on', True)} clear={body.get('clear')}")
-                return self._send_json({"excluded": [
-                    ln[2:].strip() for ln in block.splitlines()]})
+                return self._send_json({"excluded": excluded})
             if parsed.path == "/api/set_material":
                 cls = type(self)
                 n = int(self.headers.get("Content-Length", 0))

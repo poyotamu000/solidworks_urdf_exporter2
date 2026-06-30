@@ -122,6 +122,26 @@ def test_set_mass_only_members_adds_and_removes():
     # selecting a real type later removes it again (empty list -> block dropped)
     cleared = _set_mass_only_members(added, set(), {"pcb"})
     assert "- pcb" not in cleared and "mass_only:" not in cleared
+    # a remove that matches nothing is a no-op (no spurious trailing newline)
+    assert _set_mass_only_members(txt, set(), {"absent"}) == txt
+
+
+def test_set_yaml_list_block_append_vs_prepend_and_clear():
+    """The shared list-block editor backs both mass_only: (append a fresh block)
+    and exclude: (prepend it), plus clear + members readback."""
+    from sw2robot.editor.webserver import _set_yaml_list_block
+    txt = "base: x\njoints:\n  - parent: a\n    child: pcb\n    type: fixed\n"
+    # mass_only-style: a freshly created block is appended at the end
+    out, members = _set_yaml_list_block(txt, "mass_only", add=["pcb"])
+    assert out.endswith("mass_only:\n- pcb\n") and members == ["pcb"]
+    # exclude-style: a freshly created block is prepended at the top
+    out, members = _set_yaml_list_block(txt, "exclude", add=["bolt"],
+                                        remove=["bolt"], append_if_absent=False)
+    assert out.startswith("exclude:\n- bolt\n") and members == ["bolt"]
+    # clear empties the block entirely (and reports no members)
+    out2, members2 = _set_yaml_list_block(out, "exclude", clear=True,
+                                          append_if_absent=False)
+    assert "exclude:" not in out2 and members2 == []
 
 
 def test_um_set_types_maps_mass_only_to_fixed_plus_flag(tmp_path):
