@@ -685,7 +685,8 @@ def _sanitize_urdf_names(root) -> None:
             mim.set("joint", jmap[mim.get("joint")])
 
 
-def build_urdf(state: RobotCompilerState, sanitize: bool = True) -> str:
+def build_urdf(state: RobotCompilerState, sanitize: bool = True,
+               fold_mass_only: bool = True) -> str:
     """The CAD URDF with the interactive overlay baked in -- per-joint (rename,
     limits, mimic, axis flip, joint type) AND per-link (colour, inertial) -- so
     the exported package and configs stay consistent.
@@ -694,7 +695,13 @@ def build_urdf(state: RobotCompilerState, sanitize: bool = True) -> str:
     :func:`_sanitize_urdf_names` last, so a CAD-derived URDF is guaranteed free
     of hyphens and other unsafe characters.  Pass ``sanitize=False`` when editing
     a URDF the user opened directly: its names are already its own contract (the
-    viewer shows them, edits reference them), so they must be preserved verbatim."""
+    viewer shows them, edits reference them), so they must be preserved verbatim.
+
+    ``fold_mass_only`` (default) lumps each mass-only link into its fixed parent
+    -- the export representation.  Pass ``False`` for the editor's served URDF so
+    a mass-only link is kept (geometry stripped, link + fixed joint preserved) and
+    stays selectable in the joint tree; otherwise it folds away and the user has
+    no row left to toggle it back off (mirrors how CAD mode keeps the link)."""
     # Preserve XML comments on the round trip: a CAD-exported URDF carries
     # per-link ``<!-- sw2robot material=... density=... inertia=... -->``
     # provenance, and the user may open / edit / re-export it here.  The default
@@ -795,7 +802,8 @@ def build_urdf(state: RobotCompilerState, sanitize: bool = True) -> str:
             mass_only.add(le.get("name"))
 
     # fold the mass-only links into their fixed parent so the weight reaches it
-    if mass_only:
+    # (export only; the editor keeps the stripped link so it stays selectable)
+    if mass_only and fold_mass_only:
         from sw2robot.exporter.merge import merge_fixed_links
         merge_fixed_links(root, only=mass_only)
 

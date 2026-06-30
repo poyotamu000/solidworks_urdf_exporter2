@@ -245,7 +245,8 @@ def _um_live_urdf(pkg_dir, urdf_rel):
         # atomic replace: an async reader (collision / auto-limits) holding this
         # path must never see a truncated file mid-rewrite.  The temp also starts
         # with '.' so a concurrent _resolve_package never picks it as the URDF.
-        data = core.build_urdf(_um["state"], sanitize=False)
+        data = core.build_urdf(_um["state"], sanitize=False,
+                               fold_mass_only=False)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(live_path) or ".",
                                    prefix=".live", suffix=".urdf")
         try:
@@ -2199,8 +2200,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if (is_urdf and _um["state"] is not None
                         and not _cad_mode(cls.pkg_dir)):
                     from . import core
+                    # keep mass-only links in the editor view (geometry stripped,
+                    # link + fixed joint preserved) so their joint row stays and
+                    # the user can toggle the flag back off; the merged view DOES
+                    # fold them, matching what the export produces
                     served = _rewrite_package_urls(
-                        core.build_urdf(_um["state"], sanitize=False),
+                        core.build_urdf(_um["state"], sanitize=False,
+                                        fold_mass_only=merged),
                         cls.urdf_rel, cls.pkg_dir)
                     return self._send_bytes(_maybe_merge(served).encode("utf-8"),
                                             "application/xml")
