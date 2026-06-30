@@ -583,9 +583,9 @@ def test_coacd_invalid_quality_rejected(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ros_export, "coacd_available", lambda: True)
     pkg_dir = _make_pkg(tmp_path, robot="c")
-    with pytest.raises(ValueError, match="collision_quality"):
+    with pytest.raises(ValueError, match="coacd_quality"):
         ros_export.build_ros_description(pkg_dir, "c", collision="coacd",
-                                         collision_quality="ultra")
+                                         coacd_quality="ultra")
 
 
 def test_preview_warms_export_cache(tmp_path, monkeypatch):

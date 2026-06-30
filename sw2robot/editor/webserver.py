@@ -575,7 +575,7 @@ exec ros2 launch "$PKG" display.launch.py
 
 def _export_zip(pkg_dir, robot_name, mesh_fmt="dae", ros_version=1,
                 pkg_name=None, urdf_name=None, colors=None,
-                collision="copy", collision_quality="balanced",
+                collision="copy", coacd_quality="balanced",
                 merge_fixed=False, mesh_dir=None):
     """ZIP a portable ROS package (package:// URLs), named ``pkg_name`` if given
     else ``<robot_name>_description``; the URDF inside is named ``urdf_name`` if
@@ -610,7 +610,7 @@ def _export_zip(pkg_dir, robot_name, mesh_fmt="dae", ros_version=1,
                                                urdf_name=urdf_name,
                                                colors=colors,
                                                collision=collision,
-                                               collision_quality=collision_quality,
+                                               coacd_quality=coacd_quality,
                                                merge_fixed=merge_fixed,
                                                mesh_dir=mesh_dir,
                                                **kwargs):
@@ -2072,7 +2072,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                                 urdf_name=urdf_name,
                                                 colors=colors,
                                                 collision=collision,
-                                                collision_quality=cquality,
+                                                coacd_quality=cquality,
                                                 merge_fixed=merge_fixed,
                                                 mesh_dir=mesh_dir)
                 except ValueError as e:

@@ -629,7 +629,7 @@ def collision_preview_glbs(pkg_dir, robot_name, quality="balanced", progress=Non
 
     if mode == "coacd":
         if quality not in _COACD_PRESETS:
-            raise ValueError(f"unsupported collision_quality: {quality!r} "
+            raise ValueError(f"unsupported coacd_quality: {quality!r} "
                              f"(use one of {sorted(_COACD_PRESETS)})")
         if not coacd_available():
             raise ValueError(
@@ -945,7 +945,7 @@ def _iter_sources(root, pkg_dir, own_pkgs, contexts):
 def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
                           ctx_fmt=_CTX_FMT, ros_version=1, pkg_name=None,
                           urdf_name=None, colors=None, collision="copy",
-                          collision_quality="balanced", merge_fixed=False,
+                          coacd_quality="balanced", merge_fixed=False,
                           mesh_dir=None, loop_closures=None,
                           zero_origins=True):
     """``pkg_dir`` (a built package) -> ``[(arcname, bytes), ...]`` for a portable
@@ -974,7 +974,7 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
     STL (the "simple collision" alternative -- one convex shape per link, what
     path planning usually wants); ``'coacd'`` runs CoACD approximate convex
     decomposition, replacing each ``<collision>``'s mesh with a *set* of convex
-    part STLs (better for high-fidelity physics).  ``collision_quality``
+    part STLs (better for high-fidelity physics).  ``coacd_quality``
     (``'balanced'`` | ``'fine'``) picks the CoACD preset and is ignored for the
     other modes.  ``'coacd'`` needs the optional ``coacd`` package; its absence
     raises a clear error.  ``'hull'`` has no extra dependency.  CoACD
@@ -1002,9 +1002,9 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
         raise ValueError(f"unsupported collision mode: {collision!r} "
                          "(use 'copy', 'hull' or 'coacd')")
     if collision == "coacd":
-        if collision_quality not in _COACD_PRESETS:
+        if coacd_quality not in _COACD_PRESETS:
             raise ValueError(
-                f"unsupported collision_quality: {collision_quality!r} "
+                f"unsupported coacd_quality: {coacd_quality!r} "
                 f"(use one of {sorted(_COACD_PRESETS)})")
         if not coacd_available():
             raise ValueError(
@@ -1068,11 +1068,11 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
         # build the convex collision part STL(s) for a source mesh per the
         # selected `collision` mode; returns the emitted mesh names (one per
         # part -- a single hull, or N CoACD parts), or None on error.
-        key = (os.path.abspath(src), collision, collision_quality)
+        key = (os.path.abspath(src), collision, coacd_quality)
         if key in coll_done:
             return coll_done[key]
         try:
-            blobs = _collision_part_stls(src, collision, collision_quality,
+            blobs = _collision_part_stls(src, collision, coacd_quality,
                                          coacd_cache_dir)
         except Exception as e:
             errors.append(f"{base}: {collision} collision failed ({e!r})")
@@ -1132,7 +1132,7 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
         # so it needs no warming -- _emit_collision builds it inline.
         def _warm_coacd(src):
             try:
-                _coacd_part_stls(src, collision_quality, coacd_cache_dir)
+                _coacd_part_stls(src, coacd_quality, coacd_cache_dir)
             except Exception:
                 pass                        # the real error resurfaces in _emit_collision
         _parallel(_warm_coacd,
@@ -1266,14 +1266,14 @@ def write_ros_description_package(pkg_dir, robot_name, dest_dir,
                                   email="auto@example.com", ros_version=1,
                                   pkg_name=None, urdf_name=None, colors=None,
                                   collision="copy",
-                                  collision_quality="balanced",
+                                  coacd_quality="balanced",
                                   merge_fixed=False, mesh_dir=None,
                                   loop_closures=None, zero_origins=True):
     """Write the ROS package under ``dest_dir`` and return its directory path.
     The package is named ``pkg_name`` if given, else ``<robot_name>_description``;
     the URDF inside is named ``urdf_name`` if given, else the package name.
     ``ros_version`` (1 = catkin, 2 = ament_cmake), ``colors`` (per-link colour
-    overrides), ``collision`` / ``collision_quality`` (CoACD collision-mesh
+    overrides), ``collision`` / ``coacd_quality`` (CoACD collision-mesh
     decomposition), ``merge_fixed`` (lump fixed-joint children into parents),
     ``mesh_dir`` (package-relative mesh directory, default ``meshes``) and
     ``loop_couplings`` (ROS 2 closed-loop relay node + config) are passed
@@ -1283,7 +1283,7 @@ def write_ros_description_package(pkg_dir, robot_name, dest_dir,
                                   ros_version=ros_version, pkg_name=pkg,
                                   urdf_name=urdf_name, colors=colors,
                                   collision=collision,
-                                  collision_quality=collision_quality,
+                                  coacd_quality=coacd_quality,
                                   merge_fixed=merge_fixed, mesh_dir=mesh_dir,
                                   loop_closures=loop_closures,
                                   zero_origins=zero_origins)
