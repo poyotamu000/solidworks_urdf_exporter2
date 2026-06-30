@@ -573,7 +573,7 @@ def test_preview_warms_export_cache(tmp_path, monkeypatch):
 
     pkg_dir = _make_pkg(tmp_path, robot="c")
     # 1) generate the preview (decomposes the one mesh -> 1 CoACD run)
-    ros_export.coacd_preview_glbs(pkg_dir, "c", quality="balanced")
+    ros_export.collision_preview_glbs(pkg_dir, "c", quality="balanced")
     assert calls["n"] == 1
     # 2) export with collision='coacd' -- reuses the cache, no second CoACD run
     files = dict(ros_export.build_ros_description(pkg_dir, "c",
@@ -588,8 +588,8 @@ def test_preview_warms_export_cache(tmp_path, monkeypatch):
     assert len(link.findall("collision")) == 2
 
 
-def test_coacd_preview_glbs_per_link(tmp_path, monkeypatch):
-    """coacd_preview_glbs writes one colour-coded GLB per link with a collision
+def test_collision_preview_glbs_per_link(tmp_path, monkeypatch):
+    """collision_preview_glbs writes one colour-coded GLB per link with a collision
     mesh, reports progress per link, and shares the export's part cache."""
     import trimesh
 
@@ -601,7 +601,7 @@ def test_coacd_preview_glbs_per_link(tmp_path, monkeypatch):
 
     pkg_dir = _make_pkg(tmp_path, robot="c")
     seen = []
-    out = ros_export.coacd_preview_glbs(
+    out = ros_export.collision_preview_glbs(
         pkg_dir, "c", quality="balanced",
         progress=lambda d, t, link, rel: seen.append((d, t, link, rel)))
 

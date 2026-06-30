@@ -879,7 +879,7 @@ def test_coacd_preview_endpoints(server, monkeypatch):
                 progress(i, len(links), link, rel)
         return out
 
-    monkeypatch.setattr(ros_export, "coacd_preview_glbs", fake_preview)
+    monkeypatch.setattr(ros_export, "collision_preview_glbs", fake_preview)
 
     # bad quality -> 400, no job started
     code, _ = _get_status(server, "/api/collision/coacd/init?quality=ultra")
@@ -936,7 +936,7 @@ def test_coacd_cancel_stops_at_link_boundary(server, monkeypatch):
                 progress(i + 1, total, link, rel)
         return out
 
-    monkeypatch.setattr(ros_export, "coacd_preview_glbs", slow_preview)
+    monkeypatch.setattr(ros_export, "collision_preview_glbs", slow_preview)
 
     assert _get_json(
         server, "/api/collision/coacd/init?quality=balanced")["running"] is True

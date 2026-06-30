@@ -424,7 +424,7 @@ def _coacd_part_stls(src, quality, cache_dir):
 
 
 # a fixed high-contrast palette so adjacent convex parts read apart in the viewer
-_COACD_PALETTE = (
+_COLLISION_PALETTE = (
     (228, 26, 28), (55, 126, 184), (77, 175, 74), (152, 78, 163),
     (255, 127, 0), (210, 210, 40), (166, 86, 40), (247, 129, 191),
     (102, 194, 165), (252, 141, 98), (141, 160, 203), (153, 153, 153),
@@ -572,7 +572,7 @@ def _bake_origins(root, pkg_dir, own_pkgs, cache):
     return bake, tf_scale
 
 
-def coacd_preview_glbs(pkg_dir, robot_name, quality="balanced", progress=None,
+def collision_preview_glbs(pkg_dir, robot_name, quality="balanced", progress=None,
                        urdf_path=None, should_cancel=None, on_start=None,
                        max_workers=None):
     """Decompose every link's ``<collision>`` mesh with CoACD and write one
@@ -661,7 +661,7 @@ def coacd_preview_glbs(pkg_dir, robot_name, quality="balanced", progress=None,
             for data in _coacd_part_stls(src, quality, cache_dir):
                 part = trimesh.load(io.BytesIO(data), file_type="stl")
                 part.apply_transform(mat)
-                rgb = _COACD_PALETTE[part_i % len(_COACD_PALETTE)]
+                rgb = _COLLISION_PALETTE[part_i % len(_COLLISION_PALETTE)]
                 part.visual = trimesh.visual.ColorVisuals(
                     mesh=part,
                     face_colors=np.tile([*rgb, 255], (len(part.faces), 1)))
