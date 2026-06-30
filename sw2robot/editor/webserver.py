@@ -1534,13 +1534,13 @@ def _run_coll_preview_job(pkg_dir, robot_name, urdf_rel, quality, mode="coacd"):
         # the current one so the next /api/collision/init rebuilds with them
         with _coll_lock:
             _coll.update(key=None, ctx=None)
-        print(f"[sw2robot.web] coacd preview "
+        print(f"[sw2robot.web] collision preview "
               f"{'cancelled' if stopped else 'ready'}: "
               f"{len(_coll_preview_job['parts'])} links")
     except Exception as e:
         with _coll_preview_lock:
             _coll_preview_job.update(running=False, error=repr(e))
-        print(f"[sw2robot.web] coacd preview FAILED: {e!r}")
+        print(f"[sw2robot.web] collision preview FAILED: {e!r}")
 
 
 # ---- auto joint limits: self-collision sweep over the live collision model.
@@ -2111,7 +2111,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(body)
                 return None
-            if path == "/api/collision/coacd/init":
+            if path == "/api/collision/preview/init":
                 cls = type(self)
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
@@ -2119,8 +2119,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if mode not in ("coacd", "hull"):
                     return self._send_json(
                         {"error": f"unsupported collision mode: {mode}"}, 400)
+                # quality only affects CoACD, but validate it regardless so a
+                # malformed value is never silently accepted (and echoed back)
+                # for hull
                 quality = (query.get("quality") or ["balanced"])[0]
-                if mode == "coacd" and quality not in ("balanced", "fine"):
+                if quality not in ("balanced", "fine"):
                     return self._send_json(
                         {"error": f"unsupported collision quality: {quality}"},
                         400)
@@ -2146,14 +2149,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     daemon=True).start()
                 return self._send_json(
                     {"running": True, "quality": quality, "mode": mode})
-            if path == "/api/collision/coacd/cancel":
+            if path == "/api/collision/preview/cancel":
                 # request stop; the job ends at the next link boundary (CoACD
                 # itself is not interruptible mid-link)
                 with _coll_preview_lock:
                     if _coll_preview_job["running"]:
                         _coll_preview_job["cancel"] = True
                 return self._send_json({"cancelling": True})
-            if path == "/api/collision/coacd/status":
+            if path == "/api/collision/preview/status":
                 with _coll_preview_lock:
                     return self._send_json(dict(_coll_preview_job))
             if path.startswith("/pkg/"):

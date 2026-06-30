@@ -882,15 +882,15 @@ def test_coacd_preview_endpoints(server, monkeypatch):
     monkeypatch.setattr(ros_export, "collision_preview_glbs", fake_preview)
 
     # bad quality -> 400, no job started
-    code, _ = _get_status(server, "/api/collision/coacd/init?quality=ultra")
+    code, _ = _get_status(server, "/api/collision/preview/init?quality=ultra")
     assert code == 400
 
-    r = _get_json(server, "/api/collision/coacd/init?quality=balanced")
+    r = _get_json(server, "/api/collision/preview/init?quality=balanced")
     assert r.get("running") is True and r.get("quality") == "balanced"
 
     deadline, s = time.time() + 10, {}
     while time.time() < deadline:
-        s = _get_json(server, "/api/collision/coacd/status")
+        s = _get_json(server, "/api/collision/preview/status")
         if not s.get("running"):
             break
         time.sleep(0.05)
@@ -931,15 +931,15 @@ def test_collision_preview_hull_mode(server, monkeypatch):
     monkeypatch.setattr(ros_export, "collision_preview_glbs", fake_preview)
 
     # bad mode -> 400, no job started
-    code, _ = _get_status(server, "/api/collision/coacd/init?mode=bogus")
+    code, _ = _get_status(server, "/api/collision/preview/init?mode=bogus")
     assert code == 400
 
-    r = _get_json(server, "/api/collision/coacd/init?mode=hull")
+    r = _get_json(server, "/api/collision/preview/init?mode=hull")
     assert r.get("running") is True and r.get("mode") == "hull"
 
     deadline, s = time.time() + 10, {}
     while time.time() < deadline:
-        s = _get_json(server, "/api/collision/coacd/status")
+        s = _get_json(server, "/api/collision/preview/status")
         if not s.get("running"):
             break
         time.sleep(0.05)
@@ -982,13 +982,13 @@ def test_coacd_cancel_stops_at_link_boundary(server, monkeypatch):
     monkeypatch.setattr(ros_export, "collision_preview_glbs", slow_preview)
 
     assert _get_json(
-        server, "/api/collision/coacd/init?quality=balanced")["running"] is True
+        server, "/api/collision/preview/init?quality=balanced")["running"] is True
     time.sleep(0.4)                          # let a couple links finish
-    assert _get_json(server, "/api/collision/coacd/cancel")["cancelling"] is True
+    assert _get_json(server, "/api/collision/preview/cancel")["cancelling"] is True
 
     deadline, s = time.time() + 10, {}
     while time.time() < deadline:
-        s = _get_json(server, "/api/collision/coacd/status")
+        s = _get_json(server, "/api/collision/preview/status")
         if not s.get("running"):
             break
         time.sleep(0.05)

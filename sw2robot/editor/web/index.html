@@ -4426,7 +4426,7 @@ function collPreviewLoadLink(link, url) {
 }
 async function collPreviewTick() {
   let s;
-  try { s = await (await fetch('/api/collision/coacd/status')).json(); }
+  try { s = await (await fetch('/api/collision/preview/status')).json(); }
   catch (_e) { return; }
   const what = s.mode === 'hull' ? t('coll.hullword') : 'CoACD';
   // pop each newly-finished link into the viewer + log it once
@@ -4495,7 +4495,7 @@ collPreviewStopBtn?.addEventListener('click', async () => {
   collPreviewStopBtn.disabled = true;
   if (collPreviewStatText) { collPreviewStatText.textContent = t('coacd.stopping'); }
   log(t('coacd.stopping'));
-  try { await fetch('/api/collision/coacd/cancel'); } catch (_e) { /* ignore */ }
+  try { await fetch('/api/collision/preview/cancel'); } catch (_e) { /* ignore */ }
 });
 // Abandon the in-flight generate job (the user switched collision mode mid-run).
 // Stop polling FIRST so the now-cancelled job's completion can't reach the
@@ -4504,7 +4504,7 @@ collPreviewStopBtn?.addEventListener('click', async () => {
 function collPreviewAbort() {
   if (collPreviewPoll) { clearInterval(collPreviewPoll); collPreviewPoll = null; }
   collPreviewSetBlink([]);                         // stop the per-link blink timer
-  try { fetch('/api/collision/coacd/cancel'); } catch (_e) { /* ignore */ }
+  try { fetch('/api/collision/preview/cancel'); } catch (_e) { /* ignore */ }
   collPreviewStat?.classList.remove('on');         // hide the "computing" banner
   if (collPreviewProg) { collPreviewProg.textContent = ''; }
   if (collPreviewGenBtn) { collPreviewGenBtn.disabled = false; }
@@ -4527,7 +4527,7 @@ collPreviewGenBtn?.addEventListener('click', async () => {
   const what = mode === 'hull' ? t('coll.hullword') : 'CoACD';
   try {
     const r = await (await fetch(
-      `/api/collision/coacd/init?mode=${encodeURIComponent(mode)}`
+      `/api/collision/preview/init?mode=${encodeURIComponent(mode)}`
       + `&quality=${encodeURIComponent(q)}`)).json();
     if (r.error) { throw new Error(r.error); }
     log(t('coacd.started', { q: mode === 'coacd' ? q : '', what }));
