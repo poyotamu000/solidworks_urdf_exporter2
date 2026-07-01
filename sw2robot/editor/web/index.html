@@ -2677,6 +2677,15 @@ function applyPoseDrag() {
       _pdN.copy(joint.axis).transformDirection(joint.matrixWorld).normalize();
       return _pdD.dot(_pdN);
     };
+    // urdf-loader grabs a joint on mousedown for ANY button (it never checks
+    // e.button), so a middle- or right-drag manipulates the joint instead of
+    // panning/orbiting the camera.  Only the LEFT button should drive a joint;
+    // let the other buttons fall through to OrbitControls.
+    const _el = viewer.renderer.domElement;
+    const _origMouseDown = dc._mouseDown;
+    _el.removeEventListener('mousedown', _origMouseDown);
+    dc._mouseDown = e => { if (e.button === 0) { _origMouseDown(e); } };
+    _el.addEventListener('mousedown', dc._mouseDown);
   } else {
     if (dc.onHover !== _noopHover && dc.onHover !== _origOnHover) {
       _origOnHover = dc.onHover;
