@@ -156,6 +156,60 @@ def test_collision_hull_single_convex_part(tmp_path):
     assert len(hull.vertices) > 0
 
 
+def test_collision_hull_preserves_nonidentity_origin(tmp_path):
+    """A <collision> with a non-identity <origin> keeps that transform on the
+    hull block: the hull STL is emitted in the SOURCE frame, so dropping the
+    origin would misplace the collision volume (the same <origin> guarantee the
+    CoACD path gives, but hull was never exercised with a moved origin)."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter.ros_export import build_ros_description
+
+    if not os.path.exists(_SAMPLE_MESH):
+        pytest.skip("sample .3dxml mesh not present")
+    (tmp_path / "meshes").mkdir()
+    (tmp_path / "urdf").mkdir()
+    shutil.copy(_SAMPLE_MESH, tmp_path / "meshes" / "part.3dxml")
+    urdf = (
+        '<?xml version="1.0"?>\n<robot name="o">\n'
+        '  <link name="base_link">\n'
+        '    <visual><geometry>'
+        '<mesh filename="../meshes/part.3dxml"/></geometry></visual>\n'
+        '    <collision><origin xyz="0.05 0 0" rpy="0 0 0"/><geometry>'
+        '<mesh filename="../meshes/part.3dxml"/></geometry></collision>\n'
+        '  </link>\n</robot>\n')
+    (tmp_path / "urdf" / "o.urdf").write_text(urdf, encoding="utf-8")
+
+    files = dict(build_ros_description(str(tmp_path), "o", collision="hull"))
+    link = ET.fromstring(
+        files["o_description/urdf/o_description.urdf"].decode()).find("link")
+    cols = link.findall("collision")
+    assert len(cols) == 1
+    assert "part_collision_hull.stl" in cols[0].find(".//mesh").get("filename")
+    # the moved origin survives onto the hull block (not zeroed / not dropped)
+    xyz = [float(x) for x in cols[0].find("origin").get("xyz").split()]
+    assert abs(xyz[0] - 0.05) < 1e-6
+    assert abs(xyz[1]) < 1e-6 and abs(xyz[2]) < 1e-6
+
+
+def test_collision_hull_needs_no_coacd(tmp_path, monkeypatch):
+    """hull mode is trimesh-only: it must still emit its convex hull when CoACD
+    is unavailable -- this pins the PR's "no optional dependency" claim, which
+    the plain hull test can't (it would pass with CoACD installed too)."""
+    import trimesh
+
+    from sw2robot.exporter import ros_export
+
+    monkeypatch.setattr(ros_export, "coacd_available", lambda: False)
+    pkg_dir = _make_pkg(tmp_path, robot="fing")
+    files = dict(ros_export.build_ros_description(
+        pkg_dir, "fing", collision="hull"))
+    hull_arc = "fing_description/meshes/part_collision_hull.stl"
+    assert hull_arc in files
+    hull = trimesh.load(io.BytesIO(files[hull_arc]), file_type="stl")
+    assert hull.is_convex and len(hull.vertices) > 0
+
+
 def test_mesh_to_dae_scale_and_loadable():
     if not os.path.exists(_SAMPLE_MESH):
         pytest.skip("sample .3dxml mesh not present")
