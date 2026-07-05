@@ -900,3 +900,37 @@ def test_missing_mesh_aborts_instead_of_half_broken_package(tmp_path):
         build_ros_description(str(tmp_path), "r")
     assert (tmp_path / "urdf" / "r.urdf").read_text(encoding="utf-8") == urdf
     assert sorted(os.listdir(tmp_path / "meshes")) == []
+
+
+@pytest.mark.parametrize("vfmt,cfmt", [("glb", "stl"), ("dae", "glb"),
+                                       ("stl", "glb")])
+def test_visual_and_collision_formats_are_independent(tmp_path, vfmt, cfmt):
+    """The visual and collision selectors are orthogonal: each context converts
+    the same source to its OWN format.  The default (dae/stl) and uniform-glb
+    cases are covered elsewhere; this pins the ASYMMETRIC combinations so a
+    regression that couples the two (e.g. collision inheriting the visual fmt)
+    is caught.  _make_pkg's single link references the one mesh from BOTH a
+    <visual> and a <collision>, so the two outputs must be distinct files."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter.ros_export import build_ros_description
+
+    pkg_dir = _make_pkg(tmp_path, robot="mix")
+    ctx_fmt = (("visual", vfmt), ("collision", cfmt))
+    files = dict(build_ros_description(pkg_dir, "mix", ctx_fmt=ctx_fmt))
+
+    # each context's <mesh> points at a file with ITS format's extension
+    link = ET.fromstring(
+        files["mix_description/urdf/mix_description.urdf"].decode()).find("link")
+    assert link.find("visual").find(".//mesh").get("filename") \
+        == f"package://mix_description/meshes/part.{vfmt}"
+    assert link.find("collision").find(".//mesh").get("filename") \
+        == f"package://mix_description/meshes/part.{cfmt}"
+
+    # both output files are shipped; if vfmt==cfmt they'd share one, but here
+    # the combos are asymmetric so exactly the two expected files exist
+    assert f"mix_description/meshes/part.{vfmt}" in files
+    assert f"mix_description/meshes/part.{cfmt}" in files
+    mesh_arcs = {a for a in files if a.startswith("mix_description/meshes/")}
+    assert mesh_arcs == {f"mix_description/meshes/part.{vfmt}",
+                         f"mix_description/meshes/part.{cfmt}"}
