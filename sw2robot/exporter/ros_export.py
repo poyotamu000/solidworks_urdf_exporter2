@@ -1165,7 +1165,14 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
                         if rgba is None:
                             rgba = _DEFAULT_VISUAL_RGBA
                         mat = ET.SubElement(block, "material")
-                        mat.set("name", f"{base}_material")
+                        # name off the UNIQUE mesh output name, not the raw
+                        # basename: two links whose visual meshes come from
+                        # different sources sharing a basename (part.stl vs
+                        # part_2.stl) would otherwise both emit
+                        # <material name="part_material">, and urdfdom/RViz
+                        # treat material names as a global map -- the second
+                        # link would inherit the first's colour.
+                        mat.set("name", f"{job['name'].rsplit('.', 1)[0]}_material")
                         ET.SubElement(mat, "color").set("rgba", _rgba_attr(rgba))
 
     if errors:
