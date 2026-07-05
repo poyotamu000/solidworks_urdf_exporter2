@@ -4428,6 +4428,10 @@ async function collPreviewTick() {
   let s;
   try { s = await (await fetch('/api/collision/preview/status')).json(); }
   catch (_e) { return; }
+  // If the user switched collision mode while THIS status fetch was in flight,
+  // collPreviewAbort() already nulled the poll -- bail before the finalize
+  // block below can revert the selector to the old mode and re-apply its parts.
+  if (!collPreviewPoll) { return; }
   const what = s.mode === 'hull' ? t('coll.hullword') : 'CoACD';
   // pop each newly-finished link into the viewer + log it once
   for (const [link, url] of Object.entries(s.parts || {})) {
