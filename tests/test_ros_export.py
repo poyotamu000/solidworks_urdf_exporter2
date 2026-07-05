@@ -185,6 +185,94 @@ def test_merge_fixed_plus_coacd_compose(tmp_path, monkeypatch):
     assert len(a.findall("visual")) == 2                 # both visuals lumped in
 
 
+def test_collision_hull_single_convex_part(tmp_path):
+    """collision='hull' replaces the link's collision mesh with ONE convex-hull
+    STL (no optional dep, no CoACD), leaving the visual mesh untouched."""
+    import xml.etree.ElementTree as ET
+
+    import trimesh
+
+    from sw2robot.exporter.ros_export import build_ros_description
+
+    pkg_dir = _make_pkg(tmp_path, robot="fing")
+    files = dict(build_ros_description(pkg_dir, "fing", collision="hull"))
+    arcs = set(files)
+
+    # the single hull STL ships; the per-link copy STL does NOT
+    hull_arc = "fing_description/meshes/part_collision_hull.stl"
+    assert hull_arc in arcs
+    assert "fing_description/meshes/part.stl" not in arcs
+    assert "fing_description/meshes/part.dae" in arcs            # visual untouched
+
+    root = ET.fromstring(files["fing_description/urdf/fing_description.urdf"].decode())
+    link = root.find("link")
+    cols = link.findall("collision")
+    assert len(cols) == 1                                        # one hull, not N
+    assert (cols[0].find(".//mesh").get("filename")
+            == "package://fing_description/meshes/part_collision_hull.stl")
+    assert (link.find("visual").find(".//mesh").get("filename")
+            == "package://fing_description/meshes/part.dae")
+
+    # the emitted STL is genuinely a convex hull
+    hull = trimesh.load(io.BytesIO(files[hull_arc]), file_type="stl")
+    assert hull.is_convex
+    assert len(hull.vertices) > 0
+
+
+def test_collision_hull_preserves_nonidentity_origin(tmp_path):
+    """A <collision> with a non-identity <origin> keeps that transform on the
+    hull block: the hull STL is emitted in the SOURCE frame, so dropping the
+    origin would misplace the collision volume (the same <origin> guarantee the
+    CoACD path gives, but hull was never exercised with a moved origin)."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter.ros_export import build_ros_description
+
+    if not os.path.exists(_SAMPLE_MESH):
+        pytest.skip("sample .3dxml mesh not present")
+    (tmp_path / "meshes").mkdir()
+    (tmp_path / "urdf").mkdir()
+    shutil.copy(_SAMPLE_MESH, tmp_path / "meshes" / "part.3dxml")
+    urdf = (
+        '<?xml version="1.0"?>\n<robot name="o">\n'
+        '  <link name="base_link">\n'
+        '    <visual><geometry>'
+        '<mesh filename="../meshes/part.3dxml"/></geometry></visual>\n'
+        '    <collision><origin xyz="0.05 0 0" rpy="0 0 0"/><geometry>'
+        '<mesh filename="../meshes/part.3dxml"/></geometry></collision>\n'
+        '  </link>\n</robot>\n')
+    (tmp_path / "urdf" / "o.urdf").write_text(urdf, encoding="utf-8")
+
+    files = dict(build_ros_description(str(tmp_path), "o", collision="hull"))
+    link = ET.fromstring(
+        files["o_description/urdf/o_description.urdf"].decode()).find("link")
+    cols = link.findall("collision")
+    assert len(cols) == 1
+    assert "part_collision_hull.stl" in cols[0].find(".//mesh").get("filename")
+    # the moved origin survives onto the hull block (not zeroed / not dropped)
+    xyz = [float(x) for x in cols[0].find("origin").get("xyz").split()]
+    assert abs(xyz[0] - 0.05) < 1e-6
+    assert abs(xyz[1]) < 1e-6 and abs(xyz[2]) < 1e-6
+
+
+def test_collision_hull_needs_no_coacd(tmp_path, monkeypatch):
+    """hull mode is trimesh-only: it must still emit its convex hull when CoACD
+    is unavailable -- this pins the PR's "no optional dependency" claim, which
+    the plain hull test can't (it would pass with CoACD installed too)."""
+    import trimesh
+
+    from sw2robot.exporter import ros_export
+
+    monkeypatch.setattr(ros_export, "coacd_available", lambda: False)
+    pkg_dir = _make_pkg(tmp_path, robot="fing")
+    files = dict(ros_export.build_ros_description(
+        pkg_dir, "fing", collision="hull"))
+    hull_arc = "fing_description/meshes/part_collision_hull.stl"
+    assert hull_arc in files
+    hull = trimesh.load(io.BytesIO(files[hull_arc]), file_type="stl")
+    assert hull.is_convex and len(hull.vertices) > 0
+
+
 def test_mesh_to_dae_scale_and_loadable():
     if not os.path.exists(_SAMPLE_MESH):
         pytest.skip("sample .3dxml mesh not present")
@@ -526,6 +614,65 @@ def test_colour_override_repaints_visual_mesh(tmp_path):
     assert (0.07, 0.53, 1.0) not in plain_triples
 
 
+_STL_CTX = (("visual", "stl"), ("collision", "stl"))
+
+
+def test_stl_visual_emits_material_from_override(tmp_path):
+    """An STL <visual> carries no colour, so the per-link override is emitted as a
+    URDF <material><color> (and the collision is stl too)."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter.ros_export import build_ros_description
+
+    pkg_dir = _make_pkg(tmp_path, robot="fing")
+    files = dict(build_ros_description(pkg_dir, "fing", ctx_fmt=_STL_CTX,
+                                       colors={"part": "#1188ff"}))
+    # both contexts are stl
+    assert "fing_description/meshes/part.stl" in files
+    assert not any(a.endswith((".dae", ".glb")) for a in files)
+
+    link = ET.fromstring(
+        files["fing_description/urdf/fing_description.urdf"].decode()).find("link")
+    mat = link.find("visual").find("material")
+    assert mat is not None
+    rgba = [round(float(x), 2) for x in mat.find("color").get("rgba").split()]
+    assert rgba[:3] == [0.07, 0.53, 1.0]                  # #1188ff
+    assert link.find("collision").find("material") is None   # collision: no colour
+
+
+def test_stl_visual_material_default_when_no_override(tmp_path):
+    """With no override, the STL <material> uses the default colour (so the link
+    isn't left RViz-default grey)."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter.ros_export import (
+        _DEFAULT_VISUAL_RGBA,
+        _rgba_attr,
+        build_ros_description,
+    )
+
+    pkg_dir = _make_pkg(tmp_path, robot="fing")
+    files = dict(build_ros_description(pkg_dir, "fing", ctx_fmt=_STL_CTX))
+    link = ET.fromstring(
+        files["fing_description/urdf/fing_description.urdf"].decode()).find("link")
+    mat = link.find("visual").find("material")
+    assert mat is not None
+    assert mat.find("color").get("rgba") == _rgba_attr(_DEFAULT_VISUAL_RGBA)
+
+
+def test_dae_visual_emits_no_material(tmp_path):
+    """The default dae visual keeps colour in the mesh -> no URDF <material>."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter.ros_export import build_ros_description
+
+    pkg_dir = _make_pkg(tmp_path, robot="fing")
+    files = dict(build_ros_description(pkg_dir, "fing"))   # default dae/stl
+    link = ET.fromstring(
+        files["fing_description/urdf/fing_description.urdf"].decode()).find("link")
+    assert link.find("visual").find("material") is None
+
+
 def _two_unit_boxes():
     """Two trivial convex parts (unit cubes), as CoACD returns ``(verts, faces)``
     pairs -- a stand-in for a real decomposition so tests stay fast + CoACD-free."""
@@ -612,9 +759,9 @@ def test_coacd_invalid_quality_rejected(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ros_export, "coacd_available", lambda: True)
     pkg_dir = _make_pkg(tmp_path, robot="c")
-    with pytest.raises(ValueError, match="collision_quality"):
+    with pytest.raises(ValueError, match="coacd_quality"):
         ros_export.build_ros_description(pkg_dir, "c", collision="coacd",
-                                         collision_quality="ultra")
+                                         coacd_quality="ultra")
 
 
 def test_preview_warms_export_cache(tmp_path, monkeypatch):
@@ -636,7 +783,7 @@ def test_preview_warms_export_cache(tmp_path, monkeypatch):
 
     pkg_dir = _make_pkg(tmp_path, robot="c")
     # 1) generate the preview (decomposes the one mesh -> 1 CoACD run)
-    ros_export.coacd_preview_glbs(pkg_dir, "c", quality="balanced")
+    ros_export.collision_preview_glbs(pkg_dir, "c", quality="balanced")
     assert calls["n"] == 1
     # 2) export with collision='coacd' -- reuses the cache, no second CoACD run
     files = dict(ros_export.build_ros_description(pkg_dir, "c",
@@ -651,8 +798,8 @@ def test_preview_warms_export_cache(tmp_path, monkeypatch):
     assert len(link.findall("collision")) == 2
 
 
-def test_coacd_preview_glbs_per_link(tmp_path, monkeypatch):
-    """coacd_preview_glbs writes one colour-coded GLB per link with a collision
+def test_collision_preview_glbs_per_link(tmp_path, monkeypatch):
+    """collision_preview_glbs writes one colour-coded GLB per link with a collision
     mesh, reports progress per link, and shares the export's part cache."""
     import trimesh
 
@@ -664,7 +811,7 @@ def test_coacd_preview_glbs_per_link(tmp_path, monkeypatch):
 
     pkg_dir = _make_pkg(tmp_path, robot="c")
     seen = []
-    out = ros_export.coacd_preview_glbs(
+    out = ros_export.collision_preview_glbs(
         pkg_dir, "c", quality="balanced",
         progress=lambda d, t, link, rel: seen.append((d, t, link, rel)))
 
@@ -904,3 +1051,37 @@ def test_missing_mesh_aborts_instead_of_half_broken_package(tmp_path):
         build_ros_description(str(tmp_path), "r")
     assert (tmp_path / "urdf" / "r.urdf").read_text(encoding="utf-8") == urdf
     assert sorted(os.listdir(tmp_path / "meshes")) == []
+
+
+@pytest.mark.parametrize("vfmt,cfmt", [("glb", "stl"), ("dae", "glb"),
+                                       ("stl", "glb")])
+def test_visual_and_collision_formats_are_independent(tmp_path, vfmt, cfmt):
+    """The visual and collision selectors are orthogonal: each context converts
+    the same source to its OWN format.  The default (dae/stl) and uniform-glb
+    cases are covered elsewhere; this pins the ASYMMETRIC combinations so a
+    regression that couples the two (e.g. collision inheriting the visual fmt)
+    is caught.  _make_pkg's single link references the one mesh from BOTH a
+    <visual> and a <collision>, so the two outputs must be distinct files."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter.ros_export import build_ros_description
+
+    pkg_dir = _make_pkg(tmp_path, robot="mix")
+    ctx_fmt = (("visual", vfmt), ("collision", cfmt))
+    files = dict(build_ros_description(pkg_dir, "mix", ctx_fmt=ctx_fmt))
+
+    # each context's <mesh> points at a file with ITS format's extension
+    link = ET.fromstring(
+        files["mix_description/urdf/mix_description.urdf"].decode()).find("link")
+    assert link.find("visual").find(".//mesh").get("filename") \
+        == f"package://mix_description/meshes/part.{vfmt}"
+    assert link.find("collision").find(".//mesh").get("filename") \
+        == f"package://mix_description/meshes/part.{cfmt}"
+
+    # both output files are shipped; if vfmt==cfmt they'd share one, but here
+    # the combos are asymmetric so exactly the two expected files exist
+    assert f"mix_description/meshes/part.{vfmt}" in files
+    assert f"mix_description/meshes/part.{cfmt}" in files
+    mesh_arcs = {a for a in files if a.startswith("mix_description/meshes/")}
+    assert mesh_arcs == {f"mix_description/meshes/part.{vfmt}",
+                         f"mix_description/meshes/part.{cfmt}"}
