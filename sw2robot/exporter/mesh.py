@@ -90,6 +90,31 @@ def _save_3dxml(model_doc, out_path):
     return False
 
 
+def _cache_is_fresh(cand, source_path):
+    """Whether a cached per-part mesh may be reused instead of re-exported.
+
+    Reuse only when the cache is real geometry (``>= _MIN_MESH_BYTES``) AND at
+    least as new as its source part file.  The reuse-by-name shortcut speeds up
+    re-runs, but keyed on the part name alone it also survives a CAD EDIT: the
+    edited part re-exports to the same ``<name>.3dxml`` the old (stale) file
+    already occupies, so without this mtime gate the change is silently masked
+    until the user wipes ``%TEMP%\\sw2robot\\output``.  Comparing mtimes lets an
+    edit since the last extract force a fresh export.
+
+    If the source mtime can't be read (part moved/renamed away), fall back to
+    reusing the cache -- we could not re-export it anyway."""
+    try:
+        if not (os.path.exists(cand)
+                and os.path.getsize(cand) >= _MIN_MESH_BYTES):
+            return False
+    except OSError:
+        return False
+    try:
+        return os.path.getmtime(cand) >= os.path.getmtime(source_path)
+    except OSError:
+        return True
+
+
 def export_meshes(app, doc, comps, meshes_dir, progress=None, by_path=None):
     """Fill ``component.mesh_file`` for every component; return mesh count.
 
@@ -124,13 +149,13 @@ def export_meshes(app, doc, comps, meshes_dir, progress=None, by_path=None):
         out = os.path.join(meshes_dir, comp.link_name + ".3dxml")
         reused = False
         for cand in (out, os.path.join(meshes_dir, comp.link_name + ".glb")):
-            if os.path.exists(cand) and os.path.getsize(cand) >= _MIN_MESH_BYTES:
+            if _cache_is_fresh(cand, path):
                 rel = os.path.join("meshes", os.path.basename(cand))
                 by_path[path] = rel
                 comp.mesh_file = rel
                 n += 1
                 reused = True
-                break  # reuse existing mesh (fast re-runs)
+                break  # reuse existing mesh (fast re-runs, unless CAD is newer)
         if reused:
             continue
         ok = False
@@ -193,8 +218,7 @@ def export_subgraph_meshes(app, subgraphs, meshes_dir, by_path=None):
             out = os.path.join(meshes_dir, base + ".3dxml")
             ok = False
             for cand in (out, os.path.join(meshes_dir, base + ".glb")):
-                if os.path.exists(cand) \
-                        and os.path.getsize(cand) >= _MIN_MESH_BYTES:
+                if _cache_is_fresh(cand, p):
                     out, ok = cand, True
                     break
             if not ok:
