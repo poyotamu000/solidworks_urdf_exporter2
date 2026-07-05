@@ -683,6 +683,44 @@ def test_package_uris_rewritten_for_viewer(tmp_path):
         webserver._um["state"] = None
 
 
+def test_external_package_uri_served_from_ros_environment(tmp_path, monkeypatch):
+    """A package:// ref absent from the opened package falls back to a sourced
+    ROS package, while the opened package and its URDF remain untouched."""
+    from sw2robot.editor import webserver
+
+    opened = tmp_path / "tutorial"
+    (opened / "urdf").mkdir(parents=True)
+    external = tmp_path / "src" / "nextage_description"
+    (external / "urdf" / "meshes").mkdir(parents=True)
+    (external / "package.xml").write_text(
+        "<package><name>nextage_description</name></package>", encoding="utf-8")
+    mesh = external / "urdf" / "meshes" / "WAIST Link.dae"
+    mesh.write_bytes(b"external-dae")
+    original = (
+        '<?xml version="1.0"?><robot name="r"><link name="base">'
+        '<visual><geometry><mesh filename="package://nextage_description/'
+        'urdf/meshes/WAIST%20Link.dae"/></geometry></visual></link></robot>')
+    urdf = opened / "urdf" / "r.urdf"
+    urdf.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("ROS_PACKAGE_PATH", str(tmp_path / "src"))
+
+    httpd, port = webserver._bind_free_port(webserver._Handler, _free_port())
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        info = _get_json(base, f"/api/open?path={urdf}")
+        served = _get(base, info["urdf"])
+        ref = re.search(r'filename="([^"]+)"', served).group(1)
+        assert ref == "/ros-pkg/nextage_description/urdf/meshes/WAIST%20Link.dae"
+        with urllib.request.urlopen(base + ref) as response:
+            assert response.read() == b"external-dae"
+        assert urdf.read_text(encoding="utf-8") == original
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        webserver._um["state"] = None
+
+
 def _mini_urdf_pkg(parent, name, body):
     p = parent / name
     (p / "urdf").mkdir(parents=True)

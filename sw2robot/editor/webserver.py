@@ -313,25 +313,34 @@ def _rewrite_package_urls(urdf_text, urdf_rel, pkg_dir):
     URDF served to the viewer; the on-disk file (and the ROS export) keep their
     original ``package://`` references.
 
-    A ref is rewritten only when its mesh actually EXISTS in this package -- so
-    own meshes load regardless of the URI's package name (folder need not match),
-    while a ref to another ROS package whose file is not here is left as
-    ``package://`` (unresolvable in-browser either way, but not mis-pointed)."""
+    Existing files in the opened package keep the historical relative ``/pkg/``
+    route.  A ref not found there falls back to a sourced ROS package and uses
+    ``/ros-pkg/<name>/``.  Unresolved refs stay untouched."""
+    from .package_uri import resolve_package_uri, split_package_uri
+
     depth = len([s for s in posixpath.dirname(urdf_rel).split("/") if s])
     prefix = "../" * depth
     root = os.path.normpath(pkg_dir)
 
     def repl(m):
-        rest = m.group(1)
+        quote, uri = m.group(1), m.group(2)
+        parts = split_package_uri(uri)
+        if parts is None:
+            return m.group(0)
+        package, rest = parts
         local = os.path.normpath(os.path.join(root, *rest.split("/")))
         try:
             inside = os.path.commonpath([root, local]) == root
         except ValueError:
             inside = False
-        if inside and os.path.exists(local):
-            return f'filename="{prefix}{rest}"'
+        if inside and os.path.isfile(local):     # a mesh ref -> file, not a dir
+            return f"filename={quote}{prefix}{rest}{quote}"
+        if resolve_package_uri(uri, pkg_dir):
+            package = urllib.parse.quote(package, safe="")
+            rest = urllib.parse.quote(rest, safe="/")
+            return f"filename={quote}/ros-pkg/{package}/{rest}{quote}"
         return m.group(0)                  # not in this package -- leave as-is
-    return re.sub(r'filename="package://[^/"]+/([^"]+)"', repl, urdf_text)
+    return re.sub(r"filename=([\"'])(package://[^\"']+)\1", repl, urdf_text)
 
 
 def _um_colors(state):
@@ -1488,6 +1497,9 @@ def _build_collision(urdf_path, key, pkg_dir=None):
         from skrobot.models.urdf import RobotModelFromURDF
 
         from . import autoinit
+        # skrobot (>=0.3.16) resolves package:// meshes itself (ament/rospkg +
+        # the sourced ROS env), so the URDF loads directly -- no pre-resolved
+        # temp copy needed.
         robot = RobotModelFromURDF(urdf_file=urdf_path)
         meshes = autoinit.link_meshes(robot)
         # prefer the CoACD convex parts (generated via the export panel) when
@@ -1771,8 +1783,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         rel = posixpath.normpath(urllib.parse.unquote(rel)).lstrip("/")
         if rel.startswith(".."):
             return None
+        root = os.path.normpath(root)
         full = os.path.normpath(os.path.join(root, *rel.split("/")))
-        if not full.startswith(os.path.normpath(root)):
+        # commonpath (not startswith) so a sibling like <root>-evil can't pass
+        # the containment check; matches package_uri._inside
+        try:
+            if os.path.commonpath([root, full]) != root:
+                return None
+        except ValueError:                 # different drives (Windows) -> outside
             return None
         return full
 
@@ -1950,6 +1968,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 had = _sw.get("sess") is not None
                 _shutdown_sw()
                 return self._send_json({"released": had})
+            if path.startswith("/ros-pkg/"):
+                from .package_uri import find_package
+                rel = path[len("/ros-pkg/"):]
+                package, sep, package_rel = rel.partition("/")
+                root = find_package(urllib.parse.unquote(package)) if sep else None
+                full = self._resolve(root, package_rel) if root else None
+                if full is None or not os.path.isfile(full):
+                    return self.send_error(404)
+                if full.lower().endswith(".3dxml") \
+                        and query.get("glb") == ["1"]:
+                    return self._send_file(_convert_3dxml_to_glb(full))
+                return self._send_file(full)
             if path == "/api/collision/init":
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)

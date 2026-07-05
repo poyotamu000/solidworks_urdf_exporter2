@@ -27,7 +27,7 @@ dependencies = [
 # extract / build all work WITHOUT these; collision + auto-limits degrade
 # gracefully when they are not installed.
 ui = [
-    "scikit-robot>=0.0.30",
+    "scikit-robot>=0.3.16",
     "python-fcl>=0.7",
     "viser",
 ]

@@ -68,6 +68,8 @@ def main():
     from sw2robot.editor import autoinit
 
     _emit(event="loading")                    # model load is the slow first ~2 s
+    # skrobot (>=0.3.16) resolves package:// meshes itself, so load the URDF
+    # (glb-accelerated) directly -- no pre-resolved temp copy needed.
     load_urdf, is_tmp = _fast_urdf(urdf)
     try:
         robot = RobotModelFromURDF(urdf_file=load_urdf)
