@@ -275,3 +275,55 @@ def test_mass_only_folds_into_a_coordinate_frame_parent():
     assert "j1" in {j.get("name") for j in root.findall("joint")}
     # pcb's weight reached the frame (mass-only kept the inertial)
     assert abs(float(frame.find("inertial").find("mass").get("value")) - 3.0) < 1e-9
+
+
+def test_fold_rotates_child_inertia_into_the_parent_frame():
+    """A fixed joint with a NON-identity rotation (rpy) must rotate the child's
+    inertia tensor into the parent frame (R @ I @ R.T) before combining -- the
+    other fold tests all use rpy=0, so a dropped/transposed rotation there would
+    pass them silently.  Here the joint yaws the child 90 deg about Z and the
+    child tensor is anisotropic, so the rotation is observable.
+
+    base:  m=2, com=(0,0,0), I=diag(1,1,1)
+    joint: xyz=(1,0,0), rpy=(0,0,pi/2)      (child +x -> parent +y)
+    pcb:   m=3, com=(0,0,0), I=diag(2,5,7)
+
+    Rz(90) maps the child tensor diag(2,5,7) -> diag(5,2,7) in the parent frame.
+    new mass = 5; new com = (2*0 + 3*1)/5 = (0.6,0,0).  Parallel-axis to the new
+    com (offset along x only):
+      base  diag(1,1,1)      + 2*(0.36 - dx^2 terms) = diag(1, 1.72, 1.72)
+      pcb   diag(5,2,7)      + 3*(0.16 - dx^2 terms) = diag(5, 2.48, 7.48)
+      total                                           = diag(6, 4.2, 9.2)
+    (Without the R @ I @ R.T rotation the child stays diag(2,5,7) and the total
+    is diag(3, 7.2, 9.2) -- so ixx/iyy cleanly distinguish the two.)"""
+    import numpy as np
+
+    hz = np.pi / 2
+    urdf = f"""<?xml version="1.0"?>
+<robot name="rot">
+  <link name="base"><inertial><origin xyz="0 0 0" rpy="0 0 0"/><mass value="2"/>
+    <inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/></inertial>
+    <visual><geometry><box size="1 1 1"/></geometry></visual></link>
+  <joint name="fix_pcb" type="fixed"><origin xyz="1 0 0" rpy="0 0 {hz}"/>
+    <parent link="base"/><child link="pcb"/></joint>
+  <link name="pcb"><inertial><origin xyz="0 0 0" rpy="0 0 0"/><mass value="3"/>
+    <inertia ixx="2" ixy="0" ixz="0" iyy="5" iyz="0" izz="7"/></inertial></link>
+</robot>"""
+    root = ET.fromstring(urdf)
+    n, _ = merge_fixed_links(root, force_merge={"pcb"})
+    assert n == 1
+    assert "pcb" not in {ln.get("name") for ln in root.findall("link")}
+
+    base = next(ln for ln in root.findall("link") if ln.get("name") == "base")
+    inertial = base.find("inertial")
+    assert abs(float(inertial.find("mass").get("value")) - 5.0) < 1e-9
+    com = _f(inertial.find("origin").get("xyz"))
+    assert abs(com[0] - 0.6) < 1e-9 and abs(com[1]) < 1e-9 and abs(com[2]) < 1e-9
+    it = inertial.find("inertia")
+    assert abs(float(it.get("ixx")) - 6.0) < 1e-9, it.get("ixx")
+    assert abs(float(it.get("iyy")) - 4.2) < 1e-9, it.get("iyy")
+    assert abs(float(it.get("izz")) - 9.2) < 1e-9, it.get("izz")
+    # a yaw about Z keeps the tensor diagonal (no products of inertia appear)
+    assert abs(float(it.get("ixy"))) < 1e-9
+    assert abs(float(it.get("ixz"))) < 1e-9
+    assert abs(float(it.get("iyz"))) < 1e-9

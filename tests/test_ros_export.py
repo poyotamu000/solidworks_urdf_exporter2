@@ -73,6 +73,69 @@ def test_export_merge_fixed_lumps_child_into_parent(tmp_path):
     assert {ln.get("name") for ln in proot.findall("link")} == {"a", "b"}
 
 
+def _make_mass_only_pkg(tmp_path, robot="mo"):
+    """parent 'a' (meshed + inertial) + a fixed, geometry-less mass-only child
+    'pcb', plus the ``mass_only.yaml`` sidecar build() writes for the export."""
+    if not os.path.exists(_SAMPLE_MESH):
+        pytest.skip("sample .3dxml mesh not present")
+    import yaml
+    (tmp_path / "meshes").mkdir()
+    (tmp_path / "urdf").mkdir()
+    shutil.copy(_SAMPLE_MESH, tmp_path / "meshes" / "part.3dxml")
+    urdf = (
+        f'<?xml version="1.0"?>\n<robot name="{robot}">\n'
+        '  <link name="a">\n'
+        '    <visual><geometry>'
+        '<mesh filename="../meshes/part.3dxml"/></geometry></visual>\n'
+        '    <inertial><origin xyz="0 0 0" rpy="0 0 0"/><mass value="2"/>'
+        '<inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/></inertial>\n'
+        '  </link>\n'
+        '  <joint name="a__pcb" type="fixed">\n'
+        '    <origin xyz="0.2 0 0" rpy="0 0 0"/>\n'
+        '    <parent link="a"/><child link="pcb"/>\n  </joint>\n'
+        '  <link name="pcb">\n'          # mass-only: inertial ONLY, no geometry
+        '    <inertial><origin xyz="0 0 0" rpy="0 0 0"/><mass value="3"/>'
+        '<inertia ixx="1" ixy="0" ixz="0" iyy="1" iyz="0" izz="1"/></inertial>\n'
+        '  </link>\n</robot>\n')
+    (tmp_path / "urdf" / f"{robot}.urdf").write_text(urdf, encoding="utf-8")
+    (tmp_path / "mass_only.yaml").write_text(yaml.safe_dump(["pcb"]),
+                                             encoding="utf-8")
+    return str(tmp_path)
+
+
+def test_export_folds_mass_only_link_from_sidecar(tmp_path):
+    """End-to-end: build_ros_description reads mass_only.yaml and folds the named
+    link into its fixed parent (the ``only=`` path, NOT a full merge_fixed) --
+    the exported URDF drops the mass-only link while its weight lands on the
+    parent, and every OTHER structure is left as-is."""
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.exporter.ros_export import build_ros_description
+
+    pkg_dir = _make_mass_only_pkg(tmp_path, robot="mo")
+    # default merge_fixed=False: only the sidecar-named mass-only link folds
+    files = dict(build_ros_description(pkg_dir, "mo"))
+    root = ET.fromstring(
+        files["mo_description/urdf/mo_description.urdf"].decode())
+
+    links = {ln.get("name") for ln in root.findall("link")}
+    assert "pcb" not in links                     # the mass-only link folded away
+    assert links == {"a"}
+    assert not root.findall("joint")              # its fixed joint is gone too
+    a = root.find("link")
+    # weight preserved on the parent (2 + 3 = 5)
+    assert abs(float(a.find("inertial").find("mass").get("value")) - 5.0) < 1e-9
+    # the fold added no geometry from the geometry-less child
+    assert len(a.findall("visual")) == 1
+
+    # sanity: WITHOUT the sidecar the fixed child would survive as a frame
+    os.remove(os.path.join(pkg_dir, "mass_only.yaml"))
+    plain = dict(build_ros_description(pkg_dir, "mo"))
+    proot = ET.fromstring(
+        plain["mo_description/urdf/mo_description.urdf"].decode())
+    assert {ln.get("name") for ln in proot.findall("link")} == {"a", "pcb"}
+
+
 def _make_fixed_pkg_with_collision(tmp_path, robot="rc"):
     """parent 'a' + fixed child 'b', both with visual AND collision meshes."""
     if not os.path.exists(_SAMPLE_MESH):
