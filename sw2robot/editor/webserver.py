@@ -636,10 +636,11 @@ def _export_zip(pkg_dir, robot_name, visual_fmt="dae", collision_fmt="stl",
                                   progress=progress,
                                   should_cancel=should_cancel)
     buf = _io.BytesIO()
+    n = len(files)
     if progress:
-        progress("zip", 0, len(files))
+        progress("zip", 0, n)
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for arc, data in files:
+        for i, (arc, data) in enumerate(files):
             # a node under scripts/ must extract executable (0755) so ament's
             # install(PROGRAMS) + `colcon build --symlink-install` leaves a
             # runnable libexec entry that `ros2 launch` can find
@@ -650,8 +651,10 @@ def _export_zip(pkg_dir, robot_name, visual_fmt="dae", collision_fmt="stl",
                 z.writestr(zi, data)
             else:
                 z.writestr(arc, data)
-    if progress:
-        progress("zip", len(files), len(files))
+            # DEFLATE on hundreds of mesh files takes seconds -- report per file
+            # so the "package + zip" counter moves instead of sitting at 0/N
+            if progress:
+                progress("zip", i + 1, n)
     return pkg, buf.getvalue()
 
 
@@ -724,11 +727,12 @@ def _run_export(pkg_dir, robot_name, urdf_rel, params):
                   "zip": "package + zip"}
 
     def _bp(stage, done, total, detail=""):
-        _prog_stage(_stage_map.get(stage, stage),
-                    frac=(done / total) if total else None,
-                    label=(f"{done}/{total}" if total else None))
-        if detail:
-            _prog_update(sub=detail)
+        # title = the (i18n) stage name (renderProgress maps it), count in the
+        # sub line; keep the bar animated (indeterminate) until the first item
+        # of a stage completes, so a slow first CoACD part never looks frozen
+        name = _stage_map.get(stage, stage)
+        _prog_stage(name, frac=((done / total) if (total and done) else None))
+        _prog_update(sub=(f"{done}/{total}" if total else (detail or "")))
     try:
         # URDF-input mode keeps the on-disk URDF pristine and serves edits live;
         # materialize them so the exporter picks them up (no-op in CAD mode)
