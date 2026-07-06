@@ -196,44 +196,31 @@ def _pool_workers(n_items, max_workers=None):
     return max(1, min(cap, n_items))
 
 
-def _parallel(func, items, max_workers=None):
-    """``[func(x) for x in items]`` but concurrent (thread pool) -- only for
-    GIL-releasing work (CoACD).  Order is preserved.  ``func`` MUST NOT raise
-    (catch + return a sentinel) -- a raised exception aborts the batch."""
-    items = list(items)
-    if len(items) <= 1:
-        return [func(x) for x in items]
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=_pool_workers(len(items),
-                                                      max_workers)) as ex:
-        return list(ex.map(func, items))
+def _parallel_cancellable(func, items, should_cancel=None, max_workers=None):
+    """Concurrent fan-out (thread pool) for GIL-releasing work (CoACD /
+    primitive fitting).  ``func`` MUST NOT raise (catch + return a sentinel);
+    results are not collected.
 
-
-def _parallel_cancellable(func, items, should_cancel, max_workers=None):
-    """Like :func:`_parallel`, but returns promptly (raising :class:`ExportCancelled`)
-    once ``should_cancel`` turns true -- WITHOUT waiting for the tasks already
-    running, which finish in the background (a CoACD part can't be interrupted
-    mid-run; its result is just cached).  Not-yet-started tasks are cancelled.
-    This lets a cancel land within ~0.2 s instead of after the whole parallel
-    wave.  ``func`` must not raise (catch + sentinel, like _parallel)."""
+    Without ``should_cancel`` it simply runs every item and returns.  With one,
+    it returns promptly -- raising :class:`ExportCancelled` within ~0.2 s once
+    ``should_cancel`` turns true -- WITHOUT waiting for the tasks already
+    running (they finish in the background, since a CoACD part can't be
+    interrupted mid-run; its result is just cached), and drops the not-yet-
+    started ones."""
     items = list(items)
     if not items:
         return
-    if should_cancel is None:
-        _parallel(func, items, max_workers)
-        return
     from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
     ex = ThreadPoolExecutor(max_workers=_pool_workers(len(items), max_workers))
-    futs = [ex.submit(func, x) for x in items]
+    pending = {ex.submit(func, x) for x in items}
     try:
-        pending = set(futs)
         while pending:
-            if should_cancel():
+            if should_cancel and should_cancel():
                 raise ExportCancelled()
             _done, pending = wait(pending, timeout=0.2,
                                   return_when=FIRST_COMPLETED)
     finally:
-        # never block on the in-flight tasks; drop the pending (unstarted) ones
+        # don't block on in-flight tasks when cancelling; drop unstarted ones
         ex.shutdown(wait=False, cancel_futures=True)
 
 
