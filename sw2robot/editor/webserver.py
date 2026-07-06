@@ -2361,7 +2361,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                  cancelled=cancelled,
                                  result={"results": results})
 
-                threading.Thread(target=_sweep_job, daemon=True).start()
+                try:
+                    threading.Thread(target=_sweep_job, daemon=True).start()
+                except Exception as e:
+                    # release the guard the never-started worker can't (see the
+                    # export /start handler for why)
+                    with _limjob_lock:
+                        _limjob.update(running=False)
+                    _prog_finish(error=f"{type(e).__name__}: {e}")
+                    return self._send_json(
+                        {"error": f"failed to start sweep: {e}"}, 500)
                 return self._send_json({"started": True})
             if path == "/api/auto_limits/cancel":
                 # kill the sweep subprocess (no partial result -- user aborts)
@@ -2397,8 +2406,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 with _job_lock:
                     _job.update(running=True, log=[], error=None,
                                 package=None, cancel=False, cancelled=False)
-                threading.Thread(target=_run_extract, args=(target,),
-                                 daemon=True).start()
+                try:
+                    threading.Thread(target=_run_extract, args=(target,),
+                                     daemon=True).start()
+                except Exception as e:
+                    # release the guard the never-started worker can't (see the
+                    # export /start handler for why)
+                    with _job_lock:
+                        _job.update(running=False)
+                    _prog_finish(error=f"{type(e).__name__}: {e}")
+                    return self._send_json(
+                        {"error": f"failed to start extract: {e}"}, 500)
                 return self._send_json({"started": True})
             if path == "/api/progress":
                 # unified live view for extract / export / collision / limits
@@ -2476,10 +2494,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 _export_cancel.clear()
                 with _export_lock:
                     _export_out.update(data=None, fname=None)
-                threading.Thread(
-                    target=_run_export,
-                    args=(cls.pkg_dir, cls.robot_name, cls.urdf_rel, params, gen),
-                    daemon=True).start()
+                try:
+                    threading.Thread(
+                        target=_run_export,
+                        args=(cls.pkg_dir, cls.robot_name, cls.urdf_rel,
+                              params, gen),
+                        daemon=True).start()
+                except Exception as e:
+                    # the worker never ran, so it can't release the guard --
+                    # do it here, else _prog stays "running" and wedges every
+                    # later job with no way back short of a restart
+                    _prog_finish(error=f"{type(e).__name__}: {e}")
+                    return self._send_json(
+                        {"error": f"failed to start export: {e}"}, 500)
                 return self._send_json({"started": True})
             if path == "/api/export/zip/cancel":
                 # cooperative: _run_export checks _export_cancel between
@@ -2564,11 +2591,20 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 _reset_coll_preview_job()
                 with _coll_preview_lock:
                     _coll_preview_job.update(running=True, quality=quality, mode=mode)
-                threading.Thread(
-                    target=_run_coll_preview_job,
-                    args=(cls.pkg_dir, cls.robot_name, cls.urdf_rel, quality,
-                          mode),
-                    daemon=True).start()
+                try:
+                    threading.Thread(
+                        target=_run_coll_preview_job,
+                        args=(cls.pkg_dir, cls.robot_name, cls.urdf_rel, quality,
+                              mode),
+                        daemon=True).start()
+                except Exception as e:
+                    # release the guard the never-started worker can't (see the
+                    # export /start handler for why)
+                    with _coll_preview_lock:
+                        _coll_preview_job.update(running=False)
+                    _prog_finish(error=f"{type(e).__name__}: {e}")
+                    return self._send_json(
+                        {"error": f"failed to start collision preview: {e}"}, 500)
                 return self._send_json(
                     {"running": True, "quality": quality, "mode": mode})
             if path == "/api/collision/preview/cancel":
