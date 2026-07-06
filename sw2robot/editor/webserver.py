@@ -2428,6 +2428,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 # SYNCHRONOUS export: kept for the launch_it.sh curl one-liner
                 # (which needs a direct URL).  The editor uses the async
                 # /start + /download pair below so the build shows progress.
+                # NB: deliberately OUTSIDE the shared _prog busy-guard -- the
+                # one-liner is fire-and-forget and expects the zip bytes back, so
+                # it can't act on a 409.  It therefore runs even while an editor
+                # job holds _prog (both may then warm CoACD / the disk cache at
+                # once; the cache uses atomic writes, so that is safe if slower).
                 cls = type(self)
                 params, err = _parse_export_query(cls, query)
                 if err:
