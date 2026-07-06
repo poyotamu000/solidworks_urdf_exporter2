@@ -1462,9 +1462,10 @@ def _prog_extract_stage(msg):
     if m:
         i, n = int(m.group(1)), int(m.group(2))
         name = msg.split(": ", 1)[-1]
-        _prog_stage("export meshes", frac=(i / n) if n else None,
-                    label=f"exporting mesh {i}/{n}")
-        _prog_update(sub=name)
+        # title = stage name (i18n), count + current mesh in the sub -- same
+        # shape as the export/sweep panels
+        _prog_stage("export meshes", frac=(i / n) if n else None)
+        _prog_update(sub=f"{i}/{n}  {name}")
         return
     if msg.startswith("... still"):          # heartbeat: fill sub, keep stage
         _prog_update(sub=msg)
