@@ -1134,6 +1134,7 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'auto.applied': { en: a => `applied limits to ${a.n} joint(s) ✓ — reloading (Ctrl+Z to undo)`,
                       ja: a => `${a.n} 関節にリミットを適用 ✓ — reloading（Ctrl+Z で元に戻せます）` },
     'auto.fail': { en: a => `auto-limits failed: ${a.e}`, ja: a => `自動リミットに失敗: ${a.e}` },
+    'auto.cancelled': { en: 'limit sweep cancelled', ja: 'リミット探索を中止しました' },
     // origin
     'origin.seated': { en: 'base_link aligned to the world origin ⌖', ja: 'base_link を世界原点に合わせました ⌖' },
     // re-root
@@ -4458,7 +4459,14 @@ autolimitsBtn.addEventListener('click', async () => {
     if (!resp0.ok || data.error) { throw new Error(data.error ?? resp0.status); }
     // unified progress: the sweep reports stages (load model -> sweep joints)
     // and per-joint frac into _prog; pollProgress paints them + returns results
-    const { result } = await pollProgress();
+    setProgressStop(() => fetch('/api/auto_limits/cancel').catch(() => {}));
+    const { result, cancelled } = await pollProgress();
+    if (cancelled) {
+      hideLoadbar();
+      log(t('auto.cancelled'), 'wrn');
+      autolimitsBtn.disabled = false;
+      return;
+    }
     const results = (result && result.results) || [];
     const limited = results.filter(r => !r.continuous);
     const cont = results.filter(r => r.continuous);

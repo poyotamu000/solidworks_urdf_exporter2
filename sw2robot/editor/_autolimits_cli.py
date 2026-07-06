@@ -84,16 +84,16 @@ def main():
     total = sum(1 for j in robot.joint_list
                 if type(j).__name__ in ("RotationalJoint", "LinearJoint"))
     _emit(event="start", total=total)
-    done = [0]
 
-    def progress(name, _res):
-        done[0] += 1
-        _emit(event="joint", i=done[0], total=total, joint=name)
+    def on_start(name, i, n):
+        # emit BEFORE each joint's sweep so the bar advances and names the joint
+        # currently being worked (a single joint can take seconds on a big model)
+        _emit(event="joint", i=i, total=n, joint=name)
 
     results = autoinit.sweep_limits(
         robot, meshes, step_deg=step_deg, max_deg=max_deg,
         margin_deg=margin_deg, margin_mm=margin_mm,
-        refine=True, progress=progress)
+        refine=True, on_start=on_start)
     out = [{"child": v["child"], "lower": v["lower"], "upper": v["upper"],
             "continuous": v["continuous"]}
            for v in results.values() if v.get("child")]

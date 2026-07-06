@@ -1883,8 +1883,11 @@ def _run_coll_preview_job(pkg_dir, robot_name, urdf_rel, quality, mode="coacd"):
 # collision lock while it sweeps (it mutates joint angles), so the live drag
 # check pauses for its duration.
 _limjob = {"running": False, "log": [], "error": None, "results": None,
-           "n": 0, "total": 0, "joint": None, "phase": None}
+           "n": 0, "total": 0, "joint": None, "phase": None, "proc": None}
 _limjob_lock = threading.Lock()
+# set by /api/auto_limits/cancel; the sweep runs in a subprocess, so cancelling
+# just kills it (no partial result -- the user is aborting)
+_limjob_cancel = threading.Event()
 
 
 def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg,
@@ -1922,6 +1925,8 @@ def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg,
     _t0 = time.time()
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, cwd=cwd)
+    with _limjob_lock:
+        _limjob["proc"] = proc          # so /api/auto_limits/cancel can kill it
 
     # Drain stderr LIVE in a thread: the CLI emits per-joint progress there as
     # JSON lines (stdout carries only the final results JSON).  Reading it as it
@@ -1956,13 +1961,12 @@ def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg,
             if kind == "loading":
                 _prog_stage("load model")
             elif kind == "start":
-                _prog_stage("sweep joints", frac=0.0)
+                _prog_stage("sweep joints")     # animated until the 1st joint
             elif kind == "joint":
                 i, tot = ev.get("i", 0), ev.get("total", 0)
-                _prog_stage("sweep joints",
-                            frac=(i / tot) if tot else None,
-                            label=(f"{i}/{tot} joints" if tot else None))
-                _prog_update(sub=ev.get("joint") or "")
+                # title = stage name (i18n), count + current joint in the sub
+                _prog_stage("sweep joints", frac=(i / tot) if tot else None)
+                _prog_update(sub=f"{i}/{tot}  {ev.get('joint') or ''}".strip())
 
     pump = threading.Thread(target=_pump, daemon=True)
     pump.start()
@@ -1985,6 +1989,10 @@ def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg,
         timer.cancel()
         proc.wait()
         pump.join(timeout=2)
+        with _limjob_lock:
+            _limjob["proc"] = None
+    if _limjob_cancel.is_set():         # killed by /api/auto_limits/cancel
+        return None, "__cancelled__"
     if timed_out["v"]:
         return None, "sweep timed out"
     if proc.returncode != 0:
@@ -2319,12 +2327,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                             {"error": "a limit sweep is already running"}, 409)
                     _limjob.update(running=True, log=[], error=None,
                                    results=None, n=0, total=0, joint=None,
-                                   phase="loading")
+                                   phase="loading", proc=None)
                 if not _prog_start("limits", ["load model", "sweep joints"]):
                     with _limjob_lock:
                         _limjob.update(running=False)
                     return self._send_json(
                         {"error": "a job is already running"}, 409)
+                _limjob_cancel.clear()
 
                 # NB: must NOT be named `_job` -- that shadows the module-global
                 # `_job` (the extraction job) across this whole method and breaks
@@ -2335,13 +2344,29 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                             pkg, rel, step, mx, margin_deg, margin_mm)
                     except Exception as e:           # never leave it "running"
                         results, err = None, f"{type(e).__name__}: {e}"
+                    cancelled = err == "__cancelled__"
                     with _limjob_lock:
-                        _limjob.update(results=results, error=err,
+                        _limjob.update(results=results,
+                                       error=None if cancelled else err,
                                        running=False)
-                    _prog_finish(error=err, result={"results": results})
+                    _prog_finish(error=None if cancelled else err,
+                                 cancelled=cancelled,
+                                 result={"results": results})
 
                 threading.Thread(target=_sweep_job, daemon=True).start()
                 return self._send_json({"started": True})
+            if path == "/api/auto_limits/cancel":
+                # kill the sweep subprocess (no partial result -- user aborts)
+                with _limjob_lock:
+                    running, proc = _limjob["running"], _limjob["proc"]
+                if running:
+                    _limjob_cancel.set()
+                    if proc is not None:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                return self._send_json({"cancelling": running})
             if path == "/api/auto_limits/status":
                 with _limjob_lock:
                     return self._send_json(
