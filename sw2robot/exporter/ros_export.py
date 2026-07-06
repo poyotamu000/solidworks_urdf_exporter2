@@ -1058,12 +1058,18 @@ def _iter_sources(root, pkg_dir, own_pkgs, contexts):
                         yield src
 
 
+class ExportCancelled(Exception):
+    """Raised out of :func:`build_ros_description` when ``should_cancel`` turns
+    true, so a caller (the editor's async export) can report a clean cancel
+    rather than a half-built package."""
+
+
 def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
                           ctx_fmt=_CTX_FMT, ros_version=1, pkg_name=None,
                           urdf_name=None, colors=None, collision="copy",
                           coacd_quality="balanced", merge_fixed=False,
                           mesh_dir=None, loop_closures=None,
-                          zero_origins=True):
+                          zero_origins=True, progress=None, should_cancel=None):
     """``pkg_dir`` (a built package) -> ``[(arcname, bytes), ...]`` for a portable
     ROS package, all behind ``package://`` URLs.  The package is named
     ``pkg_name`` if given (validated, see :func:`ros_pkg_name`), else
@@ -1115,7 +1121,17 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
 
     Reads the on-disk ``urdf/<robot_name>.urdf`` (which already carries the
     editor's applied edits).  A missing/unconvertible mesh aborts the export
-    before any entries are emitted, so a half-rewritten package never ships."""
+    before any entries are emitted, so a half-rewritten package never ships.
+
+    ``progress`` -- if given -- is called ``progress(stage, done, total, detail)``
+    as work advances, with ``stage`` one of ``"collision"`` (per unique
+    CoACD/primitive source warmed) or ``"meshes"`` (per unique mesh converted),
+    so a UI can show a live per-stage bar.
+
+    ``should_cancel`` -- if given -- is a zero-arg predicate checked between
+    links/meshes; once it returns true the build raises :class:`ExportCancelled`
+    (CoACD is not interruptible mid-link, so a cancel lands at the next
+    boundary)."""
     if ros_version not in (1, 2):
         raise ValueError(f"unsupported ros_version: {ros_version}")
     if collision not in COLLISION_MODES:
@@ -1164,6 +1180,8 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
     # findall()/iter() traversals below ignore them.
     _parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True))
     root = ET.parse(urdf_path, parser=_parser).getroot()
+    if should_cancel and should_cancel():     # cancelled before any heavy work
+        raise ExportCancelled()
     # Mass-only links (weight kept, geometry dropped) are folded into their fixed
     # parent on every export, independent of merge_fixed; build() persisted their
     # (final) names beside the package so this detached step knows them.
@@ -1191,6 +1209,21 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
     files = []
     used_names = set()
     errors = []
+
+    def _report(stage, done, total, detail=""):
+        # progress(stage, done, total, detail): stage in {"collision", "meshes"}.
+        # Optional; a caller (the editor's async export) maps it onto its UI.
+        if progress:
+            try:
+                progress(stage, done, total, detail)
+            except Exception:
+                pass
+
+    def _ckcancel():
+        # cooperative cancel: checked between links/meshes (CoACD itself is not
+        # interruptible mid-link, so a cancel lands at the next boundary)
+        if should_cancel and should_cancel():
+            raise ExportCancelled()
     # convex collision parts ('coacd' = many, 'hull' = one): keyed by source +
     # mode + quality so a source shared by several links is built once (CoACD is
     # also disk-cached under .coacd_cache)
@@ -1311,33 +1344,53 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
                 block.append(new_geo)
             _set_origin_el(block, np.asarray(base_M, float) @ M)
 
+    _warm_lock = threading.Lock()
+    _warm_state = {"n": 0}
+
+    def _warm_tick(src, total):
+        with _warm_lock:
+            _warm_state["n"] += 1
+            done = _warm_state["n"]
+        _report("collision", done, total, os.path.basename(src))
+
     if collision == "coacd":
         # CoACD is the heaviest per-mesh op; warm its disk cache for every unique
         # collision source IN PARALLEL (CoACD releases the GIL) so the serial
         # expansion below is all cache hits.  'hull' is fast and not disk-cached,
         # so it needs no warming -- _emit_collision builds it inline.
+        _coacd_srcs = list(set(
+            _iter_sources(root, pkg_dir, own_pkgs, ("collision",))))
+        _report("collision", 0, len(_coacd_srcs))
+
         def _warm_coacd(src):
+            if should_cancel and should_cancel():
+                return                      # drain the pool fast once cancelled
             try:
                 _coacd_part_stls(src, coacd_quality, coacd_cache_dir)
             except Exception:
                 pass                        # the real error resurfaces in _emit_collision
-        _parallel(_warm_coacd,
-                  set(_iter_sources(root, pkg_dir, own_pkgs, ("collision",))))
+            _warm_tick(src, len(_coacd_srcs))
+        _parallel(_warm_coacd, _coacd_srcs)
     elif collision in _PRIMITIVE_MODES:
         # primitive fitting voxelises the mesh (auto mode scores several
         # candidates by IoU) -- a few hundred ms per unique source; warm them in
         # parallel so the serial expansion below is all cache hits
+        _prim_srcs = list(set(
+            _iter_sources(root, pkg_dir, own_pkgs, ("collision",))))
+        _report("collision", 0, len(_prim_srcs))
+
         def _warm_prim(src):
+            if should_cancel and should_cancel():
+                return                      # drain the pool fast once cancelled
             key = (os.path.abspath(src), collision)
-            if key in prim_done:
-                return
-            try:
-                prim_done[key] = _fit_collision_primitive(
-                    src, _PRIMITIVE_MODES[collision])
-            except Exception:
-                pass                    # the real error resurfaces in expansion
-        _parallel(_warm_prim,
-                  set(_iter_sources(root, pkg_dir, own_pkgs, ("collision",))))
+            if key not in prim_done:
+                try:
+                    prim_done[key] = _fit_collision_primitive(
+                        src, _PRIMITIVE_MODES[collision])
+                except Exception:
+                    pass                # the real error resurfaces in expansion
+            _warm_tick(src, len(_prim_srcs))
+        _parallel(_warm_prim, _prim_srcs)
 
     def _verbatim(job):
         # already the target format, no colour override, no bake: the source is
@@ -1352,7 +1405,9 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
     # order; phase 2 then produces each job's bytes exactly once.
     jobs = {}                              # key -> job dict
     job_order = []                         # keys, first-seen order (file order)
+    _ckcancel()                        # cancel requested during collision warm?
     for link in root.findall("link"):
+        _ckcancel()
         # colour overrides are keyed by LINK name in URDF-input mode and by the
         # component/mesh basename in the CAD path -- accept either
         link_color = colors.get(link.get("name"))
@@ -1416,8 +1471,11 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
     # ---- phase 2: produce the mesh bytes (serial; the cache makes it cheap) ---
     # each unique job converts once; the disk cache makes a re-export near-instant
     # and the in-memory load-once means visual + collision share a single load
-    for key in job_order:
+    _n_jobs = len(job_order)
+    for _i, key in enumerate(job_order):
+        _ckcancel()
         job = jobs[key]
+        _report("meshes", _i, _n_jobs, job["base"])
         src, fmt, color, transform = (job["src"], job["fmt"], job["color"],
                                       job["transform"])
         try:
@@ -1440,6 +1498,7 @@ def build_ros_description(pkg_dir, robot_name, email="auto@example.com",
             errors.append(f"{job['base']}: {fmt} convert failed ({e!r})")
             continue
         files.append((f"{pkg}/{mesh_rel}/{job['name']}", data))
+    _report("meshes", _n_jobs, _n_jobs)
 
     if errors:
         raise RuntimeError("ROS description export failed: " + "; ".join(errors))

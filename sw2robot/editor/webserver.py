@@ -22,6 +22,7 @@ sw2robot.exporter already requires.
 """
 import argparse
 import contextlib
+import copy
 import http.server
 import json
 import os
@@ -592,7 +593,8 @@ exec ros2 launch "$PKG" display.launch.py
 def _export_zip(pkg_dir, robot_name, visual_fmt="dae", collision_fmt="stl",
                 ros_version=1, pkg_name=None, urdf_name=None, colors=None,
                 collision="copy", coacd_quality="balanced",
-                merge_fixed=False, mesh_dir=None):
+                merge_fixed=False, mesh_dir=None, progress=None,
+                should_cancel=None):
     """ZIP a portable ROS package (package:// URLs), named ``pkg_name`` if given
     else ``<robot_name>_description``; the URDF inside is named ``urdf_name`` if
     given, else the package name.
@@ -621,18 +623,23 @@ def _export_zip(pkg_dir, robot_name, visual_fmt="dae", collision_fmt="stl",
     )
     pkg = ros_pkg_name(robot_name, pkg_name)
     ctx_fmt = (("visual", visual_fmt), ("collision", collision_fmt))
+    files = build_ros_description(pkg_dir, robot_name,
+                                  ros_version=ros_version,
+                                  pkg_name=pkg,
+                                  urdf_name=urdf_name,
+                                  colors=colors,
+                                  collision=collision,
+                                  coacd_quality=coacd_quality,
+                                  merge_fixed=merge_fixed,
+                                  mesh_dir=mesh_dir,
+                                  ctx_fmt=ctx_fmt,
+                                  progress=progress,
+                                  should_cancel=should_cancel)
     buf = _io.BytesIO()
+    if progress:
+        progress("zip", 0, len(files))
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for arc, data in build_ros_description(pkg_dir, robot_name,
-                                               ros_version=ros_version,
-                                               pkg_name=pkg,
-                                               urdf_name=urdf_name,
-                                               colors=colors,
-                                               collision=collision,
-                                               coacd_quality=coacd_quality,
-                                               merge_fixed=merge_fixed,
-                                               mesh_dir=mesh_dir,
-                                               ctx_fmt=ctx_fmt):
+        for arc, data in files:
             # a node under scripts/ must extract executable (0755) so ament's
             # install(PROGRAMS) + `colcon build --symlink-install` leaves a
             # runnable libexec entry that `ros2 launch` can find
@@ -643,7 +650,110 @@ def _export_zip(pkg_dir, robot_name, visual_fmt="dae", collision_fmt="stl",
                 z.writestr(zi, data)
             else:
                 z.writestr(arc, data)
+    if progress:
+        progress("zip", len(files), len(files))
     return pkg, buf.getvalue()
+
+
+# ---- async ZIP export (observable, one at a time) ---------------------------
+# The sync /api/export/zip blocks the download with no feedback; CoACD-on-export
+# is minutes.  The editor instead starts /api/export/zip/start (a background job
+# reporting into _prog), watches /api/progress, then fetches the finished bytes
+# from /api/export/zip/download.  The sync endpoint stays for the launch_it.sh
+# curl one-liner, which needs a direct URL.
+_EXPORT_STAGES = ["collision", "convert meshes", "package + zip"]
+_export_out = {"data": None, "fname": None}
+_export_lock = threading.Lock()
+# cooperative cancel for the async export (checked between links/meshes; CoACD
+# is not interruptible mid-link, so a cancel lands at the next boundary)
+_export_cancel = threading.Event()
+
+
+def _parse_export_query(cls, query):
+    """Validate the shared /api/export/zip[/start] query params.  Returns
+    ``(kwargs_for__export_zip, None)`` or ``(None, (error_str, code))``."""
+    if not cls.pkg_dir:
+        return None, ("no package open", 400)
+    visual_fmt = (query.get("meshes") or ["dae"])[0]
+    if visual_fmt not in ("dae", "stl", "glb"):
+        return None, (f"unsupported visual mesh format: {visual_fmt}", 400)
+    collision_fmt = (query.get("colfmt") or ["stl"])[0]
+    if collision_fmt not in ("stl", "glb"):
+        return None, (f"unsupported collision mesh format: {collision_fmt}", 400)
+    ros = (query.get("ros") or ["1"])[0]
+    if ros not in ("1", "2"):
+        return None, (f"unsupported ros version: {ros}", 400)
+    from sw2robot.exporter.ros_export import COLLISION_MODES
+    collision = (query.get("collision") or ["copy"])[0]
+    if collision not in COLLISION_MODES:
+        return None, (f"unsupported collision mode: {collision}", 400)
+    cquality = (query.get("cquality") or ["balanced"])[0]
+    if cquality not in ("balanced", "fine"):
+        return None, (f"unsupported collision quality: {cquality}", 400)
+    # the ROS exporter hardcodes the urdf/<robot_name>.urdf + meshes/ layout; in
+    # URDF-input mode the opened file may sit elsewhere, so fail clearly instead
+    # of with a confusing missing-file 500
+    if not _cad_mode(cls.pkg_dir) \
+            and os.path.normpath(os.path.join(cls.pkg_dir, cls.urdf_rel)) \
+            != os.path.normpath(os.path.join(
+                cls.pkg_dir, "urdf", cls.robot_name + ".urdf")):
+        return None, ("export needs the standard <pkg>/urdf/<name>.urdf + "
+                      "<pkg>/meshes/ layout; open the URDF from inside a "
+                      "urdf/ folder", 400)
+    return {
+        "visual_fmt": visual_fmt, "collision_fmt": collision_fmt,
+        "ros_version": int(ros), "collision": collision,
+        "coacd_quality": cquality,
+        "merge_fixed": (query.get("mergefixed") or ["0"])[0] == "1",
+        "pkg_name": (query.get("name") or [""])[0].strip() or None,
+        "urdf_name": (query.get("urdf") or [""])[0].strip() or None,
+        "mesh_dir": (query.get("meshdir") or [""])[0].strip() or None,
+    }, None
+
+
+def _export_fname(robot_name, pkg, params):
+    return (f"{robot_name}_glb.zip"
+            if params["visual_fmt"] == "glb" and params["collision_fmt"] == "glb"
+            else f"{pkg}.zip")
+
+
+def _run_export(pkg_dir, robot_name, urdf_rel, params):
+    """Background ZIP export; stashes the bytes for /api/export/zip/download."""
+    from sw2robot.exporter.ros_export import ExportCancelled
+    _stage_map = {"collision": "collision", "meshes": "convert meshes",
+                  "zip": "package + zip"}
+
+    def _bp(stage, done, total, detail=""):
+        _prog_stage(_stage_map.get(stage, stage),
+                    frac=(done / total) if total else None,
+                    label=(f"{done}/{total}" if total else None))
+        if detail:
+            _prog_update(sub=detail)
+    try:
+        # URDF-input mode keeps the on-disk URDF pristine and serves edits live;
+        # materialize them so the exporter picks them up (no-op in CAD mode)
+        colors = (_read_colors(pkg_dir, urdf_rel) if _cad_mode(pkg_dir)
+                  else _um_colors(_um["state"]))
+        with _um_materialized(pkg_dir, urdf_rel):
+            pkg, data = _export_zip(pkg_dir, robot_name, colors=colors,
+                                    progress=_bp,
+                                    should_cancel=_export_cancel.is_set,
+                                    **params)
+        fname = _export_fname(robot_name, pkg, params)
+        with _export_lock:
+            _export_out.update(data=data, fname=fname)
+        _prog_finish(result={"ready": True, "fname": fname,
+                             "download": "/api/export/zip/download"})
+        print(f"[sw2robot.web] export ready: {fname} ({len(data)} bytes)")
+    except ExportCancelled:
+        _prog_finish(cancelled=True)
+        print("[sw2robot.web] export CANCELLED by user")
+    except ValueError as e:
+        _prog_finish(error=str(e))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        _prog_finish(error=f"{type(e).__name__}: {e}")
 
 
 # --- joint/link rename overlay (joints.yaml link_names / joint_names) --------
@@ -1228,6 +1338,130 @@ _job = {"running": False, "log": [], "error": None, "package": None,
 _job_lock = threading.Lock()
 
 
+# ---- unified progress: ONE live view for the heavy jobs ---------------------
+# Extract, ZIP export, CoACD/primitive preview and the joint-limit sweep all
+# report into this single object, polled at /api/progress, so the UI shows one
+# bar + a per-stage checklist + a log tail instead of three ad-hoc status feeds
+# (issue #21).  The jobs are already one-at-a-time; _prog_start is the single
+# global busy-guard (it also stops, say, an export starting mid-extract).
+# The per-job dicts (_job / _coll_preview_job / _limjob) stay as the source of
+# truth for job-specific mechanics (cancel flags, the CoACD parts map, the
+# sweep pump); _prog is purely the client-facing reporting surface, and job
+# results the client needs travel in _prog["result"].
+_prog = {"job": None, "running": False, "done": True, "cancelled": False,
+         "error": None,
+         "stages": [],      # [{"name": str, "state": "pending|active|done"}]
+         "frac": None,      # 0..1 for a determinate bar, None = indeterminate
+         "label": "", "sub": "",
+         "log": [],         # full list; the client tails the last few
+         "result": None}    # job-specific payload (package / results / parts)
+_prog_lock = threading.Lock()
+_PROG_LOG_CAP = 200
+
+
+def _prog_start(job, stages, label=""):
+    """Claim the shared progress object for ``job`` with a fresh ordered stage
+    list (list of stage names).  Returns False if a job is already running."""
+    with _prog_lock:
+        if _prog["running"]:
+            return False
+        _prog.update(
+            job=job, running=True, done=False, cancelled=False, error=None,
+            stages=[{"name": s, "state": "pending"} for s in stages],
+            frac=None, label=label, sub="", log=[], result=None)
+        return True
+
+
+def _prog_stage(name, frac=None, label=None):
+    """Advance to the named stage: every earlier stage -> done, this -> active,
+    later ones stay pending.  Monotonic -- a stage before the current one never
+    regresses the checklist (extract messages can arrive slightly out of order).
+    ``frac`` sets the bar (None = indeterminate)."""
+    with _prog_lock:
+        names = [s["name"] for s in _prog["stages"]]
+        if name in names:
+            idx = names.index(name)
+            cur = next((i for i, s in enumerate(_prog["stages"])
+                        if s["state"] == "active"),
+                       sum(1 for s in _prog["stages"] if s["state"] == "done"))
+            if idx > cur:                     # advancing: clear the old detail
+                _prog["sub"] = ""
+            if idx >= cur:                    # never move the checklist backwards
+                for i, s in enumerate(_prog["stages"]):
+                    s["state"] = ("done" if i < idx
+                                  else "active" if i == idx else "pending")
+        _prog["label"] = label if label is not None else name
+        _prog["frac"] = frac
+
+
+def _prog_update(frac=None, label=None, sub=None, result=None):
+    with _prog_lock:
+        if frac is not None:
+            _prog["frac"] = frac
+        if label is not None:
+            _prog["label"] = label
+        if sub is not None:
+            _prog["sub"] = sub
+        if result is not None:
+            _prog["result"] = result
+
+
+def _prog_log(line):
+    with _prog_lock:
+        _prog["log"].append(str(line))
+        del _prog["log"][:-_PROG_LOG_CAP]
+
+
+def _prog_finish(error=None, result=None, cancelled=False):
+    with _prog_lock:
+        if error is None and not cancelled:
+            for s in _prog["stages"]:
+                s["state"] = "done"
+            _prog["frac"] = 1.0
+        if result is not None:
+            _prog["result"] = result
+        _prog.update(running=False, done=True, error=error,
+                     cancelled=cancelled)
+
+
+def _prog_snapshot():
+    with _prog_lock:
+        return copy.deepcopy(_prog)
+
+
+# The extract pipeline reports free-text strings through one progress callback
+# (core/export were built before the stage model).  Rather than restructure the
+# exporter, classify those strings into stages HERE -- the server owns the
+# stage/frac mapping, so the client just renders it (no more log-regex parsing).
+_EXTRACT_STAGES = ["connect SolidWorks", "extract assembly",
+                   "export meshes", "build package"]
+_EXTRACT_MESH_RE = re.compile(r"exporting mesh (\d+)/(\d+)")
+
+
+def _prog_extract_stage(msg):
+    m = _EXTRACT_MESH_RE.search(msg)
+    if m:
+        i, n = int(m.group(1)), int(m.group(2))
+        name = msg.split(": ", 1)[-1]
+        _prog_stage("export meshes", frac=(i / n) if n else None,
+                    label=f"exporting mesh {i}/{n}")
+        _prog_update(sub=name)
+        return
+    if msg.startswith("... still"):          # heartbeat: fill sub, keep stage
+        _prog_update(sub=msg)
+        return
+    low = msg.lower()
+    if "throwaway copy" in low or "solidworks" in low:
+        _prog_stage("connect SolidWorks")
+    elif low.startswith("reading ") or "sub-assembly" in low \
+            or "limit mate" in low:
+        _prog_stage("extract assembly")
+    elif low.startswith("exporting "):
+        _prog_stage("export meshes")
+    elif "building urdf" in low or "reusing your joint config" in low:
+        _prog_stage("build package")
+
+
 class _CancelExtract(Exception):
     """Raised from the progress callback to abort the extract cooperatively
     when the user asked to cancel (via /api/extract/cancel)."""
@@ -1378,7 +1612,10 @@ def _run_extract(sldasm):
         # (per phase, per mesh), so raising here aborts at the next checkpoint
         if _job.get("cancel"):
             raise _CancelExtract()
-        _job["log"].append(str(msg))
+        msg = str(msg)
+        _job["log"].append(msg)          # heartbeat + legacy /status still read this
+        _prog_log(msg)
+        _prog_extract_stage(msg)         # classify -> unified stage/frac
         print(f"[sw2robot.web] extract: {msg}")
 
     # COM calls (launch, first contact with an idle session, OpenDoc6
@@ -1408,10 +1645,13 @@ def _run_extract(sldasm):
             except Exception:
                 detail = "process count unavailable"
             phase = (real() or ["starting"])[-1]
-            _job["log"].append(f"... still waiting "
-                               f"({int(time.time() - last_t)}s in this "
-                               f"phase, {int(time.time() - t0)}s total, "
-                               f"{detail}) -- phase: {phase[:70]}")
+            line = (f"... still waiting "
+                    f"({int(time.time() - last_t)}s in this "
+                    f"phase, {int(time.time() - t0)}s total, "
+                    f"{detail}) -- phase: {phase[:70]}")
+            _job["log"].append(line)
+            _prog_log(line)
+            _prog_update(sub=line)
 
     threading.Thread(target=heartbeat, daemon=True).start()
     try:
@@ -1449,22 +1689,26 @@ def _run_extract(sldasm):
         _preconvert_meshes(str(state.package_dir))
         progress(f"done -> {state.package_dir} (SolidWorks kept warm for "
                  f"the next extraction)")
+        _prog_finish(result={"package": str(state.package_dir)})
     except _CancelExtract:
         # the COM sequence was aborted mid-flight, so the warm session may hold
         # a half-open doc -- tear it down so the next extraction starts clean
         _job["cancelled"] = True
         _job["log"].append("cancelled by user; resetting SolidWorks session ...")
+        _prog_log("cancelled by user; resetting SolidWorks session ...")
         print("[sw2robot.web] extract CANCELLED by user")
         try:
             _shutdown_sw()
         except Exception:
             pass
         _job["log"].append("cancelled.")
+        _prog_finish(cancelled=True)
     except Exception as e:
         import traceback
 
         from sw2robot.exporter.swcom import SolidWorksUnavailable
         _job["error"] = f"{type(e).__name__}: {e}"
+        _prog_finish(error=f"{type(e).__name__}: {e}")
         print(f"[sw2robot.web] extract FAILED: {e!r}")
         traceback.print_exc()     # full traceback -> the exact failing line
         # Drop the cached session on anything that smells like a lost/failed
@@ -1565,6 +1809,7 @@ def _run_coll_preview_job(pkg_dir, robot_name, urdf_rel, quality, mode="coacd"):
             if link not in _coll_preview_job["inflight"]:
                 _coll_preview_job["inflight"].append(link)
             _coll_preview_job["current"] = link
+        _prog_update(sub=link)
 
     def _progress(done, total, link, rel):    # a link finished
         with _coll_preview_lock:
@@ -1574,6 +1819,13 @@ def _run_coll_preview_job(pkg_dir, robot_name, urdf_rel, quality, mode="coacd"):
                 _coll_preview_job["inflight"].remove(link)
             if rel:
                 _coll_preview_job["parts"][link] = "/pkg/" + rel
+            parts = dict(_coll_preview_job["parts"])
+        # unified progress: one stage, frac per link; the client reads
+        # result.parts each poll and pops each mesh into the viewer as it lands
+        _prog_stage("build collision preview",
+                    frac=(done / total) if total else None,
+                    label=(f"{done}/{total} links" if total else None))
+        _prog_update(result={"parts": parts, "mode": mode})
 
     def _should_cancel():
         with _coll_preview_lock:
@@ -1589,16 +1841,19 @@ def _run_coll_preview_job(pkg_dir, robot_name, urdf_rel, quality, mode="coacd"):
             stopped = _coll_preview_job["cancel"]
             _coll_preview_job.update(running=False, current=None, inflight=[],
                               cancelled=stopped)
+            parts = dict(_coll_preview_job["parts"])
         # the live self-collision model can now use these convex parts -- drop
         # the current one so the next /api/collision/init rebuilds with them
         with _coll_lock:
             _coll.update(key=None, ctx=None)
+        _prog_finish(result={"parts": parts, "mode": mode}, cancelled=stopped)
         print(f"[sw2robot.web] collision preview "
               f"{'cancelled' if stopped else 'ready'}: "
-              f"{len(_coll_preview_job['parts'])} links")
+              f"{len(parts)} links")
     except Exception as e:
         with _coll_preview_lock:
             _coll_preview_job.update(running=False, error=repr(e))
+        _prog_finish(error=repr(e))
         print(f"[sw2robot.web] collision preview FAILED: {e!r}")
 
 
@@ -1665,6 +1920,7 @@ def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg,
                 with _limjob_lock:        # non-JSON (skrobot warnings): keep a tail
                     _limjob["log"].append(line)
                     del _limjob["log"][:-50]
+                _prog_log(line)
                 continue
             with _limjob_lock:
                 kind = ev.get("event")
@@ -1677,6 +1933,17 @@ def _run_auto_limits(pkg_dir, urdf_rel, step_deg, max_deg,
                     _limjob.update(n=ev.get("i", 0),
                                    total=ev.get("total", _limjob["total"]),
                                    joint=ev.get("joint"))
+            # mirror into the unified progress view
+            if kind == "loading":
+                _prog_stage("load model")
+            elif kind == "start":
+                _prog_stage("sweep joints", frac=0.0)
+            elif kind == "joint":
+                i, tot = ev.get("i", 0), ev.get("total", 0)
+                _prog_stage("sweep joints",
+                            frac=(i / tot) if tot else None,
+                            label=(f"{i}/{tot} joints" if tot else None))
+                _prog_update(sub=ev.get("joint") or "")
 
     pump = threading.Thread(target=_pump, daemon=True)
     pump.start()
@@ -2034,6 +2301,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     _limjob.update(running=True, log=[], error=None,
                                    results=None, n=0, total=0, joint=None,
                                    phase="loading")
+                if not _prog_start("limits", ["load model", "sweep joints"]):
+                    with _limjob_lock:
+                        _limjob.update(running=False)
+                    return self._send_json(
+                        {"error": "a job is already running"}, 409)
 
                 # NB: must NOT be named `_job` -- that shadows the module-global
                 # `_job` (the extraction job) across this whole method and breaks
@@ -2047,6 +2319,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     with _limjob_lock:
                         _limjob.update(results=results, error=err,
                                        running=False)
+                    _prog_finish(error=err, result={"results": results})
 
                 threading.Thread(target=_sweep_job, daemon=True).start()
                 return self._send_json({"started": True})
@@ -2066,16 +2339,18 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         and target.lower().endswith(".sldasm")):
                     return self._send_json(
                         {"error": f"not a .sldasm file: {target}"}, 400)
+                if not _prog_start("extract", _EXTRACT_STAGES):
+                    return self._send_json(
+                        {"error": "a job is already running"}, 409)
                 with _job_lock:
-                    if _job["running"]:
-                        return self._send_json(
-                            {"error": "an extraction is already running"},
-                            409)
                     _job.update(running=True, log=[], error=None,
                                 package=None, cancel=False, cancelled=False)
                 threading.Thread(target=_run_extract, args=(target,),
                                  daemon=True).start()
                 return self._send_json({"started": True})
+            if path == "/api/progress":
+                # unified live view for extract / export / collision / limits
+                return self._send_json(_prog_snapshot())
             if path == "/api/extract/status":
                 return self._send_json(_job)
             if path == "/api/extract/cancel":
@@ -2105,71 +2380,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 _preconvert_meshes(pkg)
                 return self._send_json(self._info())
             if path == "/api/export/zip":
+                # SYNCHRONOUS export: kept for the launch_it.sh curl one-liner
+                # (which needs a direct URL).  The editor uses the async
+                # /start + /download pair below so the build shows progress.
                 cls = type(self)
-                if not cls.pkg_dir:
-                    return self._send_json({"error": "no package open"}, 400)
-                visual_fmt = (query.get("meshes") or ["dae"])[0]
-                if visual_fmt not in ("dae", "stl", "glb"):
-                    return self._send_json(
-                        {"error": f"unsupported visual mesh format: {visual_fmt}"},
-                        400)
-                collision_fmt = (query.get("colfmt") or ["stl"])[0]
-                if collision_fmt not in ("stl", "glb"):
-                    return self._send_json(
-                        {"error": f"unsupported collision mesh format: "
-                         f"{collision_fmt}"}, 400)
-                ros = (query.get("ros") or ["1"])[0]
-                if ros not in ("1", "2"):
-                    return self._send_json(
-                        {"error": f"unsupported ros version: {ros}"}, 400)
-                ros_version = int(ros)
-                from sw2robot.exporter.ros_export import COLLISION_MODES
-                collision = (query.get("collision") or ["copy"])[0]
-                if collision not in COLLISION_MODES:
-                    return self._send_json(
-                        {"error": f"unsupported collision mode: {collision}"}, 400)
-                cquality = (query.get("cquality") or ["balanced"])[0]
-                if cquality not in ("balanced", "fine"):
-                    return self._send_json(
-                        {"error": f"unsupported collision quality: {cquality}"},
-                        400)
-                merge_fixed = (query.get("mergefixed") or ["0"])[0] == "1"
-                pkg_name = (query.get("name") or [""])[0].strip() or None
-                urdf_name = (query.get("urdf") or [""])[0].strip() or None
-                mesh_dir = (query.get("meshdir") or [""])[0].strip() or None
-                # the ROS exporter hardcodes the urdf/<robot_name>.urdf + meshes/
-                # layout; in URDF-input mode the opened file may sit elsewhere, so
-                # fail clearly instead of with a confusing missing-file 500
-                if not _cad_mode(cls.pkg_dir) \
-                        and os.path.normpath(os.path.join(cls.pkg_dir, cls.urdf_rel)) \
-                        != os.path.normpath(os.path.join(
-                            cls.pkg_dir, "urdf", cls.robot_name + ".urdf")):
-                    return self._send_json(
-                        {"error": "export needs the standard "
-                         "<pkg>/urdf/<name>.urdf + <pkg>/meshes/ layout; open the "
-                         "URDF from inside a urdf/ folder"}, 400)
+                params, err = _parse_export_query(cls, query)
+                if err:
+                    return self._send_json({"error": err[0]}, err[1])
                 try:
-                    # URDF-input mode keeps the on-disk URDF pristine and serves
-                    # edits live; materialize them so the exporter picks them up
                     colors = (_read_colors(cls.pkg_dir, cls.urdf_rel)
                               if _cad_mode(cls.pkg_dir)
                               else _um_colors(_um["state"]))
                     with _um_materialized(cls.pkg_dir, cls.urdf_rel):
-                        pkg, data = _export_zip(cls.pkg_dir, cls.robot_name, visual_fmt,
-                                                collision_fmt,
-                                                ros_version=ros_version,
-                                                pkg_name=pkg_name,
-                                                urdf_name=urdf_name,
-                                                colors=colors,
-                                                collision=collision,
-                                                coacd_quality=cquality,
-                                                merge_fixed=merge_fixed,
-                                                mesh_dir=mesh_dir)
+                        pkg, data = _export_zip(cls.pkg_dir, cls.robot_name,
+                                                colors=colors, **params)
                 except ValueError as e:
                     return self._send_json({"error": str(e)}, 400)
-                fname = (f"{cls.robot_name}_glb.zip"
-                         if visual_fmt == "glb" and collision_fmt == "glb"
-                         else f"{pkg}.zip")
+                fname = _export_fname(cls.robot_name, pkg, params)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/zip")
                 self.send_header("Content-Disposition",
@@ -2177,6 +2404,48 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
+                return None
+            if path == "/api/export/zip/start":
+                # ASYNC export: build in a background thread reporting into _prog;
+                # the client watches /api/progress then GETs /download.
+                cls = type(self)
+                params, err = _parse_export_query(cls, query)
+                if err:
+                    return self._send_json({"error": err[0]}, err[1])
+                if not _prog_start("export", _EXPORT_STAGES):
+                    return self._send_json(
+                        {"error": "a job is already running"}, 409)
+                _export_cancel.clear()
+                with _export_lock:
+                    _export_out.update(data=None, fname=None)
+                threading.Thread(
+                    target=_run_export,
+                    args=(cls.pkg_dir, cls.robot_name, cls.urdf_rel, params),
+                    daemon=True).start()
+                return self._send_json({"started": True})
+            if path == "/api/export/zip/cancel":
+                # cooperative: _run_export checks _export_cancel between
+                # links/meshes and finishes as cancelled at the next boundary
+                snap = _prog_snapshot()
+                running = snap["job"] == "export" and snap["running"]
+                if running:
+                    _export_cancel.set()
+                return self._send_json({"cancelling": running})
+            if path == "/api/export/zip/download":
+                with _export_lock:
+                    data, fname = _export_out["data"], _export_out["fname"]
+                if data is None:
+                    return self._send_json(
+                        {"error": "no finished export to download"}, 404)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/zip")
+                self.send_header("Content-Disposition",
+                                 f'attachment; filename="{fname}"')
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                with _export_lock:               # single-shot: free the bytes
+                    _export_out.update(data=None, fname=None)
                 return None
             if path == "/api/launch_it.sh":
                 # one-liner build+launch (robot-compiler style):
@@ -2231,6 +2500,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 with _coll_preview_lock:
                     if _coll_preview_job["running"]:
                         return self._send_json({"error": "already running"}, 409)
+                if not _prog_start("collision", ["build collision preview"]):
+                    return self._send_json(
+                        {"error": "a job is already running"}, 409)
                 _reset_coll_preview_job()
                 with _coll_preview_lock:
                     _coll_preview_job.update(running=True, quality=quality, mode=mode)
