@@ -1135,25 +1135,18 @@ def test_async_export_progress_and_download(server):
 
 
 def test_export_start_rejects_second_job(server):
-    """_prog_start is a single global busy-guard: a second heavy job while an
-    export is in flight is refused with 409."""
-    import time
+    """_prog_start is a single global busy-guard: any heavy job while another
+    holds it is refused with 409.  Assert this deterministically by holding the
+    guard directly -- racing a real export to still be running is flaky on the
+    tiny fixture (it can finish before the second request lands)."""
+    from sw2robot.editor import webserver
 
-    r = _get_json(server, "/api/export/zip/start?ros=1&meshes=stl&colfmt=stl")
-    assert r.get("started") is True
+    gen = webserver._prog_start("extract", ["load model"])
+    assert gen is not None, "guard should be free at the start of the test"
     try:
-        # a second start (or any other job) must 409 while one is running.  The
-        # export can finish very fast on the tiny fixture, so only assert the
-        # guard IF it is still running.
-        st = _get_json(server, "/api/progress")
-        if st.get("running"):
-            code, body = _get_status(
-                server, "/api/export/zip/start?ros=1&meshes=stl&colfmt=stl")
-            assert code == 409
+        code, body = _get_status(
+            server, "/api/export/zip/start?ros=1&meshes=stl&colfmt=stl")
+        assert code == 409
+        assert b"already running" in body
     finally:
-        deadline = time.time() + 60
-        while time.time() < deadline:
-            if _get_json(server, "/api/progress").get("done"):
-                break
-            time.sleep(0.1)
-        _get_status(server, "/api/export/zip/download")   # drain the stash
+        webserver._prog_finish()                          # release the guard
