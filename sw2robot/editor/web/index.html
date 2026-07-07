@@ -226,7 +226,11 @@
      collision preview all render here (top-centred), one style (issue #21) */
   #loadbar { position: absolute; left: 50%; top: 64px;
              transform: translateX(-50%); z-index: 7; display: none;
-             width: 340px; background: #1c2228ee; border: 1px solid #456;
+             /* wide enough that a part/mesh/joint name mostly fits, but capped
+                to the viewport on narrow windows; long lines wrap (see .lb-sub /
+                .lb-log div) instead of scrolling or clipping */
+             width: min(560px, 92vw); box-sizing: border-box;
+             background: #1c2228ee; border: 1px solid #456;
              border-radius: 8px; padding: 14px 18px; text-align: center;
              pointer-events: none; }
   #loadbar .lb-text { font-size: 13px; color: #fff; margin-bottom: 8px;
@@ -241,9 +245,13 @@
   @keyframes lbslide {
     0% { margin-left: 0; } 50% { margin-left: 70%; }
     100% { margin-left: 0; } }
+  /* the current-item line (mesh / part / joint name, or the extract heartbeat):
+     wrap onto up to 2 lines and only then ellipsize, so its tail -- usually the
+     identifying part -- stays readable instead of being cut off */
   #loadbar .lb-sub { font-size: 11px; color: #8a93a3; margin-top: 6px;
-                     overflow: hidden; text-overflow: ellipsis;
-                     white-space: nowrap; }
+                     overflow: hidden; overflow-wrap: anywhere;
+                     display: -webkit-box; -webkit-box-orient: vertical;
+                     -webkit-line-clamp: 2; line-clamp: 2; }
   /* unified progress: per-stage checklist + live log tail (issue #21) */
   #loadbar .lb-stages { display: none; margin-top: 10px; text-align: left; }
   #loadbar .lb-stages .lb-stage { font-size: 11px; color: #8a93a3;
@@ -252,12 +260,16 @@
   #loadbar .lb-stages .lb-stage.done { color: #6ac26a; }
   #loadbar .lb-stages .lb-stage.active { color: #fff; }
   #loadbar .lb-stages .lb-ico { display: inline-block; width: 15px; }
+  /* font-size 10px * line-height 1.5 = 15px per line; keep max-height an exact
+     multiple (6 lines) so the tail is clipped ON a line boundary -- never with a
+     line sliced in half above the stop button */
   #loadbar .lb-log { display: none; margin-top: 9px; text-align: left;
                      font-family: ui-monospace, Menlo, Consolas, monospace;
                      font-size: 10px; color: #6f7885; line-height: 1.5;
-                     max-height: 84px; overflow: hidden; }
-  #loadbar .lb-log div { white-space: nowrap; overflow: hidden;
-                     text-overflow: ellipsis; }
+                     max-height: 90px; overflow: hidden; }
+  #loadbar .lb-log div { overflow: hidden; overflow-wrap: anywhere;
+                     display: -webkit-box; -webkit-box-orient: vertical;
+                     -webkit-line-clamp: 2; line-clamp: 2; }
   /* shared cancel control for cancellable jobs (extract / collision preview) */
   #loadbar #lbstop { display: none; margin-top: 11px; pointer-events: auto;
                      padding: 2px 12px; font-size: 11px; background: #3a1414;
