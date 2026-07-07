@@ -381,24 +381,40 @@ check('box-select: undo restores joint types',
       movRestored === movBefore, `back to ${movRestored}`);
 }  // end if (!SMOKE) -- auto-limits + box-select block
 
-// ---- 10. extraction loading UI (mock /api/extract*, no SolidWorks) ---------
-// B: determinate bar during mesh export; C: cold-start reassurance; seconds.
+// ---- 10. extraction loading UI (mock /api/progress, no SolidWorks) ---------
+// The server owns the stage/frac mapping now (unified progress, issue #21), so
+// the client just renders GET /api/progress: cold start = the "connect
+// SolidWorks" stage (indeterminate); mesh export = the "export meshes" stage
+// with a determinate bar + "i/n" sub.
 await page.evaluate(() => {
   window._phase = 'start';
+  const S = (a) => [
+    { name: 'connect SolidWorks', state: a[0] },
+    { name: 'extract assembly', state: a[1] },
+    { name: 'export meshes', state: a[2] },
+    { name: 'build package', state: a[3] }];
+  window._P = {
+    start: { job: 'extract', running: true, done: false, cancelled: false,
+      error: null, stages: S(['active', 'pending', 'pending', 'pending']),
+      frac: null, label: 'connect SolidWorks',
+      sub: '... still waiting (10s in this phase, 20s total, '
+           + '1 SolidWorks process(es) alive)',
+      log: ['starting SolidWorks (this can take a minute) ...'], result: null },
+    mesh: { job: 'extract', running: true, done: false, cancelled: false,
+      error: null, stages: S(['done', 'done', 'active', 'pending']),
+      frac: 30 / 55, label: 'export meshes', sub: '30/55  linkB_1',
+      log: ['exporting mesh 30/55: linkB_1'], result: null },
+    done: { job: 'extract', running: false, done: true, cancelled: false,
+      error: null, stages: S(['done', 'done', 'done', 'done']), frac: 1,
+      label: '', sub: '', log: ['done'], result: { package: 'output/x' } },
+  };
   const of = window.fetch.bind(window);
   window.fetch = async (u, opts) => {
     const url = typeof u === 'string' ? u : u?.url;
     const J = o => new Response(JSON.stringify(o),
       { headers: { 'Content-Type': 'application/json' } });
     if (url && url.includes('/api/extract?')) return J({ started: true });
-    if (url && url.includes('/api/extract/status')) {
-      if (window._phase === 'start') return J({ running: true, error: null, log: [
-        'starting SolidWorks (this can take a minute) ...',
-        '... still waiting (10s in this phase, 20s total, 1 SolidWorks process(es) alive)'] });
-      if (window._phase === 'mesh') return J({ running: true, error: null,
-        log: ['starting SolidWorks ...', 'exporting mesh 30/55: linkB_1'] });
-      return J({ running: false, error: null, log: ['done'], package: 'output/x' });
-    }
+    if (url && url.includes('/api/progress')) return J(window._P[window._phase]);
     return of(u, opts);
   };
   window.sw2robot.extractFlow('C:/fake/thing.SLDASM');
@@ -412,16 +428,15 @@ const lbar = () => page.evaluate(() => {
 });
 await sleep(2500);
 const cold = await lbar();
-check('extract-ui: cold-start indeterminate + alive + seconds',
-      cold.indet && /SolidWorks を起動中/.test(cold.text)
-      && /稼働中 ✓/.test(cold.sub) && /\d+秒/.test(cold.text)
-      && !/min/.test(cold.text + cold.sub), JSON.stringify(cold));
+check('extract-ui: cold-start indeterminate + connect stage + waiting',
+      cold.indet && /SolidWorks/.test(cold.text)
+      && /still waiting/.test(cold.sub), JSON.stringify(cold));
 await page.evaluate(() => { window._phase = 'mesh'; });
 await sleep(1600);
 const meshb = await lbar();
-check('extract-ui: mesh export determinate bar (30/55) + seconds',
+check('extract-ui: mesh export determinate bar (30/55)',
       !meshb.indet && meshb.fill >= 50 && meshb.fill <= 60
-      && /メッシュ 30\/55/.test(meshb.sub) && /\d+秒/.test(meshb.text),
+      && /メッシュ/.test(meshb.text) && /30\/55/.test(meshb.sub),
       JSON.stringify(meshb));
 await page.evaluate(() => { window._phase = 'done'; });
 await sleep(1500);
@@ -440,8 +455,11 @@ await page.evaluate(() => {
     if (url && url.includes('/api/fs'))           // server browser root
       return J({ path: '', parent: null, dirs: [], files: [] });
     if (url && url.includes('/api/extract?')) return J({ started: true });
-    if (url && url.includes('/api/extract/status'))
-      return J({ running: true, error: null, log: ['starting SolidWorks ...'] });
+    if (url && url.includes('/api/progress'))
+      return J({ job: 'extract', running: true, done: false, cancelled: false,
+        error: null, stages: [{ name: 'connect SolidWorks', state: 'active' }],
+        frac: null, label: 'connect SolidWorks', sub: '',
+        log: ['starting SolidWorks ...'], result: null });
     return of(u, opts);
   };
 });

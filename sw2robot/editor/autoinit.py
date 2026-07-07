@@ -313,7 +313,8 @@ def _prismatic_joints(robot):
 def sweep_limits(robot, meshes, step_deg=6.0, max_deg=180.0, margin_deg=2.0,
                  step_mm=5.0, max_mm=300.0, margin_mm=2.0,
                  margin_m=REST_MARGIN, only=None, progress=None, refine=True,
-                 refine_tol_deg=0.4, refine_tol_mm=0.2, sc=None, hull=False):
+                 refine_tol_deg=0.4, refine_tol_mm=0.2, sc=None, hull=False,
+                 on_start=None):
     """Per-joint self-collision limit sweep, from the HOME pose (all at 0).
 
     Sweeps REVOLUTE joints in radians (``step_deg`` / ``max_deg``) and PRISMATIC
@@ -406,7 +407,11 @@ def sweep_limits(robot, meshes, step_deg=6.0, max_deg=180.0, margin_deg=2.0,
 
     out = {}
     try:
-        for J in joints:
+        for _idx, J in enumerate(joints, 1):
+            # fire BEFORE the (possibly multi-second) sweep of this joint so a UI
+            # shows the joint currently being worked, not the last one finished
+            if on_start:
+                on_start(J.name, _idx, len(joints))
             pris = J in pjoints
             # per-joint sweep parameters in the joint's native unit
             if pris:
