@@ -1126,6 +1126,7 @@ def _collapse_preview_payload(graph, yml_txt=""):
         "base_link": base,
         "links": links,
         "joints": joints,
+        "tree_rows": _tree_rows_payload(base, links, joints),
         "dropped_internal_joints": dropped,
         "collapsed_subassemblies": collapsed,
         "canonical_counts": {
@@ -1137,6 +1138,52 @@ def _collapse_preview_payload(graph, yml_txt=""):
             "joints": len(joints),
         },
     }
+
+
+def _tree_rows_payload(base_link, links, joints):
+    """Flatten a link/joint tree into display rows for preview UIs."""
+    link_info = {l["link_name"]: l for l in links}
+    by_parent = {}
+    child_links = set()
+    for j in joints:
+        by_parent.setdefault(j["parent"], []).append(j)
+        child_links.add(j["child"])
+    for rows in by_parent.values():
+        rows.sort(key=lambda j: (j["child"], j["name"]))
+
+    roots = []
+    if base_link in link_info:
+        roots.append(base_link)
+    roots.extend(sorted(ln for ln in link_info
+                        if ln not in child_links and ln != base_link))
+
+    out, seen = [], set()
+
+    def walk(link, depth, parent=None, joint=None):
+        if link in seen:
+            return
+        seen.add(link)
+        info = link_info.get(link, {})
+        out.append({
+            "link": link,
+            "name": info.get("name", link),
+            "depth": depth,
+            "parent": parent,
+            "joint": joint.get("name") if joint else None,
+            "source_joint": joint.get("source_name") if joint else None,
+            "joint_type": joint.get("type") if joint else "root",
+            "collapsed": bool(info.get("collapsed")),
+            "root": joint is None,
+        })
+        for child_joint in by_parent.get(link, []):
+            walk(child_joint["child"], depth + 1, link, child_joint)
+
+    for root in roots:
+        walk(root, 0)
+    for link in sorted(link_info):
+        if link not in seen:
+            walk(link, 0)
+    return out
 
 
 def _upsert_yaml_map(txt, mapkey, key, value):

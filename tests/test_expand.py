@@ -198,6 +198,11 @@ def test_collapse_preview_replaces_no_expand_subassembly_members():
     assert [j["source_name"] for j in payload["dropped_internal_joints"]] == [
         "servo_1__case_1__servo_1__horn_1"
     ]
+    assert [(r["link"], r["depth"], r["joint_type"], r["collapsed"])
+            for r in payload["tree_rows"]] == [
+        ("plate_1", 0, "root", False),
+        ("servo_1", 1, "fixed", True),
+    ]
 
 
 def test_collapse_preview_keeps_expanded_override():
@@ -207,6 +212,12 @@ def test_collapse_preview_keeps_expanded_override():
     payload = _collapse_preview_payload(make_graph(), txt)
     assert payload["collapsed_subassemblies"] == []
     assert payload["preview_counts"] == payload["canonical_counts"]
+    assert [(r["link"], r["depth"], r["joint_type"], r["collapsed"])
+            for r in payload["tree_rows"]] == [
+        ("plate_1", 0, "root", False),
+        ("servo_1__case_1", 1, "fixed", False),
+        ("servo_1__horn_1", 2, "revolute", False),
+    ]
 
 
 def test_subassemblies_payload_reports_expansion_state():
