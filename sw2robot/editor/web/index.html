@@ -1062,8 +1062,12 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
                               ja: a => `links ${a.cl} → ${a.pl}, joints ${a.cj} → ${a.pj}` },
     'subasm.previewNone': { en: 'No sub-assemblies are collapsed by the current modes.',
                             ja: '現在のmodeで畳まれるサブアセンブリはありません。' },
+    'subasm.previewTreeTitle': { en: 'Preview tree', ja: 'preview tree' },
+    'subasm.thTreeLink': { en: 'tree link', ja: 'tree link' },
+    'subasm.thTreeJoint': { en: 'joint', ja: 'joint' },
     'subasm.thMembers': { en: 'members', ja: '構成link' },
     'subasm.thDropped': { en: 'internal joints', ja: '内部joint' },
+    'subasm.collapsedTag': { en: 'collapsed', ja: '畳み込み' },
     'subasm.backSubasm': { en: '← sub-assemblies', ja: '← サブアセンブリ' },
     'subasm.stateExpanded': { en: 'expanded', ja: '展開' },
     'subasm.stateKept': { en: 'kept as one link', ja: '1リンク保持' },
@@ -2896,6 +2900,26 @@ async function openSubassemblyPreview(ov) {
           `<td>${s.member_links?.length ?? 0}</td>` +
           `<td>${s.internal_joints?.length ?? 0}</td>` +
           `<td>${subasmOverrideLabel(s.override)}</td></tr>`;
+      }
+      html += '</tbody></table>';
+    }
+    const treeRows = r.tree_rows || [];
+    if (treeRows.length) {
+      html += '<div style="font-size:13px;margin:12px 0 4px;color:#9fe0a8">' +
+        t('subasm.previewTreeTitle') + '</div>' +
+        '<table class="rntable"><thead><tr><th>' +
+        t('subasm.thTreeLink') + '</th><th>' + t('subasm.thTreeJoint') +
+        '</th><th>' + t('rename.thType') + '</th></tr></thead><tbody>';
+      for (const row of treeRows) {
+        const indent = Math.max(0, Number(row.depth || 0)) * 14;
+        const marker = row.root ? '⌂' : '·';
+        const collapsed = row.collapsed
+          ? ` <span style="color:#d6b36b">(${t('subasm.collapsedTag')})</span>`
+          : '';
+        html += `<tr><td><span style="display:inline-block;margin-left:${indent}px">` +
+          `${marker} ${htmlEsc(row.link)}${collapsed}</span></td>` +
+          `<td>${htmlEsc(row.joint || '')}</td>` +
+          `<td>${htmlEsc(row.joint_type || '')}</td></tr>`;
       }
       html += '</tbody></table>';
     }
