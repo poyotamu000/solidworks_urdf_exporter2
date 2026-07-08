@@ -161,6 +161,48 @@ def test_subassemblies_payload_reports_no_expand_override():
     assert rows[0]["override"] == "no_expand"
 
 
+def test_set_subassembly_mode_yaml_round_trips_exact_name():
+    from sw2robot.editor.webserver import (
+        _set_subassembly_mode_yaml,
+        _subassemblies_payload,
+    )
+
+    txt, members = _set_subassembly_mode_yaml("", make_graph(), "servo-1",
+                                              "no_expand")
+    assert members["expand"] == []
+    assert members["no_expand"] == ["servo-1"]
+    row = _subassemblies_payload(make_graph(), txt)["subassemblies"][0]
+    assert row["expanded"] is False
+    assert row["override"] == "no_expand"
+
+    txt, members = _set_subassembly_mode_yaml(txt, make_graph(), "servo-1",
+                                              "expand")
+    assert members["expand"] == ["servo-1"]
+    assert members["no_expand"] == []
+    row = _subassemblies_payload(make_graph(), txt)["subassemblies"][0]
+    assert row["expanded"] is True
+    assert row["override"] == "expand"
+
+    txt, members = _set_subassembly_mode_yaml(txt, make_graph(), "servo-1",
+                                              "auto")
+    assert members["expand"] == []
+    assert members["no_expand"] == []
+    row = _subassemblies_payload(make_graph(), txt)["subassemblies"][0]
+    assert row["override"] == "auto"
+
+
+def test_set_subassembly_mode_yaml_rejects_shared_substring_override():
+    from sw2robot.editor.webserver import _set_subassembly_mode_yaml
+
+    g = make_graph()
+    inst2 = _comp("servo-2", "servo_2", xyz=(0.2, 0, 0), sub=True,
+                  path="X:/fake/servo_unit.SLDASM")
+    g.components.append(inst2)
+    with pytest.raises(ValueError, match="also match other sub-assemblies"):
+        _set_subassembly_mode_yaml("no_expand:\n- servo\n", g, "servo-1",
+                                   "expand")
+
+
 def test_rigid_subassembly_not_expanded():
     g = make_graph()
     # make the internals rigid: bolt pair instead of a hinge

@@ -1037,8 +1037,8 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.btnTitle': { en: 'show CAD sub-assemblies and whether they are expanded',
                          ja: 'CADサブアセンブリと展開状態を表示' },
     'subasm.title': { en: 'CAD sub-assemblies', ja: 'CADサブアセンブリ' },
-    'subasm.help': { en: 'Read-only for now: shows the automatic expansion decision and any expand / no_expand override in joints.yaml.',
-                     ja: '現在は表示のみ: 自動展開の判定と joints.yaml の expand / no_expand 上書きを表示します。' },
+    'subasm.help': { en: 'Sub-assembly mode keeps the normal expanded tree as the baseline, then overrides only selected CAD sub-assemblies.',
+                     ja: 'サブアセンブリモードでは通常の全展開treeを基準にして、選んだCADサブアセンブリだけを上書きします。' },
     'subasm.none': { en: 'No CAD sub-assemblies in this package.',
                      ja: 'このパッケージにはCADサブアセンブリがありません。' },
     'subasm.urdfMode': { en: 'Sub-assembly data is available for CAD-extracted packages only.',
@@ -1050,6 +1050,7 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.thChildren': { en: 'children', ja: '子' },
     'subasm.thEdges': { en: 'mates', ja: 'mate' },
     'subasm.thState': { en: 'state', ja: '状態' },
+    'subasm.thMode': { en: 'mode', ja: 'mode' },
     'subasm.thPath': { en: 'file', ja: 'ファイル' },
     'subasm.back': { en: '← rename list', ja: '← 改名リスト' },
     'subasm.stateExpanded': { en: 'expanded', ja: '展開' },
@@ -1057,6 +1058,10 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.overrideAuto': { en: 'auto', ja: 'auto' },
     'subasm.overrideExpand': { en: 'expand', ja: 'expand' },
     'subasm.overrideNoExpand': { en: 'no_expand', ja: 'no_expand' },
+    'subasm.setOk': { en: a => `${a.name}: ${a.mode} ✓`,
+                      ja: a => `${a.name}: ${a.mode} ✓` },
+    'subasm.setFail': { en: a => `sub-assembly mode failed: ${a.e}`,
+                        ja: a => `サブアセンブリモード変更に失敗: ${a.e}` },
     // mass editor (bulk mass / density / mass-only + default-mass guard)
     'mass.listTitle': { en: 'mass editor', ja: '質量エディタ' },
     'mass.listHelp': { en: 'set a target mass (kg) OR a density (kg/m³) per link — one clears the other. ⚠ links use a SolidWorks default mass (no material assigned); set a value or acknowledge them before export.',
@@ -2723,8 +2728,28 @@ function subasmOverrideLabel(v) {
   return t('subasm.overrideAuto');
 }
 
+async function setSubassemblyMode(name, mode, ov) {
+  op('subassembly_mode', { name, mode });
+  log(t('common.rebuilding', { what: `${name} → ${mode}` }));
+  try {
+    const resp = await fetch('/api/set_subassembly_mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, mode }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log(t('subasm.setOk', { name, mode }), 'ok');
+    refreshHistory();
+    await openSubassemblyList(ov);
+    loadRobot(currentInfo, { keepPose: true });
+  } catch (e) {
+    log(t('subasm.setFail', { e: e.message ?? e }), 'err');
+    await openSubassemblyList(ov);
+  }
+}
+
 async function openSubassemblyList(ov) {
-  if (!viewer.robot) { log(t('common.openFirst'), 'wrn'); return; }
+  if (!viewer.robot && !currentInfo) { log(t('common.openFirst'), 'wrn'); return; }
   const owned = ov || document.getElementById('renamelist') ||
     document.createElement('div');
   owned.id = 'renamelist';
@@ -2750,11 +2775,14 @@ async function openSubassemblyList(ov) {
         t('subasm.thName') + '</th><th>' + t('subasm.thLink') +
         '</th><th>' + t('subasm.thChildren') + '</th><th>' +
         t('subasm.thEdges') + '</th><th>' + t('subasm.thState') +
+        '</th><th>' + t('subasm.thMode') +
         '</th><th>' + t('subasm.thPath') + '</th></tr></thead><tbody>';
       for (const s of rows) {
         const state = s.expanded ? t('subasm.stateExpanded')
                                  : t('subasm.stateKept');
         const col = s.expanded ? '#9fe0a8' : '#d6b36b';
+        const opt = v => `<option value="${v}"${s.override === v ? ' selected' : ''}>` +
+          `${subasmOverrideLabel(v)}</option>`;
         html += `<tr title="${htmlEsc(s.reason)}">` +
           `<td>${htmlEsc(s.name)}</td>` +
           `<td style="color:#cfe3ff">${htmlEsc(s.link_name)}</td>` +
@@ -2762,6 +2790,8 @@ async function openSubassemblyList(ov) {
           `<td>${s.internal_edges ?? 0}</td>` +
           `<td><span style="color:${col}">${state}</span>` +
           ` <span style="color:#8a93a3">(${subasmOverrideLabel(s.override)})</span></td>` +
+          `<td><select class="subasm-mode" data-name="${htmlEsc(s.name)}">` +
+          opt('auto') + opt('expand') + opt('no_expand') + '</select></td>' +
           `<td title="${htmlEsc(s.path)}">${htmlEsc(pathBase(s.path))}</td></tr>`;
       }
       html += '</tbody></table>';
@@ -2778,6 +2808,14 @@ async function openSubassemblyList(ov) {
     bar.append(back, close);
     card.appendChild(bar);
     owned.replaceChildren(card);
+    card.querySelectorAll('.subasm-mode').forEach(sel => {
+      sel.addEventListener('change', () => {
+        const name = sel.dataset.name;
+        const mode = sel.value;
+        card.querySelectorAll('.subasm-mode').forEach(x => { x.disabled = true; });
+        setSubassemblyMode(name, mode, owned);
+      });
+    });
     if (!owned.parentElement) {
       (document.getElementById('viewer').parentElement || document.body)
         .appendChild(owned);
