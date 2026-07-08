@@ -1032,6 +1032,9 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
                       ja: a => `${a.name}: ${a.mode} ✓` },
     'subasm.setFail': { en: a => `sub-assembly mode failed: ${a.e}`,
                         ja: a => `サブアセンブリモード変更に失敗: ${a.e}` },
+    'subasm.largeConfirm': {
+      en: a => `${a.name} contains ${a.children} children and ${a.edges} mates. Changing a large sub-assembly can take a long time. Continue?`,
+      ja: a => `${a.name} は子 ${a.children} 個、mate ${a.edges} 個を含みます。大きいサブアセンブリの切り替えには時間がかかることがあります。続行しますか？` },
     // joint rows / tree
     'row.jnameTitle': { en: a => `joint: ${a.name}\n${a.parent} → ${a.child}`,
                         ja: a => `関節: ${a.name}\n${a.parent} → ${a.child}` },
@@ -2655,6 +2658,10 @@ function subasmOverrideLabel(v) {
   return t('subasm.overrideAuto');
 }
 
+function isLargeSubassembly(children, edges) {
+  return Number(children) >= 15 || Number(edges) >= 15;
+}
+
 async function setSubassemblyMode(name, mode, ov) {
   op('subassembly_mode', { name, mode });
   log(t('common.rebuilding', { what: `${name} → ${mode}` }));
@@ -2716,7 +2723,9 @@ async function openSubassemblyList(ov) {
           `<td>${s.internal_edges ?? 0}</td>` +
           `<td><span style="color:${col}">${state}</span>` +
           ` <span style="color:#8a93a3">(${subasmOverrideLabel(s.override)})</span></td>` +
-          `<td><select class="subasm-mode" data-name="${htmlEsc(s.name)}">` +
+          `<td><select class="subasm-mode" data-name="${htmlEsc(s.name)}" ` +
+          `data-prev="${htmlEsc(s.override)}" data-children="${s.children ?? 0}" ` +
+          `data-edges="${s.internal_edges ?? 0}">` +
           opt('auto') + opt('expand') + opt('no_expand') + '</select></td>' +
           `<td title="${htmlEsc(s.path)}">${htmlEsc(pathBase(s.path))}</td></tr>`;
       }
@@ -2738,6 +2747,14 @@ async function openSubassemblyList(ov) {
       sel.addEventListener('change', () => {
         const name = sel.dataset.name;
         const mode = sel.value;
+        const prev = sel.dataset.prev || 'auto';
+        const children = Number(sel.dataset.children || 0);
+        const edges = Number(sel.dataset.edges || 0);
+        if (mode !== prev && isLargeSubassembly(children, edges) &&
+            !confirm(t('subasm.largeConfirm', { name, children, edges }))) {
+          sel.value = prev;
+          return;
+        }
         card.querySelectorAll('.subasm-mode').forEach(x => { x.disabled = true; });
         setSubassemblyMode(name, mode, owned);
       });
