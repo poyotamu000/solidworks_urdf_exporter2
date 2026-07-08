@@ -937,6 +937,62 @@ def _subassemblies_payload(graph, yml_txt=""):
     }
 
 
+def _subassembly_names(graph):
+    return sorted(c.name for c in (getattr(graph, "components", []) or [])
+                  if getattr(c, "is_subassembly", False) and c.part_path)
+
+
+def _matching_subasm_members(members, name, all_names):
+    """Config list entries that affect ``name`` and no other sub-assembly.
+
+    ``expand`` / ``no_expand`` are substring lists by design.  The web control
+    writes exact CAD instance names, but older hand-authored configs may contain
+    broad substrings.  Only remove a matching broad entry when it is unique to
+    this instance; otherwise the UI would silently change sibling rows too.
+    """
+    lname = name.lower()
+    safe, shared = [], []
+    for raw in members or []:
+        s = str(raw)
+        key = s.lower()
+        if key not in lname:
+            continue
+        matches = [n for n in all_names if key in n.lower()]
+        (safe if len(matches) <= 1 else shared).append(s)
+    return safe, shared
+
+
+def _set_subassembly_mode_yaml(txt, graph, name, mode):
+    """Set one CAD sub-assembly instance to auto / expand / no_expand."""
+    import yaml as _yaml
+
+    if mode not in ("auto", "expand", "no_expand"):
+        raise ValueError("mode must be auto, expand, or no_expand")
+    names = _subassembly_names(graph)
+    if name not in names:
+        raise ValueError(f"no CAD sub-assembly '{name}'")
+    try:
+        cfg = _yaml.safe_load(txt) or {}
+    except Exception:
+        cfg = {}
+    exp = [str(x) for x in (cfg.get("expand") or [])]
+    noexp = [str(x) for x in (cfg.get("no_expand") or [])]
+    exp_rm, exp_shared = _matching_subasm_members(exp, name, names)
+    noexp_rm, noexp_shared = _matching_subasm_members(noexp, name, names)
+    shared = exp_shared + noexp_shared
+    if shared:
+        raise ValueError(
+            "cannot safely change this row because these substring override(s) "
+            "also match other sub-assemblies: " + ", ".join(shared))
+    add_exp = [name] if mode == "expand" else []
+    add_noexp = [name] if mode == "no_expand" else []
+    txt, exp_members = _set_yaml_list_block(
+        txt, "expand", add=add_exp, remove=exp_rm + [name])
+    txt, noexp_members = _set_yaml_list_block(
+        txt, "no_expand", add=add_noexp, remove=noexp_rm + [name])
+    return txt, {"expand": exp_members, "no_expand": noexp_members}
+
+
 def _upsert_yaml_map(txt, mapkey, key, value):
     """Set ``mapkey: {key: value}`` (block style) in joints.yaml text, replacing
     any existing entry for ``key`` and creating the map if needed."""
@@ -3199,6 +3255,51 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._send_json(
                     {"detected": len(applied) + len(missed),
                      "applied": applied, "missed": missed})
+            if parsed.path == "/api/set_subassembly_mode":
+                cls = type(self)
+                n = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(n) or b"{}")
+                name_in = (body.get("name") or "").strip()
+                mode = (body.get("mode") or "").strip()
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._send_json(
+                        {"error": "sub-assembly modes need the CAD graph.json"},
+                        400)
+                if not name_in:
+                    return self._send_json({"error": "name required"}, 400)
+                from sw2robot.exporter.state import GraphState
+                graph = GraphState.load(os.path.join(cls.pkg_dir, "graph.json"))
+                name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
+                yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
+                if not os.path.exists(yml):
+                    return self._send_json(
+                        {"error": "joints.yaml not found -- re-extract once"},
+                        400)
+                with open(yml, encoding="utf-8") as f:
+                    txt = f.read()
+                try:
+                    txt, members = _set_subassembly_mode_yaml(
+                        txt, graph, name_in, mode)
+                except ValueError as e:
+                    return self._send_json({"error": str(e)}, 400)
+                _snapshot(cls.pkg_dir, yml,
+                          f"sub-assembly {name_in} -> {mode}")
+                with open(yml, "w", encoding="utf-8") as f:
+                    f.write(txt)
+                from sw2robot.exporter.export import build
+                try:
+                    build(cls.pkg_dir, config_path=yml)
+                except Exception as e:
+                    return self._send_json(
+                        {"error": f"rebuild failed: {e}"}, 500)
+                payload = _subassemblies_payload(graph, txt)
+                payload.update({"ok": True, "name": name_in, "mode": mode,
+                                **members})
+                print(f"[sw2robot.web] set_subassembly_mode: "
+                      f"{name_in} -> {mode}")
+                return self._send_json(payload)
             if parsed.path == "/api/set_base":
                 cls = type(self)
                 n = int(self.headers.get("Content-Length", 0))
