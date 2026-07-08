@@ -1053,6 +1053,18 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.thMode': { en: 'mode', ja: 'mode' },
     'subasm.thPath': { en: 'file', ja: 'ファイル' },
     'subasm.back': { en: '← rename list', ja: '← 改名リスト' },
+    'subasm.previewBtn': { en: 'preview collapse', ja: '畳み込み preview' },
+    'subasm.previewTitle': { en: 'Sub-assembly collapse preview',
+                             ja: 'サブアセンブリ畳み込み preview' },
+    'subasm.previewHelp': { en: 'Read-only preview from the canonical expanded tree. URDF output is not changed here.',
+                            ja: '全展開treeから作った読み取り専用previewです。ここではURDF出力は変更しません。' },
+    'subasm.previewCounts': { en: a => `links ${a.cl} → ${a.pl}, joints ${a.cj} → ${a.pj}`,
+                              ja: a => `links ${a.cl} → ${a.pl}, joints ${a.cj} → ${a.pj}` },
+    'subasm.previewNone': { en: 'No sub-assemblies are collapsed by the current modes.',
+                            ja: '現在のmodeで畳まれるサブアセンブリはありません。' },
+    'subasm.thMembers': { en: 'members', ja: '構成link' },
+    'subasm.thDropped': { en: 'internal joints', ja: '内部joint' },
+    'subasm.backSubasm': { en: '← sub-assemblies', ja: '← サブアセンブリ' },
     'subasm.stateExpanded': { en: 'expanded', ja: '展開' },
     'subasm.stateKept': { en: 'kept as one link', ja: '1リンク保持' },
     'subasm.overrideAuto': { en: 'auto', ja: 'auto' },
@@ -2811,10 +2823,13 @@ async function openSubassemblyList(ov) {
     const back = document.createElement('button');
     back.textContent = t('subasm.back');
     back.addEventListener('click', () => openRenameList(owned));
+    const preview = document.createElement('button');
+    preview.textContent = t('subasm.previewBtn');
+    preview.addEventListener('click', () => openSubassemblyPreview(owned));
     const close = document.createElement('button');
     close.textContent = t('common.close');
     close.addEventListener('click', () => owned.remove());
-    bar.append(back, close);
+    bar.append(back, preview, close);
     card.appendChild(bar);
     owned.replaceChildren(card);
     card.querySelectorAll('.subasm-mode').forEach(sel => {
@@ -2833,6 +2848,69 @@ async function openSubassemblyList(ov) {
         setSubassemblyMode(name, mode, owned);
       });
     });
+    if (!owned.parentElement) {
+      (document.getElementById('viewer').parentElement || document.body)
+        .appendChild(owned);
+    }
+  } catch (e) {
+    log(t('subasm.fail', { e: e.message ?? e }), 'err');
+  }
+}
+
+async function openSubassemblyPreview(ov) {
+  if (!viewer.robot && !currentInfo) { log(t('common.openFirst'), 'wrn'); return; }
+  const owned = ov || document.getElementById('renamelist') ||
+    document.createElement('div');
+  owned.id = 'renamelist';
+  try {
+    const resp = await fetch('/api/collapse_preview');
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    const card = document.createElement('div');
+    card.className = 'card';
+    const cc = r.canonical_counts || {};
+    const pc = r.preview_counts || {};
+    let html =
+      '<div style="font-size:14px;margin-bottom:2px;color:#9fe0a8">' +
+      t('subasm.previewTitle') + '</div>' +
+      '<div style="font-size:11px;color:#8a93a3;margin-bottom:8px">' +
+      t('subasm.previewHelp') + '</div>' +
+      '<div style="margin-bottom:8px;color:#cfe3ff">' +
+      t('subasm.previewCounts', {
+        cl: cc.links ?? 0, cj: cc.joints ?? 0,
+        pl: pc.links ?? 0, pj: pc.joints ?? 0,
+      }) + '</div>';
+    const rows = r.collapsed_subassemblies || [];
+    if (!rows.length) {
+      html += '<div style="color:#8a93a3">' + t('subasm.previewNone') + '</div>';
+    } else {
+      html += '<table class="rntable"><thead><tr><th>' +
+        t('subasm.thName') + '</th><th>' + t('subasm.thLink') +
+        '</th><th>' + t('subasm.thMembers') + '</th><th>' +
+        t('subasm.thDropped') + '</th><th>' +
+        t('subasm.thMode') + '</th></tr></thead><tbody>';
+      for (const s of rows) {
+        html += `<tr title="${htmlEsc(s.reason)}">` +
+          `<td>${htmlEsc(s.name)}</td>` +
+          `<td style="color:#cfe3ff">${htmlEsc(s.link_name)}</td>` +
+          `<td>${s.member_links?.length ?? 0}</td>` +
+          `<td>${s.internal_joints?.length ?? 0}</td>` +
+          `<td>${subasmOverrideLabel(s.override)}</td></tr>`;
+      }
+      html += '</tbody></table>';
+    }
+    card.innerHTML = html;
+    const bar = document.createElement('div');
+    bar.style.cssText = 'display:flex;gap:8px;margin-top:10px';
+    const back = document.createElement('button');
+    back.textContent = t('subasm.backSubasm');
+    back.addEventListener('click', () => openSubassemblyList(owned));
+    const close = document.createElement('button');
+    close.textContent = t('common.close');
+    close.addEventListener('click', () => owned.remove());
+    bar.append(back, close);
+    card.appendChild(bar);
+    owned.replaceChildren(card);
     if (!owned.parentElement) {
       (document.getElementById('viewer').parentElement || document.body)
         .appendChild(owned);
