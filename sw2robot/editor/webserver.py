@@ -993,6 +993,33 @@ def _set_subassembly_mode_yaml(txt, graph, name, mode):
     return txt, {"expand": exp_members, "no_expand": noexp_members}
 
 
+def _subassembly_parent_overrides(yml_txt):
+    """Preview-only parent choices for collapsed CAD sub-assemblies."""
+    import yaml as _yaml
+
+    try:
+        cfg = _yaml.safe_load(yml_txt) or {}
+        if not isinstance(cfg, dict):
+            return {}
+    except Exception:
+        return {}
+    raw = cfg.get("subassembly_parent_overrides") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if v is not None}
+
+
+def _set_subassembly_parent_override_yaml(txt, graph, name, parent):
+    """Set/reset one preview-only collapsed sub-assembly parent choice."""
+    names = _subassembly_names(graph)
+    if name not in names:
+        raise ValueError(f"no CAD sub-assembly '{name}'")
+    if parent:
+        return _upsert_yaml_map(
+            txt, "subassembly_parent_overrides", name, _yaml_scalar(parent))
+    return _remove_yaml_map_entry(txt, "subassembly_parent_overrides", name)
+
+
 def _canonical_tree_payload(graph, yml_txt=""):
     """Fully-expanded tree plus CAD sub-assembly membership.
 
@@ -1068,6 +1095,7 @@ def _collapse_preview_payload(graph, yml_txt=""):
     """
     canonical = _canonical_tree_payload(graph, yml_txt)
     states = _subassemblies_payload(graph, yml_txt)
+    parent_overrides = _subassembly_parent_overrides(yml_txt)
     by_sub = {s["name"]: s for s in canonical["subassemblies"]}
     collapse_link = {}
     collapsed = []
@@ -1086,10 +1114,14 @@ def _collapse_preview_payload(graph, yml_txt=""):
             "member_components": sub["member_components"],
             "internal_joints": sub["internal_joints"],
             "boundary_joints": sub["boundary_joints"],
+            "selected_parent": parent_overrides.get(row["name"], ""),
         }
         collapsed.append(info)
         for link in sub["member_links"]:
             collapse_link[link] = row["link_name"]
+
+    parent_choices = _collapse_parent_choices(
+        collapsed, collapse_link, parent_overrides)
 
     links = []
     inserted = set()
@@ -1109,7 +1141,12 @@ def _collapse_preview_payload(graph, yml_txt=""):
             continue
         links.append({**link, "collapsed": False})
 
-    joints, dropped = [], []
+    selected_by_link = {
+        c["link_name"]: c.get("selected_parent", "")
+        for c in parent_choices
+        if c.get("selected_parent")
+    }
+    joints, dropped, dropped_parent_override = [], [], []
     for j in canonical["joints"]:
         parent = collapse_link.get(j["parent"], j["parent"])
         child = collapse_link.get(j["child"], j["child"])
@@ -1117,6 +1154,10 @@ def _collapse_preview_payload(graph, yml_txt=""):
                "parent": parent, "child": child}
         if parent == child:
             dropped.append(out)
+            continue
+        selected = selected_by_link.get(child)
+        if selected and parent != selected:
+            dropped_parent_override.append(out)
             continue
         out["name"] = f"{parent}__{child}"
         joints.append(out)
@@ -1131,7 +1172,9 @@ def _collapse_preview_payload(graph, yml_txt=""):
         "tree_rows": _tree_rows_payload(base, links, joints),
         "validation": validation,
         "dropped_internal_joints": dropped,
+        "dropped_parent_override_joints": dropped_parent_override,
         "collapsed_subassemblies": collapsed,
+        "parent_choices": parent_choices,
         "canonical_counts": {
             "links": len(canonical["links"]),
             "joints": len(canonical["joints"]),
@@ -1141,6 +1184,36 @@ def _collapse_preview_payload(graph, yml_txt=""):
             "joints": len(joints),
         },
     }
+
+
+def _collapse_parent_choices(collapsed, collapse_link, parent_overrides):
+    """List attach-parent candidates for collapsed sub-assemblies.
+
+    The candidates are computed before any override is applied so the UI can
+    still change an existing choice after it resolves the validation warning.
+    """
+    choices = []
+    for sub in collapsed:
+        by_parent = {}
+        link_name = sub.get("link_name")
+        for j in sub.get("boundary_joints") or []:
+            parent = collapse_link.get(j["parent"], j["parent"])
+            child = collapse_link.get(j["child"], j["child"])
+            if child == link_name and parent != child:
+                by_parent.setdefault(parent, []).append(j.get("name"))
+        selected = parent_overrides.get(sub.get("name"), "")
+        if len(by_parent) <= 1 and not selected:
+            continue
+        choices.append({
+            "subassembly": sub.get("name"),
+            "link_name": link_name,
+            "selected_parent": selected,
+            "parents": [
+                {"link": p, "joints": sorted(x for x in js if x)}
+                for p, js in sorted(by_parent.items())
+            ],
+        })
+    return choices
 
 
 def _validate_collapsed_tree(base_link, links, joints, collapsed,
@@ -1225,6 +1298,7 @@ def _validate_collapsed_tree(base_link, links, joints, collapsed,
                         comp.append(nxt)
                         q.append(nxt)
             comps.append(sorted(comp))
+        comps.sort(key=lambda x: (x[0] if x else "", len(x)))
         if len(comps) > 1:
             issues.append({
                 "severity": "warning",
@@ -1238,9 +1312,12 @@ def _validate_collapsed_tree(base_link, links, joints, collapsed,
             })
 
         incoming_boundary = []
+        selected_parent = sub.get("selected_parent")
         for j in sub.get("boundary_joints") or []:
             parent = collapse_link.get(j["parent"], j["parent"])
             child = collapse_link.get(j["child"], j["child"])
+            if selected_parent and parent != selected_parent:
+                continue
             if child == sub.get("link_name") and parent != child:
                 incoming_boundary.append({
                     "parent": parent,
@@ -3649,6 +3726,65 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                 **members})
                 print(f"[sw2robot.web] set_subassembly_mode: "
                       f"{name_in} -> {mode} (preview only)")
+                return self._send_json(payload)
+            if parsed.path == "/api/set_subassembly_parent":
+                cls = type(self)
+                n = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(n) or b"{}")
+                name_in = (body.get("name") or "").strip()
+                parent = (body.get("parent") or "").strip()
+                if parent == "auto":
+                    parent = ""
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._send_json(
+                        {"error": "sub-assembly parent choices need the CAD "
+                                  "graph.json"},
+                        400)
+                if not name_in:
+                    return self._send_json({"error": "name required"}, 400)
+                from sw2robot.exporter.state import GraphState
+                graph = GraphState.load(os.path.join(cls.pkg_dir, "graph.json"))
+                name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
+                yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
+                if not os.path.exists(yml):
+                    return self._send_json(
+                        {"error": "joints.yaml not found -- re-extract once"},
+                        400)
+                with open(yml, encoding="utf-8") as f:
+                    txt = f.read()
+                try:
+                    preview = _collapse_preview_payload(graph, txt)
+                    choices = {
+                        c.get("subassembly"): c
+                        for c in preview.get("parent_choices", [])
+                    }
+                    if parent:
+                        allowed = {
+                            p.get("link")
+                            for p in choices.get(name_in, {}).get("parents", [])
+                        }
+                        if parent not in allowed:
+                            return self._send_json(
+                                {"error": f"'{parent}' is not a parent "
+                                          f"candidate for {name_in}"},
+                                400)
+                    txt = _set_subassembly_parent_override_yaml(
+                        txt, graph, name_in, parent)
+                except ValueError as e:
+                    return self._send_json({"error": str(e)}, 400)
+                label = parent or "auto"
+                _snapshot(cls.pkg_dir, yml,
+                          f"sub-assembly parent {name_in} -> {label}")
+                with open(yml, "w", encoding="utf-8") as f:
+                    f.write(txt)
+                payload = _collapse_preview_payload(graph, txt)
+                payload.update({"ok": True, "name": name_in,
+                                "parent": parent, "preview_only": True,
+                                "rebuilt": False})
+                print(f"[sw2robot.web] set_subassembly_parent: "
+                      f"{name_in} -> {label} (preview only)")
                 return self._send_json(payload)
             if parsed.path == "/api/set_base":
                 cls = type(self)
