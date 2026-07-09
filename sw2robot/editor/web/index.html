@@ -3032,7 +3032,11 @@ async function loadCollapsedPreviewRobot() {
       ...currentInfo,
       name: `${currentInfo.name} collapsed preview`,
       urdf: r.urdf,
-    }, { keepPose: true, previewOnly: true });
+    }, {
+      keepPose: false,
+      previewOnly: true,
+      restoreAngles: captureJointAngles(viewer.robot),
+    });
     log(t('subasm.previewRobotOk'), 'ok');
   } catch (e) {
     log(t('subasm.previewRobotFail', { e: e.message ?? e }), 'err');
@@ -3041,7 +3045,7 @@ async function loadCollapsedPreviewRobot() {
 
 function loadNormalRobot() {
   if (!currentInfo) { log(t('common.openFirst'), 'wrn'); return; }
-  loadRobot(currentInfo, { keepPose: true });
+  loadRobot(currentInfo, { keepPose: false });
   log(t('subasm.normalRobotOk'), 'ok');
 }
 
@@ -7560,6 +7564,16 @@ let pendingRestore = null;   // {angles} saved across an edit-rebuild reload
 let loadCover = null;        // visual clone shown while the URDF reloads,
                              // so re-root / type edits never flash blank
 
+function captureJointAngles(robot) {
+  const angles = {};
+  for (const [n, j] of Object.entries(robot?.joints ?? {})) {
+    if (j.jointType !== 'fixed' && !j.mimicJoint) {
+      angles[n] = Number(j.angle);
+    }
+  }
+  return angles;
+}
+
 function removeLoadCover() {
   if (loadCover) {
     loadCover.removeFromParent();
@@ -7728,20 +7742,16 @@ document.getElementById('clearview').addEventListener('click', clearViewer);
 
 // ---- loading entry points -----------------------------------------------
 function loadRobot(info, { drop = false, keepPose = false,
-                           followCamera = false, previewOnly = false } = {}) {
+                           followCamera = false, previewOnly = false,
+                           restoreAngles = null } = {}) {
   // a keepPose reload is the SAME session (edit rebuild); anything else is a
   // fresh package -> drop the old actions/camera so they can't replay onto it
   if (!keepPose) { _resetSessionLogs(); }
   op('loadRobot', { name: info?.name, keepPose, drop, previewOnly });
   cancelEndcoords();        // a rebuild invalidates any open placement session
   document.getElementById('emptyprompt').style.display = 'none';
-  if ((keepPose || followCamera) && viewer.robot) {
-    const angles = {};
-    for (const [n, j] of Object.entries(viewer.robot.joints)) {
-      if (j.jointType !== 'fixed' && !j.mimicJoint) {
-        angles[n] = Number(j.angle);
-      }
-    }
+  if (((keepPose || followCamera) && viewer.robot) || restoreAngles) {
+    const angles = restoreAngles || captureJointAngles(viewer.robot);
     let linkWorlds = null;
     if (followCamera) {
       viewer.robot.updateMatrixWorld(true);
