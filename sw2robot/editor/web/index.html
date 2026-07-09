@@ -1063,6 +1063,17 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
                                   ja: a => `サブアセンブリ原点linkを保存中: ${a.name} → ${a.originLink} ...` },
     'subasm.originLinkSetFail': { en: a => `origin link failed: ${a.e}`,
                                   ja: a => `サブアセンブリ原点linkの保存に失敗: ${a.e}` },
+    'subasm.cycleBreakChoicesTitle': { en: 'Cycle break joints',
+                                       ja: 'cycle解消joint' },
+    'subasm.cycleBreakAuto': { en: 'auto', ja: 'auto' },
+    'subasm.cycleBreakResolved': { en: 'resolved by selected drop',
+                                   ja: '選択したdropで解消済み' },
+    'subasm.cycleBreakSetOk': { en: a => `cycle break ${a.sourceJoint} ✓`,
+                                ja: a => `cycle break ${a.sourceJoint} ✓` },
+    'subasm.cycleBreakSetting': { en: a => `saving cycle break: ${a.sourceJoint} ...`,
+                                  ja: a => `cycle解消jointを保存中: ${a.sourceJoint} ...` },
+    'subasm.cycleBreakSetFail': { en: a => `cycle break failed: ${a.e}`,
+                                  ja: a => `cycle解消jointの保存に失敗: ${a.e}` },
     'subasm.backSubasm': { en: '← sub-assemblies', ja: '← サブアセンブリ' },
     'subasm.stateExpanded': { en: 'expanded', ja: '展開' },
     'subasm.stateKept': { en: 'kept as one link', ja: '1リンク保持' },
@@ -2907,6 +2918,99 @@ function bindSubassemblyOriginLinkChoices(root, ov) {
   });
 }
 
+function cycleBreakChoicesHtml(cycleChoices) {
+  const choices = (cycleChoices || []).filter(c =>
+    (c.candidates || []).length || c.selected_source_joint);
+  if (!choices.length) { return ''; }
+  const rows = choices.map((c, i) => {
+    const selected = c.selected_source_joint || '';
+    const seen = new Set();
+    const opts = [`<option value=""${selected ? '' : ' selected'}>` +
+      `${t('subasm.cycleBreakAuto')}</option>`].concat((c.candidates || [])
+      .filter(j => {
+        const source = j.source_joint || j.joint || '';
+        if (!source || seen.has(source)) { return false; }
+        seen.add(source);
+        return true;
+      }).map(j => {
+        const source = j.source_joint || j.joint || '';
+        const edge = j.parent && j.child
+          ? `${j.parent} → ${j.child}` : source;
+        return `<option value="${htmlEsc(source)}"` +
+          `${selected === source ? ' selected' : ''}>` +
+          `drop: ${htmlEsc(edge)}</option>`;
+      })).join('');
+    const path = (c.links || []).length
+      ? `<div style="color:#6b7480">links: ` +
+        `${(c.links || []).map(htmlEsc).join(' → ')}</div>`
+      : `<div style="color:#6b7480">${t('subasm.cycleBreakResolved')}</div>`;
+    const joints = (c.candidates || []).map(j => {
+      const source = j.source_joint || j.joint || '';
+      const edge = j.parent && j.child ? `${j.parent} → ${j.child}` : '';
+      return `<div style="color:#6b7480">${htmlEsc(source)}` +
+        `${edge ? `: ${htmlEsc(edge)}` : ''}</div>`;
+    }).join('');
+    return `<div style="display:grid;grid-template-columns:minmax(80px,0.6fr) ` +
+      `minmax(150px,1.8fr);gap:6px;align-items:start;margin-top:5px">` +
+      `<div><div style="color:#cfe3ff">cycle ${i + 1}</div>` +
+      path + `</div>` +
+      `<div><select class="subasm-cycle-break-choice" ` +
+      `data-prev="${htmlEsc(selected)}">` + opts +
+      `</select>${joints}</div></div>`;
+  }).join('');
+  return `<div style="border:1px solid #5a3940;background:#271e22;` +
+    `border-radius:4px;padding:6px 8px;margin:8px 0;font-size:11px">` +
+    `<div style="color:#e2a6b1">${t('subasm.cycleBreakChoicesTitle')}</div>` +
+    rows + `</div>`;
+}
+
+async function setSubassemblyCycleBreakChoice(sourceJoint, previousSourceJoint, ov) {
+  const label = sourceJoint || t('subasm.cycleBreakAuto');
+  const target = sourceJoint || previousSourceJoint;
+  op('subassembly_cycle_break', {
+    source_joint: sourceJoint,
+    previous_source_joint: previousSourceJoint,
+  });
+  log(t('subasm.cycleBreakSetting', { sourceJoint: label }));
+  try {
+    const resp = await fetch('/api/set_subassembly_cycle_break', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        source_joint: sourceJoint,
+        previous_source_joint: previousSourceJoint,
+        drop: !!sourceJoint,
+      }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log(t('subasm.cycleBreakSetOk', { sourceJoint: target || label }), 'ok');
+    refreshHistory();
+    if (ov) {
+      await openSubassemblyPreview(ov);
+    }
+    if (viewer.robot && treeViewMode === 'subassembly') {
+      buildJointRows(viewer.robot);
+    }
+  } catch (e) {
+    log(t('subasm.cycleBreakSetFail', { e: e.message ?? e }), 'err');
+    if (ov) {
+      await openSubassemblyPreview(ov);
+    }
+  }
+}
+
+function bindSubassemblyCycleBreakChoices(root, ov) {
+  root.querySelectorAll('.subasm-cycle-break-choice').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const sourceJoint = sel.value;
+      const previousSourceJoint = sel.dataset.prev || '';
+      root.querySelectorAll('.subasm-cycle-break-choice')
+        .forEach(x => { x.disabled = true; });
+      setSubassemblyCycleBreakChoice(sourceJoint, previousSourceJoint, ov);
+    });
+  });
+}
+
 function pathBase(p) {
   const s = String(p ?? '');
   return s.split(/[\\/]/).pop() || s;
@@ -3058,7 +3162,8 @@ async function openSubassemblyPreview(ov) {
       }) + '</div>' +
       validationIssuesHtml(r.validation) +
       parentChoicesHtml(r.parent_choices) +
-      originLinkChoicesHtml(r.group_choices);
+      originLinkChoicesHtml(r.group_choices) +
+      cycleBreakChoicesHtml(r.cycle_break_choices);
     const rows = r.collapsed_subassemblies || [];
     if (!rows.length) {
       html += '<div style="color:#8a93a3">' + t('subasm.previewNone') + '</div>';
@@ -3101,6 +3206,7 @@ async function openSubassemblyPreview(ov) {
     card.innerHTML = html;
     bindSubassemblyParentChoices(card, owned);
     bindSubassemblyOriginLinkChoices(card, owned);
+    bindSubassemblyCycleBreakChoices(card, owned);
     const bar = document.createElement('div');
     bar.style.cssText = 'display:flex;gap:8px;margin-top:10px';
     const back = document.createElement('button');
@@ -3256,6 +3362,13 @@ async function renderSubassemblyTreeRows(robot, movable) {
       groups.innerHTML = groupChoices;
       jointsEl.appendChild(groups);
       bindSubassemblyOriginLinkChoices(groups);
+    }
+    const cycleChoices = cycleBreakChoicesHtml(r.cycle_break_choices);
+    if (cycleChoices) {
+      const cycles = document.createElement('div');
+      cycles.innerHTML = cycleChoices;
+      jointsEl.appendChild(cycles);
+      bindSubassemblyCycleBreakChoices(cycles);
     }
     const hint = document.createElement('div');
     hint.className = 'joint';
