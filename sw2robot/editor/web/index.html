@@ -1031,6 +1031,8 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.thPath': { en: 'file', ja: 'ファイル' },
     'subasm.back': { en: '← rename list', ja: '← 改名リスト' },
     'subasm.previewBtn': { en: 'preview collapse', ja: '畳み込み preview' },
+    'subasm.previewRobotBtn': { en: 'preview robot', ja: 'ロボットpreview' },
+    'subasm.normalRobotBtn': { en: 'normal robot', ja: '通常ロボット' },
     'subasm.previewTitle': { en: 'Sub-assembly collapse preview',
                              ja: 'サブアセンブリ畳み込み preview' },
     'subasm.previewHelp': { en: 'Read-only preview from the canonical expanded tree. URDF output is not changed here.',
@@ -1088,6 +1090,14 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
                              ja: a => `${a.name}: ${a.mode} ✓ (preview更新・URDF/viewerは未変更)` },
     'subasm.setFail': { en: a => `sub-assembly mode failed: ${a.e}`,
                         ja: a => `サブアセンブリモード変更に失敗: ${a.e}` },
+    'subasm.previewRobotLoading': { en: 'building collapsed preview robot...',
+                                    ja: '畳み込みロボットpreviewを生成中...' },
+    'subasm.previewRobotOk': { en: 'collapsed preview robot loaded',
+                               ja: '畳み込みロボットpreviewを読み込みました' },
+    'subasm.previewRobotFail': { en: a => `collapsed preview robot failed: ${a.e}`,
+                                 ja: a => `畳み込みロボットpreviewに失敗: ${a.e}` },
+    'subasm.normalRobotOk': { en: 'normal robot loaded',
+                              ja: '通常ロボットを読み込みました' },
     'subasm.largeConfirm': {
       en: a => `${a.name} contains ${a.children} children and ${a.edges} mates. Changing a large sub-assembly can take a long time. Continue?`,
       ja: a => `${a.name} は子 ${a.children} 個、mate ${a.edges} 個を含みます。大きいサブアセンブリの切り替えには時間がかかることがあります。続行しますか？` },
@@ -3011,6 +3021,30 @@ function bindSubassemblyCycleBreakChoices(root, ov) {
   });
 }
 
+async function loadCollapsedPreviewRobot() {
+  if (!currentInfo) { log(t('common.openFirst'), 'wrn'); return; }
+  log(t('subasm.previewRobotLoading'));
+  try {
+    const resp = await fetch('/api/collapsed_preview_urdf');
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    loadRobot({
+      ...currentInfo,
+      name: `${currentInfo.name} collapsed preview`,
+      urdf: r.urdf,
+    }, { keepPose: true, previewOnly: true });
+    log(t('subasm.previewRobotOk'), 'ok');
+  } catch (e) {
+    log(t('subasm.previewRobotFail', { e: e.message ?? e }), 'err');
+  }
+}
+
+function loadNormalRobot() {
+  if (!currentInfo) { log(t('common.openFirst'), 'wrn'); return; }
+  loadRobot(currentInfo, { keepPose: true });
+  log(t('subasm.normalRobotOk'), 'ok');
+}
+
 function pathBase(p) {
   const s = String(p ?? '');
   return s.split(/[\\/]/).pop() || s;
@@ -3212,10 +3246,16 @@ async function openSubassemblyPreview(ov) {
     const back = document.createElement('button');
     back.textContent = t('subasm.backSubasm');
     back.addEventListener('click', () => openSubassemblyList(owned));
+    const previewRobot = document.createElement('button');
+    previewRobot.textContent = t('subasm.previewRobotBtn');
+    previewRobot.addEventListener('click', () => loadCollapsedPreviewRobot());
+    const normalRobot = document.createElement('button');
+    normalRobot.textContent = t('subasm.normalRobotBtn');
+    normalRobot.addEventListener('click', () => loadNormalRobot());
     const close = document.createElement('button');
     close.textContent = t('common.close');
     close.addEventListener('click', () => owned.remove());
-    bar.append(back, close);
+    bar.append(back, previewRobot, normalRobot, close);
     card.appendChild(bar);
     owned.replaceChildren(card);
     if (!owned.parentElement) {
@@ -7688,11 +7728,11 @@ document.getElementById('clearview').addEventListener('click', clearViewer);
 
 // ---- loading entry points -----------------------------------------------
 function loadRobot(info, { drop = false, keepPose = false,
-                           followCamera = false } = {}) {
+                           followCamera = false, previewOnly = false } = {}) {
   // a keepPose reload is the SAME session (edit rebuild); anything else is a
   // fresh package -> drop the old actions/camera so they can't replay onto it
   if (!keepPose) { _resetSessionLogs(); }
-  op('loadRobot', { name: info?.name, keepPose, drop });
+  op('loadRobot', { name: info?.name, keepPose, drop, previewOnly });
   cancelEndcoords();        // a rebuild invalidates any open placement session
   document.getElementById('emptyprompt').style.display = 'none';
   if ((keepPose || followCamera) && viewer.robot) {
@@ -7713,8 +7753,15 @@ function loadRobot(info, { drop = false, keepPose = false,
     pendingRestore = { angles, linkWorlds };
   }
   dropMode = drop;
-  if (!drop) { viewer.urlModifierFunc = null; currentInfo = info; }
-  else { currentInfo = null; }
+  if (drop) {
+    currentInfo = null;
+    viewer.urlModifierFunc = null;
+  } else {
+    viewer.urlModifierFunc = null;
+    if (!previewOnly) {
+      currentInfo = info;
+    }
+  }
   refreshExportName();          // export field placeholder follows the open pkg
   // cover the reload gap with a display-only clone of the current robot
   // (same world pose -> the swap is pixel-invisible); geometry/materials
@@ -7742,7 +7789,7 @@ function loadRobot(info, { drop = false, keepPose = false,
   document.getElementById('linkinfo').style.display = 'none';
   document.getElementById('title').textContent = info.name;
   document.title = `${info.name} — sw2robot`;
-  if (!drop) {
+  if (!drop && !previewOnly) {
     refreshRootBox({ resetBaseline: true });
     refreshCompMeta();
   }
