@@ -1075,6 +1075,15 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.thMembers': { en: 'members', ja: '構成link' },
     'subasm.thDropped': { en: 'internal joints', ja: '内部joint' },
     'subasm.collapsedTag': { en: 'collapsed', ja: '畳み込み' },
+    'subasm.parentChoicesTitle': { en: 'Attach parent choices',
+                                   ja: '接続先parent候補' },
+    'subasm.parentAuto': { en: 'auto', ja: 'auto' },
+    'subasm.parentSetOk': { en: a => `${a.name}: attach parent ${a.parent} ✓`,
+                            ja: a => `${a.name}: attach parent ${a.parent} ✓` },
+    'subasm.parentSetting': { en: a => `saving attach parent: ${a.name} → ${a.parent} ...`,
+                              ja: a => `接続先parentを保存中: ${a.name} → ${a.parent} ...` },
+    'subasm.parentSetFail': { en: a => `attach parent failed: ${a.e}`,
+                              ja: a => `接続先parentの保存に失敗: ${a.e}` },
     'subasm.backSubasm': { en: '← sub-assemblies', ja: '← サブアセンブリ' },
     'subasm.stateExpanded': { en: 'expanded', ja: '展開' },
     'subasm.stateKept': { en: 'kept as one link', ja: '1リンク保持' },
@@ -2820,6 +2829,75 @@ function validationIssuesHtml(validation) {
     rows + more + `</div>`;
 }
 
+function parentChoicesHtml(parentChoices) {
+  const choices = (parentChoices || []).filter(c =>
+    (c.parents || []).length > 1 || c.selected_parent);
+  if (!choices.length) { return ''; }
+  const rows = choices.map(c => {
+    const selected = c.selected_parent || '';
+    const opts = [`<option value=""${selected ? '' : ' selected'}>` +
+      `${t('subasm.parentAuto')}</option>`].concat((c.parents || []).map(p =>
+      `<option value="${htmlEsc(p.link)}"${selected === p.link ? ' selected' : ''}>` +
+      `${htmlEsc(p.link)}</option>`)).join('');
+    const joints = (c.parents || []).map(p => {
+      const js = (p.joints || []).slice(0, 3).map(htmlEsc).join(', ');
+      const more = (p.joints || []).length > 3
+        ? `, +${(p.joints || []).length - 3} more` : '';
+      return `<div style="color:#6b7480">${htmlEsc(p.link)}: ${js}${more}</div>`;
+    }).join('');
+    return `<div style="display:grid;grid-template-columns:minmax(110px,1fr) ` +
+      `minmax(120px,1.4fr);gap:6px;align-items:start;margin-top:5px">` +
+      `<div><div style="color:#cfe3ff">${htmlEsc(c.subassembly)}</div>` +
+      `<div style="color:#6b7480">${htmlEsc(c.link_name)}</div></div>` +
+      `<div><select class="subasm-parent-choice" ` +
+      `data-name="${htmlEsc(c.subassembly)}" data-prev="${htmlEsc(selected)}">` +
+      opts + `</select>${joints}</div></div>`;
+  }).join('');
+  return `<div style="border:1px solid #3c4654;background:#1f242c;` +
+    `border-radius:4px;padding:6px 8px;margin:8px 0;font-size:11px">` +
+    `<div style="color:#9fb7de">${t('subasm.parentChoicesTitle')}</div>` +
+    rows + `</div>`;
+}
+
+async function setSubassemblyParentChoice(name, parent, ov) {
+  const label = parent || t('subasm.parentAuto');
+  op('subassembly_parent', { name, parent });
+  log(t('subasm.parentSetting', { name, parent: label }));
+  try {
+    const resp = await fetch('/api/set_subassembly_parent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, parent }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log(t('subasm.parentSetOk', { name, parent: label }), 'ok');
+    refreshHistory();
+    if (ov) {
+      await openSubassemblyPreview(ov);
+    }
+    if (viewer.robot && treeViewMode === 'subassembly') {
+      buildJointRows(viewer.robot);
+    }
+  } catch (e) {
+    log(t('subasm.parentSetFail', { e: e.message ?? e }), 'err');
+    if (ov) {
+      await openSubassemblyPreview(ov);
+    }
+  }
+}
+
+function bindSubassemblyParentChoices(root, ov) {
+  root.querySelectorAll('.subasm-parent-choice').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const name = sel.dataset.name;
+      const parent = sel.value;
+      root.querySelectorAll('.subasm-parent-choice')
+        .forEach(x => { x.disabled = true; });
+      setSubassemblyParentChoice(name, parent, ov);
+    });
+  });
+}
+
 function pathBase(p) {
   const s = String(p ?? '');
   return s.split(/[\\/]/).pop() || s;
@@ -2970,7 +3048,8 @@ async function openSubassemblyPreview(ov) {
         cl: cc.links ?? 0, cj: cc.joints ?? 0,
         pl: pc.links ?? 0, pj: pc.joints ?? 0,
       }) + '</div>' +
-      validationIssuesHtml(r.validation);
+      validationIssuesHtml(r.validation) +
+      parentChoicesHtml(r.parent_choices);
     const rows = r.collapsed_subassemblies || [];
     if (!rows.length) {
       html += '<div style="color:#8a93a3">' + t('subasm.previewNone') + '</div>';
@@ -3011,6 +3090,7 @@ async function openSubassemblyPreview(ov) {
       html += '</tbody></table>';
     }
     card.innerHTML = html;
+    bindSubassemblyParentChoices(card, owned);
     const bar = document.createElement('div');
     bar.style.cssText = 'display:flex;gap:8px;margin-top:10px';
     const back = document.createElement('button');
@@ -3379,6 +3459,13 @@ async function renderSubassemblyTreeRows(robot, movable) {
       const warn = document.createElement('div');
       warn.innerHTML = validationHtml;
       jointsEl.appendChild(warn);
+    }
+    const choicesHtml = parentChoicesHtml(r.parent_choices);
+    if (choicesHtml) {
+      const choices = document.createElement('div');
+      choices.innerHTML = choicesHtml;
+      jointsEl.appendChild(choices);
+      bindSubassemblyParentChoices(choices);
     }
     const hint = document.createElement('div');
     hint.className = 'joint';
