@@ -3037,6 +3037,12 @@ async function loadCollapsedPreviewRobot() {
       previewOnly: true,
       restoreAngles: captureJointAngles(viewer.robot),
     });
+    const meshIssues = (r.mesh_report || []).filter(x =>
+      Number(x.missing_count || 0) || Number(x.visuals || 0) === 0);
+    for (const issue of meshIssues.slice(0, 5)) {
+      log(`collapsed mesh: ${issue.link} visuals=${issue.visuals} ` +
+          `missing=${issue.missing_count}`, 'wrn');
+    }
     log(t('subasm.previewRobotOk'), 'ok');
   } catch (e) {
     log(t('subasm.previewRobotFail', { e: e.message ?? e }), 'err');
