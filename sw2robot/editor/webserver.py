@@ -1229,7 +1229,36 @@ def _current_tree_payload(graph, yml_txt=""):
     }
 
 
-def _collapse_preview_payload(graph, yml_txt=""):
+def _current_urdf_joints(pkg_dir, urdf_rel):
+    """Read normal-robot joints from the current URDF without rebuilding."""
+    import xml.etree.ElementTree as _ET
+
+    if not pkg_dir or not urdf_rel:
+        return []
+    path = os.path.join(pkg_dir, *str(urdf_rel).split("/"))
+    if not os.path.exists(path):
+        return []
+    try:
+        root = _ET.parse(path).getroot()
+    except Exception:
+        return []
+    joints = []
+    for joint in root.findall("joint"):
+        name = joint.get("name") or ""
+        parent = joint.find("parent")
+        child = joint.find("child")
+        if not name or parent is None or child is None:
+            continue
+        joints.append({
+            "name": name,
+            "parent": parent.get("link") or "",
+            "child": child.get("link") or "",
+            "type": joint.get("type") or "fixed",
+        })
+    return joints
+
+
+def _collapse_preview_payload(graph, yml_txt="", current_joints=None):
     """Preview the tree after applying current sub-assembly collapse modes.
 
     No URDF is rebuilt here.  The payload is the canonical expanded tree with
@@ -1237,7 +1266,8 @@ def _collapse_preview_payload(graph, yml_txt=""):
     that sub-assembly's own link.
     """
     canonical = _canonical_tree_payload(graph, yml_txt)
-    current = _current_tree_payload(graph, yml_txt)
+    if current_joints is None:
+        current_joints = _current_tree_payload(graph, yml_txt)["joints"]
     states = _subassemblies_payload(graph, yml_txt)
     parent_overrides = _subassembly_parent_overrides(yml_txt)
     origin_links = _subassembly_origin_links(yml_txt)
@@ -1333,7 +1363,7 @@ def _collapse_preview_payload(graph, yml_txt=""):
         joints = kept
 
     driver_choices = _collapse_driver_joint_choices(
-        joints, canonical["joints"], current["joints"], collapsed, collapse_link,
+        joints, current_joints, collapsed, collapse_link,
         edge_driver_joints, driver_joints)
 
     validation = _validate_collapsed_tree(base, links, joints, collapsed,
@@ -1376,13 +1406,17 @@ def _file_signature(path):
         return (os.path.abspath(path), None, None)
 
 
-def _collapse_preview_cache_key(pkg_dir, yml_path, yml_txt):
+def _collapse_preview_cache_key(pkg_dir, yml_path, yml_txt, urdf_rel=None):
     graph_path = os.path.join(pkg_dir, "graph.json")
     digest = hashlib.sha256((yml_txt or "").encode("utf-8")).hexdigest()
-    return (_file_signature(graph_path), os.path.abspath(yml_path), digest)
+    urdf_path = os.path.join(pkg_dir, *str(urdf_rel).split("/")) \
+        if urdf_rel else ""
+    return (_file_signature(graph_path), os.path.abspath(yml_path), digest,
+            _file_signature(urdf_path) if urdf_path else None)
 
 
-def _collapse_preview_payload_cached(pkg_dir, graph, yml_path, yml_txt=""):
+def _collapse_preview_payload_cached(pkg_dir, graph, yml_path, yml_txt="",
+                                     urdf_rel=None):
     """Cached collapse preview for HTTP calls that repeat the same input.
 
     The canonical expanded tree is the expensive part.  The preview panel,
@@ -1390,12 +1424,15 @@ def _collapse_preview_payload_cached(pkg_dir, graph, yml_path, yml_txt=""):
     in quick succession with identical graph/yaml input, so keep a tiny
     process-local cache keyed by graph.json + joints.yaml content.
     """
-    key = _collapse_preview_cache_key(pkg_dir, yml_path, yml_txt)
+    key = _collapse_preview_cache_key(pkg_dir, yml_path, yml_txt, urdf_rel)
     with _COLLAPSE_PREVIEW_CACHE_LOCK:
         cached = _COLLAPSE_PREVIEW_CACHE.get(key)
         if cached is not None:
             return copy.deepcopy(cached)
-    payload = _collapse_preview_payload(graph, yml_txt)
+    current_joints = _current_urdf_joints(pkg_dir, urdf_rel) \
+        if urdf_rel else None
+    payload = _collapse_preview_payload(
+        graph, yml_txt, current_joints=current_joints)
     with _COLLAPSE_PREVIEW_CACHE_LOCK:
         if len(_COLLAPSE_PREVIEW_CACHE) >= _COLLAPSE_PREVIEW_CACHE_MAX:
             _COLLAPSE_PREVIEW_CACHE.pop(next(iter(_COLLAPSE_PREVIEW_CACHE)))
@@ -1483,26 +1520,21 @@ def _collapse_group_choices(collapsed, origin_links):
     return choices
 
 
-def _collapse_driver_joint_choices(joints, canonical_joints, current_joints,
-                                   collapsed, collapse_link,
-                                   edge_driver_joints,
+def _collapse_driver_joint_choices(joints, current_joints, collapsed,
+                                   collapse_link, edge_driver_joints,
                                    legacy_driver_joints=None):
     """List source-joint candidates that can drive collapsed preview edges.
 
     A CAD sub-assembly defines the collapsed *link*, but motion belongs to a
-    parent->child edge in the collapsed tree.  Prefer the joints that already
-    exist in the normal/current robot because their axes match the working UI,
-    then fall back to the fully-expanded canonical tree for mesh-level hints.
+    parent->child edge in the collapsed tree.  Only offer joints that already
+    exist in the normal/current robot because their axes match the working UI.
     """
     edge_driver_joints = edge_driver_joints or {}
     legacy_driver_joints = legacy_driver_joints or {}
     role_order = {
         "normal_exact_edge": 0,
         "normal_near_parent_child": 1,
-        "exact_collapsed_edge": 2,
-        "near_parent_child": 3,
-        "near_child": 4,
-        "legacy_subassembly": 5,
+        "legacy_subassembly": 2,
         "stale": 9,
     }
     sub_by_link = {s.get("link_name"): s for s in collapsed}
@@ -1577,26 +1609,6 @@ def _collapse_driver_joint_choices(joints, canonical_joints, current_joints,
             if near_child and near_parent:
                 add_candidate(joint, "normal_near_parent_child", "normal")
 
-        for joint in canonical_joints or []:
-            folded_parent = folded_endpoint(joint.get("parent"))
-            folded_child = folded_endpoint(joint.get("child"))
-            if folded_parent == parent and folded_child == child:
-                add_candidate(joint, "exact_collapsed_edge", "canonical")
-
-        for joint in canonical_joints or []:
-            source = _joint_source_name(joint)
-            if source in seen:
-                continue
-            source_parent = str(joint.get("parent") or "")
-            source_child = str(joint.get("child") or "")
-            haystack = " ".join((source, source_parent, source_child))
-            near_child = any(tok and tok in haystack for tok in child_tokens)
-            near_parent = any(tok and tok in haystack for tok in parent_tokens)
-            if near_child and near_parent:
-                add_candidate(joint, "near_parent_child", "canonical")
-            elif near_child:
-                add_candidate(joint, "near_child", "canonical")
-
         if legacy and legacy in seen:
             for cand in candidates:
                 if cand.get("source_joint") == legacy:
@@ -1635,13 +1647,6 @@ def _collapse_driver_joint_choices(joints, canonical_joints, current_joints,
         if not auto:
             auto = next((c.get("source_joint") for c in candidates
                          if c.get("role") == "normal_near_parent_child"), "")
-        if not auto:
-            auto = next((c.get("source_joint") for c in candidates
-                         if c.get("role") == "exact_collapsed_edge"
-                         and c.get("movable")), "")
-        if not auto:
-            auto = next((c.get("source_joint") for c in candidates
-                         if c.get("role") == "exact_collapsed_edge"), "")
         if not auto:
             auto = next((c.get("source_joint") for c in candidates
                          if c.get("movable")), "")
@@ -3862,7 +3867,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 txt = open(yml, encoding="utf-8").read() \
                     if os.path.exists(yml) else ""
                 payload = _collapse_preview_payload_cached(
-                    cls.pkg_dir, gs, yml, txt)
+                    cls.pkg_dir, gs, yml, txt, cls.urdf_rel)
                 payload["mode"] = "cad"
                 return self._send_json(payload)
             if path == "/api/collapsed_preview_urdf":
@@ -3881,7 +3886,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 txt = open(yml, encoding="utf-8").read() \
                     if os.path.exists(yml) else ""
                 preview = _collapse_preview_payload_cached(
-                    cls.pkg_dir, gs, yml, txt)
+                    cls.pkg_dir, gs, yml, txt, cls.urdf_rel)
                 plan = preview.get("collapse_plan") or {}
                 if not plan.get("ready_for_urdf"):
                     return self._send_json({
@@ -4764,7 +4769,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f.read()
                 try:
                     preview = _collapse_preview_payload_cached(
-                        cls.pkg_dir, graph, yml, txt)
+                        cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                     choices = {
                         c.get("subassembly"): c
                         for c in preview.get("parent_choices", [])
@@ -4789,7 +4794,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
                 payload = _collapse_preview_payload_cached(
-                    cls.pkg_dir, graph, yml, txt)
+                    cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                 payload.update({"ok": True, "name": name_in,
                                 "parent": parent, "preview_only": True,
                                 "rebuilt": False})
@@ -4825,7 +4830,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f.read()
                 try:
                     preview = _collapse_preview_payload_cached(
-                        cls.pkg_dir, graph, yml, txt)
+                        cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                     choices = {
                         c.get("subassembly"): c
                         for c in preview.get("group_choices", [])
@@ -4851,7 +4856,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
                 payload = _collapse_preview_payload_cached(
-                    cls.pkg_dir, graph, yml, txt)
+                    cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                 payload.update({"ok": True, "name": name_in,
                                 "origin_link": origin_link,
                                 "preview_only": True,
@@ -4888,7 +4893,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f.read()
                 try:
                     preview = _collapse_preview_payload_cached(
-                        cls.pkg_dir, graph, yml, txt)
+                        cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                     choices = {
                         c.get("subassembly"): c
                         for c in preview.get("driver_joint_choices", [])
@@ -4914,7 +4919,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
                 payload = _collapse_preview_payload_cached(
-                    cls.pkg_dir, graph, yml, txt)
+                    cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                 payload.update({"ok": True, "name": name_in,
                                 "source_joint": source_joint,
                                 "preview_only": True,
@@ -4951,7 +4956,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f.read()
                 try:
                     preview = _collapse_preview_payload_cached(
-                        cls.pkg_dir, graph, yml, txt)
+                        cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                     choices = {
                         c.get("edge"): c
                         for c in preview.get("driver_joint_choices", [])
@@ -4980,7 +4985,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
                 payload = _collapse_preview_payload_cached(
-                    cls.pkg_dir, graph, yml, txt)
+                    cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                 payload.update({"ok": True, "edge": edge,
                                 "source_joint": source_joint,
                                 "preview_only": True,
@@ -5019,7 +5024,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     txt = f.read()
                 try:
                     preview = _collapse_preview_payload_cached(
-                        cls.pkg_dir, graph, yml, txt)
+                        cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                     selected = _subassembly_cycle_break_joints(txt)
                     allowed = set(selected)
                     for choice in preview.get("cycle_break_choices", []):
@@ -5041,7 +5046,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
                 payload = _collapse_preview_payload_cached(
-                    cls.pkg_dir, graph, yml, txt)
+                    cls.pkg_dir, graph, yml, txt, cls.urdf_rel)
                 payload.update({"ok": True, "source_joint": source_joint,
                                 "previous_source_joint": previous_source_joint,
                                 "drop": drop, "preview_only": True,
