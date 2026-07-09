@@ -286,24 +286,20 @@ def test_collapse_preview_lists_subassembly_driver_joint_candidates():
              c["source_kind"])
             for c in choices[0]["candidates"]] == [
         ("plate_1__servo_1", "normal_exact_edge", "fixed", "normal"),
-        ("plate_1__servo_1__case_1",
-         "exact_collapsed_edge", "fixed", "canonical"),
-        ("servo_1__case_1__servo_1__horn_1",
-         "near_child", "revolute", "canonical"),
     ]
 
     txt = _set_collapsed_driver_joint_yaml(
-        txt, "plate_1__servo_1", "servo_1__case_1__servo_1__horn_1")
+        txt, "plate_1__servo_1", "plate_1__servo_1")
     assert _collapsed_driver_joints(txt) == {
-        "plate_1__servo_1": "servo_1__case_1__servo_1__horn_1"
+        "plate_1__servo_1": "plate_1__servo_1"
     }
     payload = _collapse_preview_payload(graph, txt)
     assert payload["driver_joint_choices"][0]["selected_driver_joint"] == \
-        "servo_1__case_1__servo_1__horn_1"
+        "plate_1__servo_1"
     plan_joint = payload["collapse_plan"]["joints"][0]
     assert plan_joint["driver_source_joint"] == \
-        "servo_1__case_1__servo_1__horn_1"
-    assert plan_joint["driver_type"] == "revolute"
+        "plate_1__servo_1"
+    assert plan_joint["driver_type"] == "fixed"
 
 
 def test_set_subassembly_driver_joint_validates_resets_and_saves(tmp_path):
@@ -389,12 +385,6 @@ def test_collapse_driver_joint_choices_are_unique_per_edge():
          "type": "fixed", "source_name": "parent__sub__b",
          "decision": "kept_boundary"},
     ]
-    canonical = [
-        {"name": "parent__sub__a", "parent": "parent", "child": "sub__a",
-         "type": "fixed"},
-        {"name": "parent__sub__b", "parent": "parent", "child": "sub__b",
-         "type": "fixed"},
-    ]
     current = [
         {"name": "parent__sub", "parent": "parent", "child": "sub",
          "type": "revolute"},
@@ -405,8 +395,8 @@ def test_collapse_driver_joint_choices_are_unique_per_edge():
         "member_links": ["sub__a", "sub__b"],
     }]
     choices = _collapse_driver_joint_choices(
-        joints, canonical, current, collapsed, {"sub__a": "sub",
-                                                "sub__b": "sub"}, {}, {})
+        joints, current, collapsed, {"sub__a": "sub", "sub__b": "sub"},
+        {}, {})
     assert len(choices) == 1
     assert choices[0]["edge"] == "parent__sub"
     assert choices[0]["auto_driver_joint"] == "parent__sub"
@@ -1010,8 +1000,9 @@ def test_collapse_preview_http_cache_reuses_identical_input(tmp_path, monkeypatc
     yml.write_text("base: a\n", encoding="utf-8")
     calls = {"n": 0}
 
-    def fake_payload(_graph, txt):
+    def fake_payload(_graph, txt, current_joints=None):
         calls["n"] += 1
+        assert current_joints is None
         return {"txt": txt, "calls": calls["n"]}
 
     monkeypatch.setattr(webserver, "_collapse_preview_payload", fake_payload)
@@ -1030,6 +1021,49 @@ def test_collapse_preview_http_cache_reuses_identical_input(tmp_path, monkeypatc
         str(pkg), object(), str(yml), yml.read_text(encoding="utf-8"))
     assert calls["n"] == 2
     assert third == {"txt": "base: b\n", "calls": 2}
+
+
+def test_collapse_preview_cache_reads_normal_urdf_joints(tmp_path, monkeypatch):
+    from sw2robot.editor import webserver
+
+    pkg = tmp_path / "pkg"
+    urdf_dir = pkg / "urdf"
+    urdf_dir.mkdir(parents=True)
+    (pkg / "graph.json").write_text("{}", encoding="utf-8")
+    yml = pkg / "robot.joints.yaml"
+    yml.write_text("base: base\n", encoding="utf-8")
+    urdf = urdf_dir / "robot.urdf"
+    urdf.write_text("""<?xml version="1.0"?>
+<robot name="r">
+  <link name="base"/>
+  <link name="sub"/>
+  <joint name="base__sub" type="revolute">
+    <parent link="base"/><child link="sub"/>
+  </joint>
+</robot>
+""", encoding="utf-8")
+
+    seen = {}
+
+    def fake_payload(_graph, txt, current_joints=None):
+        seen["txt"] = txt
+        seen["current_joints"] = current_joints
+        return {"ok": True}
+
+    monkeypatch.setattr(webserver, "_collapse_preview_payload", fake_payload)
+    webserver._COLLAPSE_PREVIEW_CACHE.clear()
+
+    payload = webserver._collapse_preview_payload_cached(
+        str(pkg), object(), str(yml), yml.read_text(encoding="utf-8"),
+        "urdf/robot.urdf")
+
+    assert payload == {"ok": True}
+    assert seen["current_joints"] == [{
+        "name": "base__sub",
+        "parent": "base",
+        "child": "sub",
+        "type": "revolute",
+    }]
 
 
 def test_validate_collapsed_tree_reports_disconnected_members():
