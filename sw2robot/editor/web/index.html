@@ -2676,10 +2676,13 @@ function parentJointForLink(linkName) {
 }
 
 function previewJointForPlanRow(row) {
-  const byName = viewer.robot?.joints?.[row?.name || ''];
-  if (byName) { return byName; }
+  // Prefer the actual parent joint of the displayed child link.  The collapsed
+  // preview URDF may suffix duplicate joint names (e.g. "..._3"), and this is
+  // the same path the in-viewer joint editor uses after a link click.
   const byChild = parentJointForLink(row?.child || '');
   if (byChild) { return byChild; }
+  const byName = viewer.robot?.joints?.[row?.name || ''];
+  if (byName) { return byName; }
   return Object.values(viewer.robot?.joints ?? {})
     .find(j => jointLinkOf(j, 'child') === row?.child) || null;
 }
@@ -3173,6 +3176,8 @@ async function loadCollapsedPreviewRobot() {
     }, {
       keepPose: false,
       previewOnly: true,
+      followCamera: true,
+      restoreAngles: {},
     });
     const meshIssues = (r.mesh_report || []).filter(x =>
       Number(x.missing_count || 0) || Number(x.visuals || 0) === 0);
