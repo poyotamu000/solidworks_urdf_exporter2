@@ -3039,6 +3039,9 @@ function driverJointChoicesHtml(driverChoices) {
   const rows = choices.map(c => {
     const selected = c.selected_driver_joint || '';
     const auto = c.auto_driver_joint || '';
+    const edge = c.edge || '';
+    const edgeLabel = c.parent && c.child
+      ? `${c.parent} → ${c.child}` : edge;
     const opts = [`<option value=""${selected ? '' : ' selected'}>` +
       `${t('subasm.driverJointAuto')}${auto ? `: ${htmlEsc(auto)}` : ''}` +
       `</option>`].concat((c.candidates || []).map(j => {
@@ -3065,10 +3068,10 @@ function driverJointChoicesHtml(driverChoices) {
       : '';
     return `<div style="display:grid;grid-template-columns:minmax(110px,1fr) ` +
       `minmax(150px,1.7fr);gap:6px;align-items:start;margin-top:5px">` +
-      `<div><div style="color:#cfe3ff">${htmlEsc(c.subassembly)}</div>` +
-      `<div style="color:#6b7480">${htmlEsc(c.link_name)}</div></div>` +
+      `<div><div style="color:#cfe3ff">${htmlEsc(edgeLabel)}</div>` +
+      `<div style="color:#6b7480">${htmlEsc(c.subassembly || c.link_name || edge)}</div></div>` +
       `<div><select class="subasm-driver-joint-choice" ` +
-      `data-name="${htmlEsc(c.subassembly)}">` +
+      `data-edge="${htmlEsc(edge)}">` +
       opts + `</select>${details}${more}</div></div>`;
   }).join('');
   return `<div style="border:1px solid #3d5244;background:#1f2a25;` +
@@ -3077,18 +3080,18 @@ function driverJointChoicesHtml(driverChoices) {
     rows + `</div>`;
 }
 
-async function setSubassemblyDriverJointChoice(name, sourceJoint, ov) {
+async function setSubassemblyDriverJointChoice(edge, sourceJoint, ov) {
   const label = sourceJoint || t('subasm.driverJointAuto');
-  op('subassembly_driver_joint', { name, source_joint: sourceJoint });
-  log(t('subasm.driverJointSetting', { name, sourceJoint: label }));
+  op('collapsed_driver_joint', { edge, source_joint: sourceJoint });
+  log(t('subasm.driverJointSetting', { name: edge, sourceJoint: label }));
   try {
-    const resp = await fetch('/api/set_subassembly_driver_joint', {
+    const resp = await fetch('/api/set_collapsed_driver_joint', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, source_joint: sourceJoint }) });
+      body: JSON.stringify({ edge, source_joint: sourceJoint }) });
     const r = await resp.json();
     if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
-    log(t('subasm.driverJointSetOk', { name, sourceJoint: label }), 'ok');
+    log(t('subasm.driverJointSetOk', { name: edge, sourceJoint: label }), 'ok');
     refreshHistory();
     if (ov) {
       await openSubassemblyPreview(ov);
@@ -3116,11 +3119,11 @@ async function setSubassemblyDriverJointChoice(name, sourceJoint, ov) {
 function bindSubassemblyDriverJointChoices(root, ov) {
   root.querySelectorAll('.subasm-driver-joint-choice').forEach(sel => {
     sel.addEventListener('change', () => {
-      const name = sel.dataset.name;
+      const edge = sel.dataset.edge;
       const sourceJoint = sel.value;
       root.querySelectorAll('.subasm-driver-joint-choice')
         .forEach(x => { x.disabled = true; });
-      setSubassemblyDriverJointChoice(name, sourceJoint, ov);
+      setSubassemblyDriverJointChoice(edge, sourceJoint, ov);
     });
   });
 }
