@@ -491,7 +491,46 @@ def test_validate_collapsed_tree_reports_multiple_parents_and_cycles():
     assert multi["source_joints"] == ["j1", "j2"]
     cycle = next(i for i in payload["issues"] if i["code"] == "cycle")
     assert cycle["links"] == ["base", "arm", "base"]
+    assert cycle["source_joints"] == ["j1", "j3"]
+    assert cycle["candidates"] == [
+        {"joint": "base__arm", "source_joint": "j1",
+         "parent": "base", "child": "arm"},
+        {"joint": "arm__base", "source_joint": "j3",
+         "parent": "arm", "child": "base"},
+    ]
     assert payload["ok"] is False
+
+
+def test_subassembly_cycle_break_choices_drop_source_joint():
+    from sw2robot.editor.webserver import (
+        _collapse_cycle_break_choices,
+        _set_subassembly_cycle_break_joint_yaml,
+        _subassembly_cycle_break_joints,
+        _validate_collapsed_tree,
+    )
+
+    links = [{"link_name": n} for n in ("base", "arm")]
+    joints = [
+        {"name": "base__arm", "parent": "base", "child": "arm",
+         "type": "fixed", "source_name": "j1"},
+        {"name": "arm__base", "parent": "arm", "child": "base",
+         "type": "fixed", "source_name": "j2"},
+    ]
+    choices = _collapse_cycle_break_choices("base", links, joints, set())
+    assert len(choices) == 1
+    assert choices[0]["links"] == ["base", "arm", "base"]
+    assert [c["source_joint"] for c in choices[0]["candidates"]] == [
+        "j1", "j2"]
+
+    txt = _set_subassembly_cycle_break_joint_yaml("", "j2", True)
+    drops = _subassembly_cycle_break_joints(txt)
+    assert drops == {"j2"}
+    kept = [j for j in joints if j["source_name"] not in drops]
+    assert _validate_collapsed_tree(
+        "base", links, kept, [])["ok"] is True
+
+    txt = _set_subassembly_cycle_break_joint_yaml(txt, "", False, "j2")
+    assert _subassembly_cycle_break_joints(txt) == set()
 
 
 def test_validate_collapsed_tree_reports_disconnected_members():

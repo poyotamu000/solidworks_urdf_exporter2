@@ -1199,6 +1199,37 @@ def _set_subassembly_origin_link_yaml(txt, graph, name, origin_link):
     return _remove_yaml_map_entry(txt, "subassembly_origin_links", name)
 
 
+def _subassembly_cycle_break_joints(yml_txt):
+    """Preview-only source joints dropped to break collapsed-tree cycles."""
+    import yaml as _yaml
+
+    try:
+        cfg = _yaml.safe_load(yml_txt) or {}
+        if not isinstance(cfg, dict):
+            return set()
+    except Exception:
+        return set()
+    raw = cfg.get("subassembly_cycle_break_joints") or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(x) for x in raw if x is not None}
+
+
+def _set_subassembly_cycle_break_joint_yaml(
+        txt, source_joint, drop, previous_source_joint=""):
+    """Set/reset one preview-only source joint dropped for cycle breaking."""
+    source_joint = str(source_joint or "").strip()
+    previous_source_joint = str(previous_source_joint or "").strip()
+    target = source_joint or previous_source_joint
+    if not target:
+        raise ValueError("source_joint required")
+    remove = [x for x in (previous_source_joint, source_joint) if x]
+    add = [source_joint] if drop and source_joint else []
+    new_txt, _members = _set_yaml_list_block(
+        txt, "subassembly_cycle_break_joints", add=add, remove=remove)
+    return new_txt
+
+
 def _canonical_tree_payload(graph, yml_txt=""):
     """Fully-expanded tree plus CAD sub-assembly membership.
 
@@ -1276,6 +1307,7 @@ def _collapse_preview_payload(graph, yml_txt=""):
     states = _subassemblies_payload(graph, yml_txt)
     parent_overrides = _subassembly_parent_overrides(yml_txt)
     origin_links = _subassembly_origin_links(yml_txt)
+    cycle_break_joints = _subassembly_cycle_break_joints(yml_txt)
     by_sub = {s["name"]: s for s in canonical["subassemblies"]}
     collapse_link = {}
     collapsed = []
@@ -1361,6 +1393,18 @@ def _collapse_preview_payload(graph, yml_txt=""):
         joints.append(out)
 
     base = collapse_link.get(canonical["base_link"], canonical["base_link"])
+    cycle_break_choices = _collapse_cycle_break_choices(
+        base, links, joints, cycle_break_joints)
+    dropped_cycle_joints = []
+    if cycle_break_joints:
+        kept = []
+        for j in joints:
+            if _joint_source_name(j) in cycle_break_joints:
+                dropped_cycle_joints.append(j)
+            else:
+                kept.append(j)
+        joints = kept
+
     validation = _validate_collapsed_tree(base, links, joints, collapsed,
                                           collapse_link)
     return {
@@ -1370,9 +1414,11 @@ def _collapse_preview_payload(graph, yml_txt=""):
         "tree_rows": _tree_rows_payload(base, links, joints),
         "validation": validation,
         "dropped_internal_joints": dropped,
+        "dropped_cycle_joints": dropped_cycle_joints,
         "collapsed_subassemblies": collapsed,
         "parent_choices": parent_choices,
         "group_choices": group_choices,
+        "cycle_break_choices": cycle_break_choices,
         "canonical_counts": {
             "links": len(canonical["links"]),
             "joints": len(canonical["joints"]),
@@ -1472,11 +1518,109 @@ def _collapse_group_choices(collapsed, origin_links):
     return choices
 
 
+def _joint_source_name(joint):
+    return str(joint.get("source_name") or joint.get("name") or "")
+
+
+def _directed_cycle_reports(base_link, links, joints):
+    """Return directed cycles with the preview joints that form them."""
+    link_names = {l["link_name"] for l in links}
+    by_parent = {}
+    for j in joints:
+        by_parent.setdefault(j.get("parent"), []).append(j)
+    for rows in by_parent.values():
+        rows.sort(key=lambda j: (j.get("child", ""), j.get("name", "")))
+
+    reports, seen_cycles, colour = [], set(), {}
+    stack_links, stack_edges = [], []
+
+    def add_cycle(child, back_edge):
+        try:
+            i = stack_links.index(child)
+        except ValueError:
+            return
+        cycle_links = [*stack_links[i:], child]
+        cycle_edges = [*stack_edges[i:], back_edge]
+        key = tuple(_joint_source_name(j) for j in cycle_edges) or \
+            tuple(cycle_links)
+        if key in seen_cycles:
+            return
+        seen_cycles.add(key)
+        candidates = [{
+            "joint": j.get("name"),
+            "source_joint": _joint_source_name(j),
+            "parent": j.get("parent"),
+            "child": j.get("child"),
+        } for j in cycle_edges]
+        reports.append({
+            "links": cycle_links,
+            "joints": [j.get("name") for j in cycle_edges],
+            "source_joints": [_joint_source_name(j) for j in cycle_edges],
+            "candidates": candidates,
+        })
+
+    def dfs(node):
+        colour[node] = "gray"
+        stack_links.append(node)
+        for j in by_parent.get(node, []):
+            child = j.get("child")
+            if child not in link_names:
+                continue
+            if colour.get(child) == "gray":
+                add_cycle(child, j)
+            elif colour.get(child) != "black":
+                stack_edges.append(j)
+                dfs(child)
+                stack_edges.pop()
+        stack_links.pop()
+        colour[node] = "black"
+
+    roots = [base_link] if base_link in link_names else []
+    roots.extend(sorted(link_names - set(roots)))
+    for root in roots:
+        if colour.get(root) is None:
+            dfs(root)
+    return reports
+
+
+def _collapse_cycle_break_choices(base_link, links, joints, selected_sources):
+    """List preview source-joint candidates that can break active cycles."""
+    selected_sources = set(selected_sources or [])
+    choices = []
+    active_sources = set()
+    for cycle in _directed_cycle_reports(base_link, links, joints):
+        candidates = cycle.get("candidates", [])
+        for c in candidates:
+            if c.get("source_joint"):
+                active_sources.add(c["source_joint"])
+        selected = next((c.get("source_joint") for c in candidates
+                         if c.get("source_joint") in selected_sources), "")
+        choices.append({
+            **cycle,
+            "selected_source_joint": selected,
+            "resolved": False,
+        })
+    for source in sorted(selected_sources - active_sources):
+        choices.append({
+            "links": [],
+            "joints": [],
+            "source_joints": [source],
+            "selected_source_joint": source,
+            "resolved": True,
+            "candidates": [{
+                "joint": source,
+                "source_joint": source,
+                "parent": "",
+                "child": "",
+            }],
+        })
+    return choices
+
+
 def _validate_collapsed_tree(base_link, links, joints, collapsed,
                              collapse_link=None):
     """Report structural hazards in a collapsed preview tree."""
     collapse_link = collapse_link or {}
-    link_names = {l["link_name"] for l in links}
     issues = []
 
     incoming = {}
@@ -1497,37 +1641,16 @@ def _validate_collapsed_tree(base_link, links, joints, collapsed,
                     "sub-assembly collapse"),
             })
 
-    adj = {}
-    for j in joints:
-        adj.setdefault(j["parent"], []).append(j["child"])
-    seen_cycles, colour, stack = set(), {}, []
-
-    def dfs(node):
-        colour[node] = "gray"
-        stack.append(node)
-        for child in adj.get(node, []):
-            if colour.get(child) == "gray":
-                i = stack.index(child)
-                cyc = [*stack[i:], child]
-                key = tuple(cyc)
-                if key not in seen_cycles:
-                    seen_cycles.add(key)
-                    issues.append({
-                        "severity": "error",
-                        "code": "cycle",
-                        "links": cyc,
-                        "message": "collapsed tree contains a directed cycle",
-                    })
-            elif colour.get(child) != "black":
-                dfs(child)
-        stack.pop()
-        colour[node] = "black"
-
-    roots = [base_link] if base_link in link_names else []
-    roots.extend(sorted(link_names - set(roots)))
-    for root in roots:
-        if colour.get(root) is None:
-            dfs(root)
+    for cycle in _directed_cycle_reports(base_link, links, joints):
+        issues.append({
+            "severity": "error",
+            "code": "cycle",
+            "links": cycle["links"],
+            "joints": cycle["joints"],
+            "source_joints": cycle["source_joints"],
+            "candidates": cycle["candidates"],
+            "message": "collapsed tree contains a directed cycle",
+        })
 
     for sub in collapsed:
         comps = _subassembly_member_groups(sub)
@@ -4164,6 +4287,65 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                                 "rebuilt": False})
                 print(f"[sw2robot.web] set_subassembly_origin_link: "
                       f"{name_in} -> {label} (preview only)")
+                return self._send_json(payload)
+            if parsed.path == "/api/set_subassembly_cycle_break":
+                cls = type(self)
+                n = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(n) or b"{}")
+                source_joint = (body.get("source_joint") or "").strip()
+                previous_source_joint = (
+                    body.get("previous_source_joint") or "").strip()
+                drop = bool(body.get("drop", True))
+                target = source_joint or previous_source_joint
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._send_json(
+                        {"error": "sub-assembly cycle breaks need the CAD "
+                                  "graph.json"},
+                        400)
+                if not target:
+                    return self._send_json(
+                        {"error": "source_joint required"}, 400)
+                from sw2robot.exporter.state import GraphState
+                graph = GraphState.load(os.path.join(cls.pkg_dir, "graph.json"))
+                name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
+                yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
+                if not os.path.exists(yml):
+                    return self._send_json(
+                        {"error": "joints.yaml not found -- re-extract once"},
+                        400)
+                with open(yml, encoding="utf-8") as f:
+                    txt = f.read()
+                try:
+                    preview = _collapse_preview_payload(graph, txt)
+                    selected = _subassembly_cycle_break_joints(txt)
+                    allowed = set(selected)
+                    for choice in preview.get("cycle_break_choices", []):
+                        for cand in choice.get("candidates", []):
+                            if cand.get("source_joint"):
+                                allowed.add(cand["source_joint"])
+                    if target not in allowed:
+                        return self._send_json(
+                            {"error": f"'{target}' is not a cycle-break "
+                                      "candidate"},
+                            400)
+                    txt = _set_subassembly_cycle_break_joint_yaml(
+                        txt, source_joint, drop, previous_source_joint)
+                except ValueError as e:
+                    return self._send_json({"error": str(e)}, 400)
+                label = source_joint if drop else "auto"
+                _snapshot(cls.pkg_dir, yml,
+                          f"sub-assembly cycle break {target} -> {label}")
+                with open(yml, "w", encoding="utf-8") as f:
+                    f.write(txt)
+                payload = _collapse_preview_payload(graph, txt)
+                payload.update({"ok": True, "source_joint": source_joint,
+                                "previous_source_joint": previous_source_joint,
+                                "drop": drop, "preview_only": True,
+                                "rebuilt": False})
+                print(f"[sw2robot.web] set_subassembly_cycle_break: "
+                      f"{target} -> {label} (preview only)")
                 return self._send_json(payload)
             if parsed.path == "/api/set_base":
                 cls = type(self)
