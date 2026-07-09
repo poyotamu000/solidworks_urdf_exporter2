@@ -276,16 +276,20 @@ def test_collapse_preview_lists_subassembly_driver_joint_candidates():
     txt = "base: plate-1\nno_expand:\n- servo\n"
     payload = _collapse_preview_payload(graph, txt)
     choices = payload["driver_joint_choices"]
+    assert len(choices) == 1
     assert choices[0]["edge"] == "plate_1__servo_1"
     assert choices[0]["parent"] == "plate_1"
     assert choices[0]["child"] == "servo_1"
     assert choices[0]["auto_driver_joint"] == \
-        "servo_1__case_1__servo_1__horn_1"
-    assert [(c["source_joint"], c["role"], c["type"])
+        "plate_1__servo_1"
+    assert [(c["source_joint"], c["role"], c["type"],
+             c["source_kind"])
             for c in choices[0]["candidates"]] == [
-        ("plate_1__servo_1__case_1", "exact_collapsed_edge", "fixed"),
+        ("plate_1__servo_1", "normal_exact_edge", "fixed", "normal"),
+        ("plate_1__servo_1__case_1",
+         "exact_collapsed_edge", "fixed", "canonical"),
         ("servo_1__case_1__servo_1__horn_1",
-         "near_child", "revolute"),
+         "near_child", "revolute", "canonical"),
     ]
 
     txt = _set_collapsed_driver_joint_yaml(
@@ -374,6 +378,38 @@ subassembly_driver_joints:
             webserver._Handler.robot_name,
             webserver._Handler.root_dir,
         ) = old_state
+def test_collapse_driver_joint_choices_are_unique_per_edge():
+    from sw2robot.editor.webserver import _collapse_driver_joint_choices
+
+    joints = [
+        {"name": "parent__sub", "parent": "parent", "child": "sub",
+         "type": "fixed", "source_name": "parent__sub__a",
+         "decision": "kept_boundary"},
+        {"name": "parent__sub", "parent": "parent", "child": "sub",
+         "type": "fixed", "source_name": "parent__sub__b",
+         "decision": "kept_boundary"},
+    ]
+    canonical = [
+        {"name": "parent__sub__a", "parent": "parent", "child": "sub__a",
+         "type": "fixed"},
+        {"name": "parent__sub__b", "parent": "parent", "child": "sub__b",
+         "type": "fixed"},
+    ]
+    current = [
+        {"name": "parent__sub", "parent": "parent", "child": "sub",
+         "type": "revolute"},
+    ]
+    collapsed = [{
+        "name": "sub-1",
+        "link_name": "sub",
+        "member_links": ["sub__a", "sub__b"],
+    }]
+    choices = _collapse_driver_joint_choices(
+        joints, canonical, current, collapsed, {"sub__a": "sub",
+                                                "sub__b": "sub"}, {}, {})
+    assert len(choices) == 1
+    assert choices[0]["edge"] == "parent__sub"
+    assert choices[0]["auto_driver_joint"] == "parent__sub"
 
 
 def test_collapse_preview_keeps_expanded_override():
@@ -889,6 +925,79 @@ def test_collapsed_preview_urdf_lumps_member_visuals():
     assert base_sub.find("origin").get("xyz") == "1 0 0"
     assert base_sub.find("axis").get("xyz") == "0 0 1"
     assert base_sub.find("limit").get("lower") == "-0.5"
+
+
+def test_collapsed_preview_urdf_uses_normal_driver_joint_source():
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.editor.webserver import _collapsed_preview_urdf_text
+
+    expanded_urdf = """<?xml version="1.0"?>
+<robot name="demo">
+  <link name="base"/>
+  <link name="sub_a">
+    <visual><origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="../meshes/a.stl"/></geometry></visual>
+  </link>
+  <link name="sub_b">
+    <visual><origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><mesh filename="../meshes/b.stl"/></geometry></visual>
+  </link>
+  <joint name="base__sub_a" type="fixed">
+    <origin xyz="1 0 0" rpy="0 0 0"/>
+    <parent link="base"/><child link="sub_a"/>
+  </joint>
+  <joint name="sub_a__sub_b" type="fixed">
+    <origin xyz="0 2 0" rpy="0 0 0"/>
+    <parent link="sub_a"/><child link="sub_b"/>
+  </joint>
+</robot>
+"""
+    normal_urdf = """<?xml version="1.0"?>
+<robot name="demo">
+  <link name="base"/>
+  <link name="sub"/>
+  <joint name="base__sub" type="revolute">
+    <origin xyz="1 0 0" rpy="0 0 0"/>
+    <axis xyz="1 0 0"/>
+    <parent link="base"/><child link="sub"/>
+    <limit lower="-1" upper="1" effort="4" velocity="5"/>
+  </joint>
+</robot>
+"""
+    plan = {
+        "version": 1,
+        "base_link": "base",
+        "ready_for_urdf": True,
+        "links": [
+            {"link": "base", "name": "base", "kind": "expanded_link"},
+            {"link": "sub", "name": "sub", "kind": "collapsed_subassembly",
+             "member_links": ["sub_a", "sub_b"],
+             "selected_origin_link": "sub_a"},
+        ],
+        "joints": [
+            {"name": "base__sub", "parent": "base", "child": "sub",
+             "type": "fixed", "source_joint": "base__sub_a",
+             "driver_source_joint": "base__sub",
+             "driver_type": "revolute",
+             "decision": "kept_boundary"},
+        ],
+        "dropped_joints": [],
+        "collapsed_subassemblies": [],
+        "link_replacements": [
+            {"source_link": "sub_a", "collapsed_link": "sub"},
+            {"source_link": "sub_b", "collapsed_link": "sub"},
+        ],
+    }
+    root = ET.fromstring(_collapsed_preview_urdf_text(
+        expanded_urdf, plan, driver_urdf_text=normal_urdf))
+    sub = next(x for x in root.findall("link") if x.get("name") == "sub")
+    assert len(sub.findall("visual")) == 2
+    joint = next(x for x in root.findall("joint")
+                 if x.get("name") == "base__sub")
+    assert joint.get("type") == "revolute"
+    assert joint.find("axis").get("xyz") == "1 0 0"
+    assert joint.find("limit").get("effort") == "4"
 
 
 def test_collapse_preview_http_cache_reuses_identical_input(tmp_path, monkeypatch):

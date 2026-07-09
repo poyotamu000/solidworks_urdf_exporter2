@@ -3049,7 +3049,8 @@ function driverJointChoicesHtml(driverChoices) {
         const edge = j.source_parent && j.source_child
           ? `${j.source_parent} → ${j.source_child}`
           : (j.parent && j.child ? `${j.parent} → ${j.child}` : source);
-        const label = `${j.role || 'joint'} ${j.type || ''}: ${edge}`;
+        const kind = j.source_kind ? `${j.source_kind} ` : '';
+        const label = `${kind}${j.role || 'joint'} ${j.type || ''}: ${edge}`;
         return `<option value="${htmlEsc(source)}"` +
           `${selected === source ? ' selected' : ''}>` +
           `${htmlEsc(label)}</option>`;
@@ -3058,8 +3059,9 @@ function driverJointChoicesHtml(driverChoices) {
       const source = j.source_joint || j.joint || '';
       const edge = j.source_parent && j.source_child
         ? `${j.source_parent} → ${j.source_child}` : '';
+      const kind = j.source_kind ? `${j.source_kind} ` : '';
       const mov = j.movable ? 'movable' : 'fixed';
-      return `<div style="color:#6b7480">${htmlEsc(j.role || 'joint')}: ` +
+      return `<div style="color:#6b7480">${htmlEsc(kind + (j.role || 'joint'))}: ` +
         `${htmlEsc(source)} ${htmlEsc(j.type || '')} ${htmlEsc(mov)}` +
         `${edge ? ` (${htmlEsc(edge)})` : ''}</div>`;
     }).join('');
