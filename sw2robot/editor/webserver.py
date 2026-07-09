@@ -1206,6 +1206,29 @@ def _canonical_tree_payload(graph, yml_txt=""):
     }
 
 
+def _current_tree_payload(graph, yml_txt=""):
+    """Tree from the current joints.yaml modes, used as normal-robot hints."""
+    import yaml as _yaml
+
+    from sw2robot.exporter import model as _M
+
+    try:
+        cfg = _yaml.safe_load(yml_txt) or {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except Exception:
+        cfg = {}
+    model = _M.build_model(graph, config=cfg)
+    return {
+        "base_link": model.base_link,
+        "links": [{"name": c.name, "link_name": c.link_name}
+                  for c in model.components],
+        "joints": [{"name": j.name, "parent": j.parent, "child": j.child,
+                    "type": j.jtype}
+                   for j in model.joints],
+    }
+
+
 def _collapse_preview_payload(graph, yml_txt=""):
     """Preview the tree after applying current sub-assembly collapse modes.
 
@@ -1214,6 +1237,7 @@ def _collapse_preview_payload(graph, yml_txt=""):
     that sub-assembly's own link.
     """
     canonical = _canonical_tree_payload(graph, yml_txt)
+    current = _current_tree_payload(graph, yml_txt)
     states = _subassemblies_payload(graph, yml_txt)
     parent_overrides = _subassembly_parent_overrides(yml_txt)
     origin_links = _subassembly_origin_links(yml_txt)
@@ -1309,7 +1333,7 @@ def _collapse_preview_payload(graph, yml_txt=""):
         joints = kept
 
     driver_choices = _collapse_driver_joint_choices(
-        joints, canonical["joints"], collapsed, collapse_link,
+        joints, canonical["joints"], current["joints"], collapsed, collapse_link,
         edge_driver_joints, driver_joints)
 
     validation = _validate_collapsed_tree(base, links, joints, collapsed,
@@ -1459,26 +1483,40 @@ def _collapse_group_choices(collapsed, origin_links):
     return choices
 
 
-def _collapse_driver_joint_choices(joints, canonical_joints, collapsed,
-                                   collapse_link, edge_driver_joints,
+def _collapse_driver_joint_choices(joints, canonical_joints, current_joints,
+                                   collapsed, collapse_link,
+                                   edge_driver_joints,
                                    legacy_driver_joints=None):
     """List source-joint candidates that can drive collapsed preview edges.
 
     A CAD sub-assembly defines the collapsed *link*, but motion belongs to a
-    parent->child edge in the collapsed tree.  Candidate drivers therefore come
-    from the fully-expanded joints that map onto, or are near, each collapsed
-    edge.
+    parent->child edge in the collapsed tree.  Prefer the joints that already
+    exist in the normal/current robot because their axes match the working UI,
+    then fall back to the fully-expanded canonical tree for mesh-level hints.
     """
     edge_driver_joints = edge_driver_joints or {}
     legacy_driver_joints = legacy_driver_joints or {}
     role_order = {
-        "exact_collapsed_edge": 0,
-        "near_parent_child": 1,
-        "near_child": 2,
-        "legacy_subassembly": 3,
+        "normal_exact_edge": 0,
+        "normal_near_parent_child": 1,
+        "exact_collapsed_edge": 2,
+        "near_parent_child": 3,
+        "near_child": 4,
+        "legacy_subassembly": 5,
         "stale": 9,
     }
     sub_by_link = {s.get("link_name"): s for s in collapsed}
+    edge_rows = {}
+    for row in joints:
+        if row.get("decision") != "kept_boundary":
+            continue
+        edge = row.get("name") or f"{row.get('parent')}__{row.get('child')}"
+        edge_rows.setdefault(edge, {
+            "edge": edge,
+            "parent": row.get("parent"),
+            "child": row.get("child"),
+            "rows": [],
+        })["rows"].append(row)
     choices = []
 
     def folded_endpoint(link):
@@ -1493,12 +1531,9 @@ def _collapse_driver_joint_choices(joints, canonical_joints, collapsed,
                 out.add(s.replace("__", "_"))
         return out
 
-    for row in joints:
-        if row.get("decision") != "kept_boundary":
-            continue
-        edge = row.get("name") or f"{row.get('parent')}__{row.get('child')}"
-        parent = row.get("parent")
-        child = row.get("child")
+    for edge, edge_info in edge_rows.items():
+        parent = edge_info.get("parent")
+        child = edge_info.get("child")
         collapsed_child = sub_by_link.get(child, {})
         legacy = legacy_driver_joints.get(
             collapsed_child.get("name", "")) if collapsed_child else ""
@@ -1508,7 +1543,7 @@ def _collapse_driver_joint_choices(joints, canonical_joints, collapsed,
         parent_tokens = link_tokens(parent)
         child_tokens = link_tokens(child, *collapsed_child.get("member_links", []))
 
-        def add_candidate(joint, role):
+        def add_candidate(joint, role, source_kind):
             source = _joint_source_name(joint)
             if not source or source in seen:
                 return
@@ -1525,14 +1560,28 @@ def _collapse_driver_joint_choices(joints, canonical_joints, collapsed,
                 "source_child": joint.get("child"),
                 "type": jtype,
                 "role": role,
+                "source_kind": source_kind,
                 "movable": jtype not in ("fixed", ""),
             })
+
+        for joint in current_joints or []:
+            source_parent = str(joint.get("parent") or "")
+            source_child = str(joint.get("child") or "")
+            source = _joint_source_name(joint)
+            if source_parent == parent and source_child == child:
+                add_candidate(joint, "normal_exact_edge", "normal")
+                continue
+            haystack = " ".join((source, source_parent, source_child))
+            near_child = any(tok and tok in haystack for tok in child_tokens)
+            near_parent = any(tok and tok in haystack for tok in parent_tokens)
+            if near_child and near_parent:
+                add_candidate(joint, "normal_near_parent_child", "normal")
 
         for joint in canonical_joints or []:
             folded_parent = folded_endpoint(joint.get("parent"))
             folded_child = folded_endpoint(joint.get("child"))
             if folded_parent == parent and folded_child == child:
-                add_candidate(joint, "exact_collapsed_edge")
+                add_candidate(joint, "exact_collapsed_edge", "canonical")
 
         for joint in canonical_joints or []:
             source = _joint_source_name(joint)
@@ -1544,9 +1593,9 @@ def _collapse_driver_joint_choices(joints, canonical_joints, collapsed,
             near_child = any(tok and tok in haystack for tok in child_tokens)
             near_parent = any(tok and tok in haystack for tok in parent_tokens)
             if near_child and near_parent:
-                add_candidate(joint, "near_parent_child")
+                add_candidate(joint, "near_parent_child", "canonical")
             elif near_child:
-                add_candidate(joint, "near_child")
+                add_candidate(joint, "near_child", "canonical")
 
         if legacy and legacy in seen:
             for cand in candidates:
@@ -1564,6 +1613,7 @@ def _collapse_driver_joint_choices(joints, canonical_joints, collapsed,
                 "source_child": "",
                 "type": "",
                 "role": "stale",
+                "source_kind": "",
                 "movable": False,
             })
 
@@ -1573,8 +1623,22 @@ def _collapse_driver_joint_choices(joints, canonical_joints, collapsed,
             c.get("source_joint") or "",
         ))
         auto = next((c.get("source_joint") for c in candidates
-                     if c.get("role") == "exact_collapsed_edge"
+                     if c.get("role") == "normal_exact_edge"
                      and c.get("movable")), "")
+        if not auto:
+            auto = next((c.get("source_joint") for c in candidates
+                         if c.get("role") == "normal_exact_edge"), "")
+        if not auto:
+            auto = next((c.get("source_joint") for c in candidates
+                         if c.get("role") == "normal_near_parent_child"
+                         and c.get("movable")), "")
+        if not auto:
+            auto = next((c.get("source_joint") for c in candidates
+                         if c.get("role") == "normal_near_parent_child"), "")
+        if not auto:
+            auto = next((c.get("source_joint") for c in candidates
+                         if c.get("role") == "exact_collapsed_edge"
+                         and c.get("movable")), "")
         if not auto:
             auto = next((c.get("source_joint") for c in candidates
                          if c.get("role") == "exact_collapsed_edge"), "")
@@ -1846,6 +1910,7 @@ def _collapse_plan_payload(base_link, links, joints, collapsed, collapse_link,
             out.update({
                 "driver_source_joint": driver.get("source_joint", ""),
                 "driver_role": driver.get("role", ""),
+                "driver_source_kind": driver.get("source_kind", ""),
                 "driver_type": driver.get("type", ""),
             })
         return out
@@ -2005,7 +2070,8 @@ def _collapse_plan_name_map(plan, link_elems):
     return mapping
 
 
-def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None):
+def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None,
+                                 driver_urdf_text=None):
     """Build a dry-run URDF from a collapse_plan without touching normal export.
 
     This is intentionally conservative: it preserves the current URDF's mesh
@@ -2021,18 +2087,36 @@ def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None):
     if not plan.get("ready_for_urdf"):
         raise ValueError("collapse plan is not ready for URDF output")
     root = _ET.fromstring(urdf_text)
+    driver_root = _ET.fromstring(driver_urdf_text) \
+        if driver_urdf_text else root
     if robot_name:
         root.set("name", robot_name)
     link_elems = {ln.get("name"): ln for ln in root.findall("link")
                   if ln.get("name")}
     joint_elems = {j.get("name"): j for j in root.findall("joint")
                    if j.get("name")}
+    driver_joint_elems = {
+        j.get("name"): j for j in driver_root.findall("joint")
+        if j.get("name")
+    }
     name_map = _collapse_plan_name_map(plan, link_elems)
 
     def nm(name):
         return name_map.get(name, name)
 
     link_poses = _urdf_link_world_poses(root)
+    driver_link_poses = _urdf_link_world_poses(driver_root)
+
+    def source_joint_elem(source, fallback_name=""):
+        if source in driver_joint_elems:
+            return driver_joint_elems[source], driver_link_poses
+        if source in joint_elems:
+            return joint_elems[source], link_poses
+        if fallback_name in driver_joint_elems:
+            return driver_joint_elems[fallback_name], driver_link_poses
+        if fallback_name in joint_elems:
+            return joint_elems[fallback_name], link_poses
+        return None, link_poses
 
     def collapsed_pose(plan_link):
         selected = plan_link.get("selected_origin_link")
@@ -2082,9 +2166,7 @@ def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None):
     for row in plan.get("joints") or []:
         source = row.get("driver_source_joint") or \
             row.get("source_joint") or row.get("name")
-        src = joint_elems.get(source)
-        if src is None:
-            src = joint_elems.get(row.get("name"))
+        src, src_link_poses = source_joint_elem(source, row.get("name"))
         joint = _copy.deepcopy(src) if src is not None else _ET.Element("joint")
         desired_name = row.get("name") or source or ""
         i, base_name = 1, desired_name
@@ -2115,7 +2197,7 @@ def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None):
         if src is not None:
             src_ce = src.find("child")
             src_child = src_ce.get("link") if src_ce is not None else ""
-        src_child_T = link_poses.get(src_child)
+        src_child_T = src_link_poses.get(src_child)
         if axis_elem is not None and src_child_T is not None:
             axis = _np.asarray(_urdf_vec(axis_elem.get("xyz"), 3), float)
             world_axis = src_child_T[:3, :3] @ axis
@@ -2203,14 +2285,20 @@ def _write_collapsed_preview_urdf(pkg_dir, urdf_rel, plan,
                              f".{stem}.collapsed-preview.urdf")
     in_path = os.path.join(pkg_dir, *urdf_rel.split("/"))
     out_path = os.path.join(pkg_dir, *out_rel.split("/"))
+    driver_text = None
+    if os.path.exists(in_path):
+        with open(in_path, encoding="utf-8") as f:
+            driver_text = f.read()
     if graph is not None:
         text = _expanded_preview_source_urdf_text(
             pkg_dir, urdf_rel, graph, yml_txt)
     else:
-        with open(in_path, encoding="utf-8") as f:
-            text = f.read()
+        text = driver_text
+    if text is None:
+        raise FileNotFoundError(in_path)
     out_text = _collapsed_preview_urdf_text(
-        text, plan, robot_name=f"{stem}_collapsed_preview")
+        text, plan, robot_name=f"{stem}_collapsed_preview",
+        driver_urdf_text=driver_text)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     tmp = out_path + ".tmp"
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
