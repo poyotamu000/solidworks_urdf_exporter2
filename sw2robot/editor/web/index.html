@@ -1098,6 +1098,12 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
                                  ja: a => `畳み込みロボットpreviewに失敗: ${a.e}` },
     'subasm.normalRobotOk': { en: 'normal robot loaded',
                               ja: '通常ロボットを読み込みました' },
+    'subasm.previewSlidersTitle': { en: 'Collapsed preview joints',
+                                    ja: '畳み込みpreview joint' },
+    'subasm.previewSlidersHelp': { en: 'Preview-only controls for the currently displayed collapsed robot.',
+                                   ja: '表示中の畳み込みロボットだけを動かすpreview専用操作です。' },
+    'subasm.previewSlidersEmpty': { en: 'No movable preview joints.',
+                                    ja: '動かせるpreview jointがありません。' },
     'subasm.largeConfirm': {
       en: a => `${a.name} contains ${a.children} children and ${a.edges} mates. Changing a large sub-assembly can take a long time. Continue?`,
       ja: a => `${a.name} は子 ${a.children} 個、mate ${a.edges} 個を含みます。大きいサブアセンブリの切り替えには時間がかかることがあります。続行しますか？` },
@@ -3378,6 +3384,72 @@ function highlightPreviewTreeRow(row, on) {
   }
 }
 
+function collapsedPreviewSlidersHtml(plan) {
+  if (robotViewMode !== 'collapsed_preview') { return null; }
+  const seen = new Set();
+  const joints = [];
+  for (const row of (plan?.joints || [])) {
+    const name = row.name || '';
+    if (!name || seen.has(name)) { continue; }
+    seen.add(name);
+    const j = viewer.robot?.joints?.[name];
+    if (!j || j.jointType === 'fixed' || j.mimicJoint) { continue; }
+    joints.push({ row, joint: j });
+  }
+  const card = document.createElement('div');
+  card.className = 'joint';
+  card.style.cssText = 'border:1px solid #39465a;background:#1e2630;' +
+    'border-radius:4px;padding:6px 8px;margin:8px 0';
+  const title = document.createElement('div');
+  title.style.cssText = 'color:#cfe3ff;font-size:12px;margin-bottom:2px';
+  title.textContent = t('subasm.previewSlidersTitle');
+  card.appendChild(title);
+  const help = document.createElement('div');
+  help.style.cssText = 'color:#8a93a3;font-size:11px;margin-bottom:6px';
+  help.textContent = joints.length
+    ? t('subasm.previewSlidersHelp')
+    : t('subasm.previewSlidersEmpty');
+  card.appendChild(help);
+  for (const { row, joint } of joints) {
+    const [lo, hi] = _jointLimits(joint);
+    const um = _jointUnit(joint.jointType);
+    const fmtDisp = v => {
+      let d = um.toDisp(Number(v) || 0);
+      if (Object.is(d, -0) || Math.abs(d) < Math.pow(10, -um.dec) / 2) { d = 0; }
+      return d.toFixed(um.dec) + um.unit;
+    };
+    const item = document.createElement('div');
+    item.style.cssText = 'margin-top:6px';
+    const label = row.child || joint.name;
+    const source = row.source_joint || '';
+    const nativeStep = um.pris ? 0.0005 : 0.01;
+    item.innerHTML =
+      `<div class="row1">` +
+      `<span class="caret">·</span>` +
+      `<span class="jname" title="${htmlEsc(joint.name)}">${htmlEsc(label)}</span>` +
+      `<span class="jtype">${htmlEsc(joint.jointType)}</span>` +
+      `<span class="jval">${htmlEsc(fmtDisp(Number(joint.angle) || 0))}</span>` +
+      `</div>` +
+      `<div style="color:#6b7480;font-size:10px;overflow:hidden;` +
+      `text-overflow:ellipsis;white-space:nowrap;margin-left:17px">` +
+      `${htmlEsc(source || joint.name)}</div>` +
+      `<div class="jslider" style="margin-left:17px">` +
+      `<input type="range" min="${lo}" max="${hi}" step="${nativeStep}" ` +
+      `value="${Number(joint.angle) || 0}"></div>`;
+    const slider = item.querySelector('input[type=range]');
+    const val = item.querySelector('.jval');
+    slider.addEventListener('input', () => {
+      previewJoint(joint.name, parseFloat(slider.value));
+    });
+    item.querySelector('.jname')?.addEventListener('click', () => {
+      if (row.child && viewer.robot?.links?.[row.child]) { selectLink(row.child); }
+    });
+    rows.set(joint.name, { joint, row: item, slider, val, fmtDisp });
+    card.appendChild(item);
+  }
+  return card;
+}
+
 async function renderSubassemblyTreeRows(robot, movable) {
   const req = ++subasmTreeRequest;
   rows.clear();
@@ -3429,6 +3501,10 @@ async function renderSubassemblyTreeRows(robot, movable) {
       cycles.innerHTML = cycleChoices;
       jointsEl.appendChild(cycles);
       bindSubassemblyCycleBreakChoices(cycles);
+    }
+    const previewSliders = collapsedPreviewSlidersHtml(r.collapse_plan);
+    if (previewSliders) {
+      jointsEl.appendChild(previewSliders);
     }
     const hint = document.createElement('div');
     hint.className = 'joint';
