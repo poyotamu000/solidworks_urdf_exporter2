@@ -227,6 +227,7 @@ def test_collapse_preview_applies_subassembly_parent_override():
         _collapse_preview_payload,
         _set_subassembly_origin_link_yaml,
         _set_subassembly_parent_override_yaml,
+        _tree_rows_from_collapse_plan,
     )
 
     graph = make_graph()
@@ -271,6 +272,28 @@ joints:
     assert "multiple_boundary_parents" not in {
         i["code"] for i in payload["validation"]["issues"]
     }
+    plan = payload["collapse_plan"]
+    assert plan["version"] == 1
+    assert plan["base_link"] == payload["base_link"]
+    assert plan["ready_for_urdf"] is False
+    servo_link = next(l for l in plan["links"] if l["link"] == "servo_1")
+    assert servo_link["kind"] == "collapsed_subassembly"
+    assert servo_link["source_subassembly"] == "servo-1"
+    assert servo_link["selected_parent"] == "bracket_1"
+    assert servo_link["member_links"] == [
+        "servo_1__case_1", "servo_1__horn_1"]
+    assert [(j["parent"], j["child"], j["source_joint"], j["decision"])
+            for j in plan["joints"]] == [
+        ("bracket_1", "servo_1", "bracket_1__servo_1__horn_1",
+         "kept_boundary"),
+        ("plate_1", "bracket_1", "plate_1__bracket_1",
+         "kept_expanded"),
+    ]
+    assert [(j["source_joint"], j["decision"])
+            for j in plan["dropped_joints"]] == [
+        ("plate_1__servo_1__case_1", "dropped_parent_override")
+    ]
+    assert payload["tree_rows"] == _tree_rows_from_collapse_plan(plan)
     assert payload["group_choices"][0]["subassembly"] == "servo-1"
     assert [g["origin_link"] for g in payload["group_choices"][0]["groups"]] == [
         "servo_1__case_1", "servo_1__horn_1"]
@@ -286,6 +309,10 @@ joints:
     assert "disconnected_members" not in {
         i["code"] for i in payload["validation"]["issues"]
     }
+    plan = payload["collapse_plan"]
+    assert plan["ready_for_urdf"] is True
+    servo_link = next(l for l in plan["links"] if l["link"] == "servo_1")
+    assert servo_link["selected_origin_link"] == "servo_1__horn_1"
 
 
 def test_validate_collapsed_tree_reports_multiple_parents_and_cycles():

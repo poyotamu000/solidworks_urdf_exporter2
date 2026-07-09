@@ -1215,14 +1215,19 @@ def _collapse_preview_payload(graph, yml_txt=""):
         child = collapse_link.get(j["child"], j["child"])
         out = {**j, "source_name": j["name"],
                "parent": parent, "child": child}
+        collapsed_endpoint = parent != j["parent"] or child != j["child"]
         if parent == child:
+            out["decision"] = "dropped_internal_to_collapsed_subassembly"
             dropped.append(out)
             continue
         selected = selected_by_link.get(child)
         if selected and parent != selected:
+            out["decision"] = "dropped_parent_override"
             dropped_parent_override.append(out)
             continue
         out["name"] = f"{parent}__{child}"
+        out["decision"] = "kept_boundary" if collapsed_endpoint \
+            else "kept_expanded"
         joints.append(out)
 
     base = collapse_link.get(canonical["base_link"], canonical["base_link"])
@@ -1233,6 +1238,7 @@ def _collapse_preview_payload(graph, yml_txt=""):
         kept = []
         for j in joints:
             if _joint_source_name(j) in cycle_break_joints:
+                j["decision"] = "dropped_cycle_break"
                 dropped_cycle_joints.append(j)
             else:
                 kept.append(j)
@@ -1240,11 +1246,15 @@ def _collapse_preview_payload(graph, yml_txt=""):
 
     validation = _validate_collapsed_tree(base, links, joints, collapsed,
                                           collapse_link)
+    collapse_plan = _collapse_plan_payload(
+        base, links, joints, collapsed, collapse_link, dropped,
+        dropped_parent_override, dropped_cycle_joints, validation)
     return {
         "base_link": base,
         "links": links,
         "joints": joints,
-        "tree_rows": _tree_rows_payload(base, links, joints),
+        "tree_rows": _tree_rows_from_collapse_plan(collapse_plan),
+        "collapse_plan": collapse_plan,
         "validation": validation,
         "dropped_internal_joints": dropped,
         "dropped_parent_override_joints": dropped_parent_override,
@@ -1541,6 +1551,90 @@ def _validate_collapsed_tree(base_link, links, joints, collapsed,
         "issue_count": len(issues),
         "issues": issues,
     }
+
+
+def _collapse_plan_payload(base_link, links, joints, collapsed, collapse_link,
+                           dropped_internal, dropped_parent_override,
+                           dropped_cycle, validation):
+    """Stable preview IR shared by the UI and future collapsed URDF output."""
+    sub_by_link = {s.get("link_name"): s for s in collapsed}
+
+    def plan_link(row):
+        link = row.get("link_name")
+        sub = sub_by_link.get(link, {})
+        collapsed_row = bool(row.get("collapsed"))
+        return {
+            "link": link,
+            "name": row.get("name", link),
+            "kind": "collapsed_subassembly" if collapsed_row
+                    else "expanded_link",
+            "source_subassembly": sub.get("name", "") if collapsed_row else "",
+            "member_links": list(row.get("member_links") or []),
+            "member_components": list(sub.get("member_components") or []),
+            "selected_parent": sub.get("selected_parent", ""),
+            "selected_origin_link": sub.get("selected_origin_link", ""),
+        }
+
+    def plan_joint(row, decision=None):
+        return {
+            "name": row.get("name"),
+            "parent": row.get("parent"),
+            "child": row.get("child"),
+            "type": row.get("type"),
+            "source_joint": _joint_source_name(row),
+            "decision": decision or row.get("decision", ""),
+        }
+
+    dropped_joints = []
+    for row in dropped_internal:
+        dropped_joints.append(plan_joint(
+            row, "dropped_internal_to_collapsed_subassembly"))
+    for row in dropped_parent_override:
+        dropped_joints.append(plan_joint(row, "dropped_parent_override"))
+    for row in dropped_cycle:
+        dropped_joints.append(plan_joint(row, "dropped_cycle_break"))
+
+    return {
+        "version": 1,
+        "base_link": base_link,
+        "ready_for_urdf": (
+            bool(validation.get("ok")) and
+            int(validation.get("issue_count") or 0) == 0
+        ),
+        "links": [plan_link(row) for row in links],
+        "joints": [plan_joint(row) for row in joints],
+        "dropped_joints": dropped_joints,
+        "collapsed_subassemblies": [{
+            "name": s.get("name"),
+            "link": s.get("link_name"),
+            "member_links": list(s.get("member_links") or []),
+            "member_components": list(s.get("member_components") or []),
+            "selected_parent": s.get("selected_parent", ""),
+            "selected_origin_link": s.get("selected_origin_link", ""),
+        } for s in collapsed],
+        "link_replacements": [
+            {"source_link": src, "collapsed_link": dst}
+            for src, dst in sorted(collapse_link.items())
+        ],
+    }
+
+
+def _tree_rows_from_collapse_plan(plan):
+    """Flatten a collapse plan into the existing preview tree row shape."""
+    links = [{
+        "link_name": row.get("link"),
+        "name": row.get("name"),
+        "collapsed": row.get("kind") == "collapsed_subassembly",
+        "member_links": row.get("member_links") or [],
+    } for row in plan.get("links", [])]
+    joints = [{
+        "name": row.get("name"),
+        "parent": row.get("parent"),
+        "child": row.get("child"),
+        "type": row.get("type"),
+        "source_name": row.get("source_joint"),
+    } for row in plan.get("joints", [])]
+    return _tree_rows_payload(plan.get("base_link"), links, joints)
 
 
 def _tree_rows_payload(base_link, links, joints):
