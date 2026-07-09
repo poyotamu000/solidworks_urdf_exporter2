@@ -1075,6 +1075,8 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
                           ja: a => `${a.n} 行` },
     'tree.memberCount': { en: a => `${a.n} links`,
                           ja: a => `${a.n} links` },
+    'tree.validationTitle': { en: a => `collapse validation: ${a.n} issue(s)`,
+                              ja: a => `畳み込み検証: ${a.n} 件` },
     'row.jnameTitle': { en: a => `joint: ${a.name}\n${a.parent} → ${a.child}`,
                         ja: a => `関節: ${a.name}\n${a.parent} → ${a.child}` },
     'row.eyeTitle': { en: 'show/hide this link', ja: 'このリンクを表示/非表示' },
@@ -2691,6 +2693,23 @@ function htmlEsc(s) {
   }[c]));
 }
 
+function validationIssuesHtml(validation) {
+  const issues = validation?.issues || [];
+  if (!issues.length) { return ''; }
+  const rows = issues.slice(0, 6).map(issue =>
+    `<div style="margin-top:2px">` +
+    `<span style="color:#d6b36b">${htmlEsc(issue.code || 'warning')}</span>` +
+    `: ${htmlEsc(issue.message || '')}</div>`).join('');
+  const more = issues.length > 6
+    ? `<div style="color:#8a93a3;margin-top:2px">+${issues.length - 6}</div>`
+    : '';
+  return `<div style="border:1px solid #6b5730;background:#2b251b;` +
+    `color:#f0d49a;border-radius:4px;padding:6px 8px;margin:8px 0;` +
+    `font-size:11px">` +
+    `<div>${t('tree.validationTitle', { n: issues.length })}</div>` +
+    rows + more + `</div>`;
+}
+
 function pathBase(p) {
   const s = String(p ?? '');
   return s.split(/[\\/]/).pop() || s;
@@ -2839,7 +2858,8 @@ async function openSubassemblyPreview(ov) {
       t('subasm.previewCounts', {
         cl: cc.links ?? 0, cj: cc.joints ?? 0,
         pl: pc.links ?? 0, pj: pc.joints ?? 0,
-      }) + '</div>';
+      }) + '</div>' +
+      validationIssuesHtml(r.validation);
     const rows = r.collapsed_subassemblies || [];
     if (!rows.length) {
       html += '<div style="color:#8a93a3">' + t('subasm.previewNone') + '</div>';
@@ -3015,6 +3035,12 @@ async function renderSubassemblyTreeRows(robot, movable) {
       countEl.textContent = q
         ? t('jfilter.count', { n: treeRows.length, total: allRows.length })
         : t('tree.subasmCount', { n: treeRows.length });
+    }
+    const validationHtml = validationIssuesHtml(r.validation);
+    if (validationHtml) {
+      const warn = document.createElement('div');
+      warn.innerHTML = validationHtml;
+      jointsEl.appendChild(warn);
     }
     const hint = document.createElement('div');
     hint.className = 'joint';
