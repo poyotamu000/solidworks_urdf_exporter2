@@ -1046,6 +1046,7 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.thTreeJoint': { en: 'joint', ja: 'joint' },
     'subasm.thMembers': { en: 'members', ja: '構成link' },
     'subasm.thDropped': { en: 'internal joints', ja: '内部joint' },
+    'subasm.thOrigin': { en: 'origin', ja: 'origin' },
     'subasm.collapsedTag': { en: 'collapsed', ja: '畳み込み' },
     'subasm.parentChoicesTitle': { en: 'Attach parent choices',
                                    ja: '接続先parent候補' },
@@ -1058,7 +1059,18 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
                               ja: a => `接続先parentの保存に失敗: ${a.e}` },
     'subasm.originLinkChoicesTitle': { en: 'Sub-assembly origin links',
                                       ja: 'サブアセンブリ原点link' },
+    'subasm.originLinkChoicesHelp': {
+      en: 'Effective origin is used by collapsed preview. For the collapsed root, the canonical expanded base overrides any saved origin.',
+      ja: 'effective origin が畳み込み preview で使われます。root を含むサブアセンブリでは、保存済み origin より canonical expanded base が優先されます。' },
     'subasm.originLinkAuto': { en: 'auto', ja: 'auto' },
+    'subasm.originEffective': { en: 'effective', ja: 'effective' },
+    'subasm.originConfigured': { en: 'configured', ja: 'configured' },
+    'subasm.originSourceUser': { en: 'user', ja: 'user' },
+    'subasm.originSourceCanonicalBase': { en: 'canonical base', ja: 'canonical base' },
+    'subasm.originSourceAuto': { en: 'auto', ja: 'auto' },
+    'subasm.originConfiguredIgnored': {
+      en: 'configured origin is saved but ignored here because this collapsed link contains the canonical base',
+      ja: '保存済み origin はありますが、この畳み込みlinkは canonical base を含むためここでは使われません' },
     'subasm.originLinkSetOk': { en: a => `${a.name}: origin link ${a.originLink} ✓`,
                                 ja: a => `${a.name}: origin link ${a.originLink} ✓` },
     'subasm.originLinkSetting': { en: a => `saving origin link: ${a.name} → ${a.originLink} ...`,
@@ -1071,6 +1083,8 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
       en: 'Normal joints provide type, axis, and limits for preview joints; the preview robot moves its own collapsed joints.',
       ja: 'normal joint は preview joint の type / axis / limit のコピー元です。実際に動かすのは畳み込みロボット内の preview joint です。' },
     'subasm.driverJointAuto': { en: 'auto', ja: 'auto' },
+    'subasm.driverEffective': { en: 'effective source', ja: 'effective source' },
+    'subasm.driverConfigured': { en: 'configured source', ja: 'configured source' },
     'subasm.driverJointSetOk': { en: a => `${a.name}: driver joint ${a.sourceJoint} ✓`,
                                  ja: a => `${a.name}: driver joint ${a.sourceJoint} ✓` },
     'subasm.driverJointSetting': { en: a => `saving driver joint: ${a.name} → ${a.sourceJoint} ...`,
@@ -2903,16 +2917,43 @@ function originLinkChoicesHtml(groupChoices) {
   const choices = (groupChoices || []).filter(c =>
     (c.groups || []).length > 1 || c.selected_origin_link);
   if (!choices.length) { return ''; }
+  const originSourceLabel = src => {
+    if (src === 'canonical_base') { return t('subasm.originSourceCanonicalBase'); }
+    if (src === 'user') { return t('subasm.originSourceUser'); }
+    return t('subasm.originSourceAuto');
+  };
   const rows = choices.map(c => {
     const selected = c.selected_origin_link || '';
+    const configured = c.configured_origin_link || '';
+    const groupOrigins = new Set((c.groups || []).map(g =>
+      g.origin_link || (g.links || [])[0] || '').filter(Boolean));
+    const extraOpts = [];
+    if (selected && !groupOrigins.has(selected)) {
+      extraOpts.push(`<option value="${htmlEsc(selected)}" selected>` +
+        `${htmlEsc(t('subasm.originEffective'))}: ${htmlEsc(selected)}</option>`);
+    }
+    if (configured && configured !== selected && !groupOrigins.has(configured)) {
+      extraOpts.push(`<option value="${htmlEsc(configured)}">` +
+        `${htmlEsc(t('subasm.originConfigured'))}: ${htmlEsc(configured)}</option>`);
+    }
     const opts = [`<option value=""${selected ? '' : ' selected'}>` +
-      `${t('subasm.originLinkAuto')}</option>`].concat((c.groups || []).map((g, i) => {
+      `${t('subasm.originLinkAuto')}</option>`].concat(extraOpts).concat((c.groups || []).map((g, i) => {
       const label = `group ${i + 1} (${g.size || (g.links || []).length})`;
       const originLink = g.origin_link || (g.links || [])[0] || '';
       return `<option value="${htmlEsc(originLink)}"` +
         `${selected === originLink ? ' selected' : ''}>` +
         `${htmlEsc(label)} origin link: ${htmlEsc(originLink)}</option>`;
     })).join('');
+    const source = originSourceLabel(c.selected_origin_source || '');
+    const diag = `<div style="color:#a9bdd8;margin-top:3px">` +
+      `${htmlEsc(t('subasm.originEffective'))}: ` +
+      `<span style="color:#cfe3ff">${htmlEsc(selected || t('subasm.originLinkAuto'))}</span>` +
+      ` <span style="color:#6b7480">(${htmlEsc(source)})</span></div>` +
+      (configured ? `<div style="color:#6b7480">` +
+        `${htmlEsc(t('subasm.originConfigured'))}: ${htmlEsc(configured)}</div>` : '') +
+      (configured && configured !== selected && c.selected_origin_source === 'canonical_base'
+        ? `<div style="color:#d6b36b">${htmlEsc(t('subasm.originConfiguredIgnored'))}</div>`
+        : '');
     const groups = (c.groups || []).map((g, i) => {
       const links = (g.links || []).slice(0, 4).map(htmlEsc).join(', ');
       const more = (g.links || []).length > 4
@@ -2925,11 +2966,13 @@ function originLinkChoicesHtml(groupChoices) {
       `<div style="color:#6b7480">${htmlEsc(c.link_name)}</div></div>` +
       `<div><select class="subasm-origin-link-choice" ` +
       `data-name="${htmlEsc(c.subassembly)}" data-prev="${htmlEsc(selected)}">` +
-      opts + `</select>${groups}</div></div>`;
+      opts + `</select>${diag}${groups}</div></div>`;
   }).join('');
   return `<div style="border:1px solid #4d4536;background:#24231d;` +
     `border-radius:4px;padding:6px 8px;margin:8px 0;font-size:11px">` +
     `<div style="color:#d6c18c">${t('subasm.originLinkChoicesTitle')}</div>` +
+    `<div style="color:#8a93a3;margin:2px 0 5px">` +
+    `${htmlEsc(t('subasm.originLinkChoicesHelp'))}</div>` +
     rows + `</div>`;
 }
 
@@ -2974,6 +3017,23 @@ function bindSubassemblyOriginLinkChoices(root, ov) {
   });
 }
 
+function subassemblyOriginSummaryHtml(s) {
+  const effective = s.selected_origin_link || '';
+  const configured = s.configured_origin_link || '';
+  const source = s.selected_origin_source === 'canonical_base'
+    ? t('subasm.originSourceCanonicalBase')
+    : (s.selected_origin_source === 'user'
+      ? t('subasm.originSourceUser') : t('subasm.originSourceAuto'));
+  const lines = [];
+  lines.push(`<div style="color:#cfe3ff">${htmlEsc(effective || t('subasm.originLinkAuto'))}</div>`);
+  lines.push(`<div style="color:#6b7480">${htmlEsc(source)}</div>`);
+  if (configured && configured !== effective) {
+    lines.push(`<div style="color:#d6b36b">${htmlEsc(t('subasm.originConfigured'))}: ` +
+      `${htmlEsc(configured)}</div>`);
+  }
+  return lines.join('');
+}
+
 function driverJointChoicesHtml(driverChoices) {
   const choices = (driverChoices || []).filter(c =>
     (c.candidates || []).length || c.selected_driver_joint);
@@ -2981,6 +3041,7 @@ function driverJointChoicesHtml(driverChoices) {
   const rows = choices.map(c => {
     const selected = c.selected_driver_joint || '';
     const auto = c.auto_driver_joint || '';
+    const effective = selected || auto || '';
     const edge = c.edge || '';
     const edgeLabel = c.parent && c.child
       ? `${c.parent} → ${c.child}` : edge;
@@ -3010,13 +3071,19 @@ function driverJointChoicesHtml(driverChoices) {
     const more = (c.candidates || []).length > 5
       ? `<div style="color:#6b7480">+${(c.candidates || []).length - 5} more</div>`
       : '';
+    const diag = `<div style="color:#a9bdd8;margin-top:3px">` +
+      `${htmlEsc(t('subasm.driverEffective'))}: ` +
+      `<span style="color:#cfe3ff">${htmlEsc(effective || t('subasm.driverJointAuto'))}</span>` +
+      `</div>` +
+      (selected ? `<div style="color:#6b7480">` +
+        `${htmlEsc(t('subasm.driverConfigured'))}: ${htmlEsc(selected)}</div>` : '');
     return `<div style="display:grid;grid-template-columns:minmax(110px,1fr) ` +
       `minmax(150px,1.7fr);gap:6px;align-items:start;margin-top:5px">` +
       `<div><div style="color:#cfe3ff">${htmlEsc(edgeLabel)}</div>` +
       `<div style="color:#6b7480">${htmlEsc(c.subassembly || c.link_name || edge)}</div></div>` +
       `<div><select class="subasm-driver-joint-choice" ` +
       `data-edge="${htmlEsc(edge)}" data-prev="${htmlEsc(selected)}">` +
-      opts + `</select>${details}${more}</div></div>`;
+      opts + `</select>${diag}${details}${more}</div></div>`;
   }).join('');
   return `<div style="border:1px solid #3d5244;background:#1f2a25;` +
     `border-radius:4px;padding:6px 8px;margin:8px 0;font-size:11px">` +
@@ -3358,6 +3425,7 @@ async function openSubassemblyPreview(ov) {
         t('subasm.thName') + '</th><th>' + t('subasm.thLink') +
         '</th><th>' + t('subasm.thMembers') + '</th><th>' +
         t('subasm.thDropped') + '</th><th>' +
+        t('subasm.thOrigin') + '</th><th>' +
         t('subasm.thMode') + '</th></tr></thead><tbody>';
       for (const s of rows) {
         html += `<tr title="${htmlEsc(s.reason)}">` +
@@ -3365,6 +3433,7 @@ async function openSubassemblyPreview(ov) {
           `<td style="color:#cfe3ff">${htmlEsc(s.link_name)}</td>` +
           `<td>${s.member_links?.length ?? 0}</td>` +
           `<td>${s.internal_joints?.length ?? 0}</td>` +
+          `<td>${subassemblyOriginSummaryHtml(s)}</td>` +
           `<td>${subasmOverrideLabel(s.override)}</td></tr>`;
       }
       html += '</tbody></table>';
