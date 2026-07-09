@@ -742,7 +742,7 @@ def test_collapsed_preview_urdf_lumps_member_visuals():
     assert {x.get("name") for x in root.findall("link")} == {
         "base", "sub", "outside"}
     assert {x.get("name") for x in root.findall("joint")} == {
-        "base__sub_a", "sub_b__outside"}
+        "base__sub", "sub__outside"}
     sub = next(x for x in root.findall("link") if x.get("name") == "sub")
     visuals = sub.findall("visual")
     assert len(visuals) == 2
@@ -751,7 +751,7 @@ def test_collapsed_preview_urdf_lumps_member_visuals():
     assert visuals[0].find("origin").get("xyz") == "0 0 0"
     assert visuals[1].find("origin").get("xyz") == "0 2 0.5"
     sub_out = next(j for j in root.findall("joint")
-                   if j.get("name") == "sub_b__outside")
+                   if j.get("name") == "sub__outside")
     assert sub_out.find("parent").get("link") == "sub"
     assert sub_out.find("child").get("link") == "outside"
     assert sub_out.find("origin").get("xyz") == "0 2 3"

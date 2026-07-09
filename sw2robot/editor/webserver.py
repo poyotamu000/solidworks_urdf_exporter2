@@ -2090,9 +2090,7 @@ def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None):
         if src is None:
             src = joint_elems.get(row.get("name"))
         joint = _copy.deepcopy(src) if src is not None else _ET.Element("joint")
-        desired_name = source or row.get("name") or ""
-        if desired_name in used_joint_names:
-            desired_name = row.get("name") or desired_name
+        desired_name = row.get("name") or source or ""
         i, base_name = 1, desired_name
         while desired_name in used_joint_names:
             i += 1
@@ -2135,15 +2133,85 @@ def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None):
         _ET.tostring(out_root, encoding="unicode") + "\n"
 
 
-def _write_collapsed_preview_urdf(pkg_dir, urdf_rel, plan):
+def _expanded_preview_source_urdf_text(pkg_dir, urdf_rel, graph, yml_txt):
+    """Build an all-expanded hidden URDF source for collapsed-preview meshes."""
+    import yaml as _yaml
+
+    from sw2robot.exporter import model as _M
+    from sw2robot.exporter.urdf_writer import write_urdf
+
+    try:
+        cfg = _yaml.safe_load(yml_txt) or {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except Exception:
+        cfg = {}
+    full_cfg = dict(cfg)
+    full_cfg["expand"] = [""]
+    full_cfg["no_expand"] = []
+    model = _M.build_model(graph, config=full_cfg)
+
+    stem = os.path.splitext(os.path.basename(urdf_rel))[0]
+    src_rel = posixpath.join(posixpath.dirname(urdf_rel),
+                             f".{stem}.expanded-preview-source.urdf")
+    src_path = os.path.join(pkg_dir, *src_rel.split("/"))
+    os.makedirs(os.path.dirname(src_path), exist_ok=True)
+    kwargs = {}
+    if cfg.get("density") is not None:
+        kwargs["density"] = float(cfg.get("density"))
+    kwargs["link_overrides"] = cfg.get("link_names") or {}
+    kwargs["joint_overrides"] = cfg.get("joint_names") or {}
+    write_urdf(model, src_path, **kwargs)
+    with open(src_path, encoding="utf-8") as f:
+        return f.read()
+
+
+def _collapsed_preview_mesh_report(urdf_text, plan):
+    import xml.etree.ElementTree as _ET
+
+    root = _ET.fromstring(urdf_text)
+    link_elems = {ln.get("name"): ln for ln in root.findall("link")
+                  if ln.get("name")}
+    report = []
+    for row in plan.get("links") or []:
+        if row.get("kind") != "collapsed_subassembly":
+            continue
+        members = list(row.get("member_links") or [])
+        missing = [m for m in members if m not in link_elems]
+        visual = 0
+        collision = 0
+        for member in members:
+            elem = link_elems.get(member)
+            if elem is None:
+                continue
+            visual += len(elem.findall("visual"))
+            collision += len(elem.findall("collision"))
+        report.append({
+            "link": row.get("link"),
+            "source_subassembly": row.get("source_subassembly", ""),
+            "members": len(members),
+            "missing_links": missing[:20],
+            "missing_count": len(missing),
+            "visuals": visual,
+            "collisions": collision,
+        })
+    return report
+
+
+def _write_collapsed_preview_urdf(pkg_dir, urdf_rel, plan,
+                                  graph=None, yml_txt=""):
     """Write a hidden dry-run collapsed URDF and return (abs_path, rel_path)."""
     stem = os.path.splitext(os.path.basename(urdf_rel))[0]
     out_rel = posixpath.join(posixpath.dirname(urdf_rel),
                              f".{stem}.collapsed-preview.urdf")
     in_path = os.path.join(pkg_dir, *urdf_rel.split("/"))
     out_path = os.path.join(pkg_dir, *out_rel.split("/"))
-    with open(in_path, encoding="utf-8") as f:
-        text = f.read()
+    if graph is not None:
+        text = _expanded_preview_source_urdf_text(
+            pkg_dir, urdf_rel, graph, yml_txt)
+    else:
+        with open(in_path, encoding="utf-8") as f:
+            text = f.read()
     out_text = _collapsed_preview_urdf_text(
         text, plan, robot_name=f"{stem}_collapsed_preview")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -2151,7 +2219,7 @@ def _write_collapsed_preview_urdf(pkg_dir, urdf_rel, plan):
     with open(tmp, "w", encoding="utf-8", newline="\n") as f:
         f.write(out_text)
     os.replace(tmp, out_path)
-    return out_path, out_rel
+    return out_path, out_rel, _collapsed_preview_mesh_report(text, plan)
 
 
 def _tree_rows_payload(base_link, links, joints):
@@ -3788,8 +3856,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         "collapse_plan": plan,
                     }, 400)
                 try:
-                    out_path, out_rel = _write_collapsed_preview_urdf(
-                        cls.pkg_dir, cls.urdf_rel, plan)
+                    out_path, out_rel, mesh_report = \
+                        _write_collapsed_preview_urdf(
+                            cls.pkg_dir, cls.urdf_rel, plan,
+                            graph=gs, yml_txt=txt)
                 except ValueError as e:
                     return self._send_json({"error": str(e)}, 400)
                 except Exception as e:
@@ -3801,6 +3871,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     "path": out_path,
                     "urdf": "/pkg/" + out_rel,
                     "collapse_plan": plan,
+                    "mesh_report": mesh_report,
                     "preview_counts": preview.get("preview_counts"),
                 })
             if path == "/api/fs":
