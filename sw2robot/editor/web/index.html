@@ -1053,6 +1053,10 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.overrideNoExpand': { en: 'no_expand', ja: 'no_expand' },
     'subasm.setOk': { en: a => `${a.name}: ${a.mode} ✓`,
                       ja: a => `${a.name}: ${a.mode} ✓` },
+    'subasm.settingPreview': { en: a => `saving sub-assembly preview mode: ${a.name} → ${a.mode} ...`,
+                               ja: a => `サブアセンブリpreview modeを保存中: ${a.name} → ${a.mode} ...` },
+    'subasm.setPreviewOk': { en: a => `${a.name}: ${a.mode} ✓ (preview updated; URDF/viewer unchanged)`,
+                             ja: a => `${a.name}: ${a.mode} ✓ (preview更新・URDF/viewerは未変更)` },
     'subasm.setFail': { en: a => `sub-assembly mode failed: ${a.e}`,
                         ja: a => `サブアセンブリモード変更に失敗: ${a.e}` },
     'subasm.largeConfirm': {
@@ -2704,7 +2708,7 @@ function isLargeSubassembly(children, edges) {
 
 async function setSubassemblyMode(name, mode, ov) {
   op('subassembly_mode', { name, mode });
-  log(t('common.rebuilding', { what: `${name} → ${mode}` }));
+  log(t('subasm.settingPreview', { name, mode }));
   try {
     const resp = await fetch('/api/set_subassembly_mode', {
       method: 'POST',
@@ -2712,10 +2716,12 @@ async function setSubassemblyMode(name, mode, ov) {
       body: JSON.stringify({ name, mode }) });
     const r = await resp.json();
     if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
-    log(t('subasm.setOk', { name, mode }), 'ok');
+    log(t('subasm.setPreviewOk', { name, mode }), 'ok');
     refreshHistory();
     await openSubassemblyList(ov);
-    loadRobot(currentInfo, { keepPose: true });
+    if (viewer.robot && treeViewMode === 'subassembly') {
+      buildJointRows(viewer.robot);
+    }
   } catch (e) {
     log(t('subasm.setFail', { e: e.message ?? e }), 'err');
     await openSubassemblyList(ov);
