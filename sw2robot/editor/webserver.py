@@ -1945,6 +1945,28 @@ def _set_urdf_origin(elem, T):
     origin.set("rpy", _fmt(rpy))
 
 
+def _set_urdf_axis(joint, axis):
+    import xml.etree.ElementTree as _ET
+
+    import numpy as _np
+
+    from sw2robot.exporter.urdf_writer import _fmt
+
+    if axis is None:
+        return
+    axis = _np.asarray(axis, float)
+    n = float(_np.linalg.norm(axis))
+    if n <= 1e-12:
+        return
+    axis = axis / n
+    elem = joint.find("axis")
+    if elem is None:
+        elem = _ET.Element("axis")
+        insert_at = 3
+        joint.insert(min(insert_at, len(list(joint))), elem)
+    elem.set("xyz", _fmt(axis))
+
+
 def _urdf_link_world_poses(root):
     """Zero-position link poses from URDF joint origins."""
     import numpy as _np
@@ -2061,13 +2083,22 @@ def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None):
             out_poses[link_name] = link_poses.get(link_name, _np.eye(4))
         out_root.append(out_link)
 
+    used_joint_names = set()
     for row in plan.get("joints") or []:
         source = row.get("source_joint") or row.get("name")
         src = joint_elems.get(source)
         if src is None:
             src = joint_elems.get(row.get("name"))
         joint = _copy.deepcopy(src) if src is not None else _ET.Element("joint")
-        joint.set("name", row.get("name") or source or "")
+        desired_name = source or row.get("name") or ""
+        if desired_name in used_joint_names:
+            desired_name = row.get("name") or desired_name
+        i, base_name = 1, desired_name
+        while desired_name in used_joint_names:
+            i += 1
+            desired_name = f"{base_name}_{i}"
+        used_joint_names.add(desired_name)
+        joint.set("name", desired_name)
         joint.set("type", row.get("type") or joint.get("type") or "fixed")
         parent = nm(row.get("parent"))
         child = nm(row.get("child"))
@@ -2084,6 +2115,16 @@ def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None):
         parent_T = out_poses.get(parent, link_poses.get(parent, _np.eye(4)))
         child_T = out_poses.get(child, link_poses.get(child, _np.eye(4)))
         _set_urdf_origin(joint, relative_matrix(parent_T, child_T))
+        axis_elem = joint.find("axis")
+        src_child = ""
+        if src is not None:
+            src_ce = src.find("child")
+            src_child = src_ce.get("link") if src_ce is not None else ""
+        src_child_T = link_poses.get(src_child)
+        if axis_elem is not None and src_child_T is not None:
+            axis = _np.asarray(_urdf_vec(axis_elem.get("xyz"), 3), float)
+            world_axis = src_child_T[:3, :3] @ axis
+            _set_urdf_axis(joint, child_T[:3, :3].T @ world_axis)
         out_root.append(joint)
 
     try:
