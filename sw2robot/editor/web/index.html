@@ -3668,8 +3668,10 @@ document.getElementById('masslistbtn').addEventListener('click', () => {
 });
 
 function syncTreeModeControls() {
+  const subassemblyModeAvailable = currentInfo?.mode !== 'urdf';
   const effectiveMode = robotViewMode === 'collapsed_preview'
-    ? 'subassembly' : treeViewMode;
+    ? 'subassembly'
+    : subassemblyModeAvailable ? treeViewMode : 'expanded';
   const readonly = effectiveMode === 'subassembly';
   const treeMode = document.getElementById('treemode');
   if (treeMode) {
@@ -3678,7 +3680,8 @@ function syncTreeModeControls() {
     treeMode.querySelector('option[value="subassembly"]').textContent =
       t('tree.modeSubassembly');
     treeMode.value = effectiveMode;
-    treeMode.disabled = robotViewMode === 'collapsed_preview';
+    treeMode.disabled = robotViewMode === 'collapsed_preview'
+      || !subassemblyModeAvailable;
   }
   for (const id of ['selall', 'bulktype', 'bulkset', 'bulkdel']) {
     const el = document.getElementById(id);
@@ -3687,7 +3690,8 @@ function syncTreeModeControls() {
 }
 
 function effectiveTreeViewMode() {
-  return robotViewMode === 'collapsed_preview' ? 'subassembly' : treeViewMode;
+  if (robotViewMode === 'collapsed_preview') { return 'subassembly'; }
+  return currentInfo?.mode === 'urdf' ? 'expanded' : treeViewMode;
 }
 
 function previewTreeLinkSet(row) {
