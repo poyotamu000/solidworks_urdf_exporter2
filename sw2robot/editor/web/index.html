@@ -1035,7 +1035,7 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.normalRobotBtn': { en: 'normal robot', ja: '通常ロボット' },
     'subasm.previewTitle': { en: 'Sub-assembly collapse preview',
                              ja: 'サブアセンブリ畳み込み preview' },
-    'subasm.previewHelp': { en: 'Read-only preview from the canonical expanded tree. URDF output is not changed here.',
+    'subasm.previewHelp': { en: 'Read-only preview from the expanded tree. URDF output is not changed here.',
                             ja: '全展開treeから作った読み取り専用previewです。ここではURDF出力は変更しません。' },
     'subasm.previewCounts': { en: a => `links ${a.cl} → ${a.pl}, joints ${a.cj} → ${a.pj}`,
                               ja: a => `links ${a.cl} → ${a.pl}, joints ${a.cj} → ${a.pj}` },
@@ -1046,7 +1046,7 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.thTreeJoint': { en: 'joint', ja: 'joint' },
     'subasm.thMembers': { en: 'members', ja: '構成link' },
     'subasm.thDropped': { en: 'internal joints', ja: '内部joint' },
-    'subasm.thOrigin': { en: 'origin', ja: 'origin' },
+    'subasm.thOrigin': { en: 'origin link', ja: '原点link' },
     'subasm.collapsedTag': { en: 'collapsed', ja: '畳み込み' },
     'subasm.parentChoicesTitle': { en: 'Attach parent choices',
                                    ja: '接続先parent候補' },
@@ -1060,17 +1060,17 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.originLinkChoicesTitle': { en: 'Sub-assembly origin links',
                                       ja: 'サブアセンブリ原点link' },
     'subasm.originLinkChoicesHelp': {
-      en: 'Effective origin is used by collapsed preview. For the collapsed root, the canonical expanded base overrides any saved origin.',
-      ja: 'effective origin が畳み込み preview で使われます。root を含むサブアセンブリでは、保存済み origin より canonical expanded base が優先されます。' },
+      en: 'Choose which internal link frame represents each collapsed sub-assembly. If it contains the robot root, the base link is used automatically.',
+      ja: '畳み込んだサブアセンブリの座標系として使う内部linkを選びます。ロボットrootを含む場合は base link を自動で使います。' },
     'subasm.originLinkAuto': { en: 'auto', ja: 'auto' },
-    'subasm.originEffective': { en: 'effective', ja: 'effective' },
-    'subasm.originConfigured': { en: 'configured', ja: 'configured' },
-    'subasm.originSourceUser': { en: 'user', ja: 'user' },
-    'subasm.originSourceCanonicalBase': { en: 'canonical base', ja: 'canonical base' },
+    'subasm.originEffective': { en: 'used origin link', ja: '使う原点link' },
+    'subasm.originConfigured': { en: 'manual choice', ja: '手動選択' },
+    'subasm.originSourceUser': { en: 'manual', ja: '手動' },
+    'subasm.originSourceCanonicalBase': { en: 'base link', ja: 'base link' },
     'subasm.originSourceAuto': { en: 'auto', ja: 'auto' },
     'subasm.originConfiguredIgnored': {
-      en: 'configured origin is saved but ignored here because this collapsed link contains the canonical base',
-      ja: '保存済み origin はありますが、この畳み込みlinkは canonical base を含むためここでは使われません' },
+      en: 'The manual choice is saved, but this root sub-assembly uses the base link.',
+      ja: '手動選択は保存されていますが、root のサブアセンブリでは base link を使います。' },
     'subasm.originLinkSetOk': { en: a => `${a.name}: origin link ${a.originLink} ✓`,
                                 ja: a => `${a.name}: origin link ${a.originLink} ✓` },
     'subasm.originLinkSetting': { en: a => `saving origin link: ${a.name} → ${a.originLink} ...`,
@@ -1080,11 +1080,11 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.driverJointChoicesTitle': { en: 'Motion driver joints',
                                         ja: 'motion代表joint' },
     'subasm.driverJointChoicesHelp': {
-      en: 'Normal joints provide type, axis, and limits for preview joints; the preview robot moves its own collapsed joints.',
-      ja: 'normal joint は preview joint の type / axis / limit のコピー元です。実際に動かすのは畳み込みロボット内の preview joint です。' },
+      en: 'Choose the normal robot joint whose type, axis, and limits are copied to each collapsed preview joint.',
+      ja: '畳み込みpreviewのjointにコピーする、通常ロボット側のjoint type / axis / limit の元を選びます。' },
     'subasm.driverJointAuto': { en: 'auto', ja: 'auto' },
-    'subasm.driverEffective': { en: 'effective source', ja: 'effective source' },
-    'subasm.driverConfigured': { en: 'configured source', ja: 'configured source' },
+    'subasm.driverEffective': { en: 'copy from normal joint', ja: 'コピー元normal joint' },
+    'subasm.driverConfigured': { en: 'manual choice', ja: '手動選択' },
     'subasm.driverJointSetOk': { en: a => `${a.name}: driver joint ${a.sourceJoint} ✓`,
                                  ja: a => `${a.name}: driver joint ${a.sourceJoint} ✓` },
     'subasm.driverJointSetting': { en: a => `saving driver joint: ${a.name} → ${a.sourceJoint} ...`,
@@ -2949,10 +2949,12 @@ function originLinkChoicesHtml(groupChoices) {
       `${htmlEsc(t('subasm.originEffective'))}: ` +
       `<span style="color:#cfe3ff">${htmlEsc(selected || t('subasm.originLinkAuto'))}</span>` +
       ` <span style="color:#6b7480">(${htmlEsc(source)})</span></div>` +
-      (configured ? `<div style="color:#6b7480">` +
-        `${htmlEsc(t('subasm.originConfigured'))}: ${htmlEsc(configured)}</div>` : '') +
       (configured && configured !== selected && c.selected_origin_source === 'canonical_base'
         ? `<div style="color:#d6b36b">${htmlEsc(t('subasm.originConfiguredIgnored'))}</div>`
+        : (configured && configured !== selected ? `<div style="color:#6b7480">` +
+          `${htmlEsc(t('subasm.originConfigured'))}: ${htmlEsc(configured)}</div>` : '')) +
+      (configured && configured === selected ? `<div style="color:#6b7480">` +
+        `${htmlEsc(t('subasm.originConfigured'))}</div>`
         : '');
     const groups = (c.groups || []).map((g, i) => {
       const links = (g.links || []).slice(0, 4).map(htmlEsc).join(', ');
@@ -3027,7 +3029,9 @@ function subassemblyOriginSummaryHtml(s) {
   const lines = [];
   lines.push(`<div style="color:#cfe3ff">${htmlEsc(effective || t('subasm.originLinkAuto'))}</div>`);
   lines.push(`<div style="color:#6b7480">${htmlEsc(source)}</div>`);
-  if (configured && configured !== effective) {
+  if (configured && configured !== effective && s.selected_origin_source === 'canonical_base') {
+    lines.push(`<div style="color:#d6b36b">${htmlEsc(t('subasm.originConfiguredIgnored'))}</div>`);
+  } else if (configured && configured !== effective) {
     lines.push(`<div style="color:#d6b36b">${htmlEsc(t('subasm.originConfigured'))}: ` +
       `${htmlEsc(configured)}</div>`);
   }
