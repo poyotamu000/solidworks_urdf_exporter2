@@ -1320,6 +1320,7 @@ def _tree_rows_payload(base_link, links, joints):
             "source_joint": joint.get("source_name") if joint else None,
             "joint_type": joint.get("type") if joint else "root",
             "collapsed": bool(info.get("collapsed")),
+            "member_links": info.get("member_links", []),
             "root": joint is None,
         })
         for child_joint in by_parent.get(link, []):
@@ -3720,17 +3721,12 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                           f"sub-assembly {name_in} -> {mode}")
                 with open(yml, "w", encoding="utf-8") as f:
                     f.write(txt)
-                from sw2robot.exporter.export import build
-                try:
-                    build(cls.pkg_dir, config_path=yml)
-                except Exception as e:
-                    return self._send_json(
-                        {"error": f"rebuild failed: {e}"}, 500)
                 payload = _subassemblies_payload(graph, txt)
                 payload.update({"ok": True, "name": name_in, "mode": mode,
+                                "preview_only": True, "rebuilt": False,
                                 **members})
                 print(f"[sw2robot.web] set_subassembly_mode: "
-                      f"{name_in} -> {mode}")
+                      f"{name_in} -> {mode} (preview only)")
                 return self._send_json(payload)
             if parsed.path == "/api/set_base":
                 cls = type(self)
