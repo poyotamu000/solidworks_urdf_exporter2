@@ -1084,6 +1084,255 @@ def _subassemblies_payload(graph, yml_txt=""):
     }
 
 
+def _subassembly_names(graph):
+    return sorted(c.name for c in (getattr(graph, "components", []) or [])
+                  if getattr(c, "is_subassembly", False) and c.part_path)
+
+
+def _matching_subasm_members(members, name, all_names):
+    """Config list entries that affect ``name`` and no other sub-assembly.
+
+    ``expand`` / ``no_expand`` are substring lists by design.  The web control
+    writes exact CAD instance names, but older hand-authored configs may contain
+    broad substrings.  Only remove a matching broad entry when it is unique to
+    this instance; otherwise the UI would silently change sibling rows too.
+    """
+    lname = name.lower()
+    safe, shared = [], []
+    for raw in members or []:
+        s = str(raw)
+        key = s.lower()
+        if key not in lname:
+            continue
+        matches = [n for n in all_names if key in n.lower()]
+        (safe if len(matches) <= 1 else shared).append(s)
+    return safe, shared
+
+
+def _set_subassembly_mode_yaml(txt, graph, name, mode):
+    """Set one CAD sub-assembly instance to auto / expand / no_expand."""
+    import yaml as _yaml
+
+    if mode not in ("auto", "expand", "no_expand"):
+        raise ValueError("mode must be auto, expand, or no_expand")
+    names = _subassembly_names(graph)
+    if name not in names:
+        raise ValueError(f"no CAD sub-assembly '{name}'")
+    try:
+        cfg = _yaml.safe_load(txt) or {}
+    except Exception:
+        cfg = {}
+    exp = [str(x) for x in (cfg.get("expand") or [])]
+    noexp = [str(x) for x in (cfg.get("no_expand") or [])]
+    exp_rm, exp_shared = _matching_subasm_members(exp, name, names)
+    noexp_rm, noexp_shared = _matching_subasm_members(noexp, name, names)
+    shared = [*exp_shared, *noexp_shared]
+    if shared:
+        raise ValueError(
+            "cannot safely change this row because these substring override(s) "
+            "also match other sub-assemblies: " + ", ".join(shared))
+    add_exp = [name] if mode == "expand" else []
+    add_noexp = [name] if mode == "no_expand" else []
+    txt, exp_members = _set_yaml_list_block(
+        txt, "expand", add=add_exp, remove=[*exp_rm, name])
+    txt, noexp_members = _set_yaml_list_block(
+        txt, "no_expand", add=add_noexp, remove=[*noexp_rm, name])
+    return txt, {"expand": exp_members, "no_expand": noexp_members}
+
+
+def _canonical_tree_payload(graph, yml_txt=""):
+    """Fully-expanded tree plus CAD sub-assembly membership.
+
+    This is a read-only planning payload for the sub-assembly collapse work:
+    always expand CAD sub-assemblies, keep the user's directed tree edits where
+    possible, and report which expanded links/joints belong to each top-level
+    CAD sub-assembly instance.
+    """
+    import yaml as _yaml
+
+    from sw2robot.exporter import model as _M
+
+    try:
+        cfg = _yaml.safe_load(yml_txt) or {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+    except Exception:
+        cfg = {}
+    full_cfg = dict(cfg)
+    full_cfg["expand"] = [""]       # substring override: force every subasm
+    full_cfg["no_expand"] = []
+    model = _M.build_model(graph, config=full_cfg)
+
+    links = [{"name": c.name, "link_name": c.link_name}
+             for c in model.components]
+    joints = [{"name": j.name, "parent": j.parent, "child": j.child,
+               "type": j.jtype}
+              for j in model.joints]
+    link_to_name = {c.link_name: c.name for c in model.components}
+    link_by_name = {c.name: c.link_name for c in model.components}
+
+    subassemblies = []
+    for c in getattr(graph, "components", []) or []:
+        if not (getattr(c, "is_subassembly", False) and c.part_path):
+            continue
+        prefix = c.name + "/"
+        member_names = sorted(n for n in link_by_name if n.startswith(prefix))
+        member_links = [link_by_name[n] for n in member_names]
+        member_set = set(member_links)
+        internal, boundary = [], []
+        for j in joints:
+            p_in = j["parent"] in member_set
+            c_in = j["child"] in member_set
+            if p_in and c_in:
+                internal.append(j)
+            elif p_in or c_in:
+                boundary.append(j)
+        subassemblies.append({
+            "name": c.name,
+            "link_name": c.link_name,
+            "path": c.part_path,
+            "member_components": member_names,
+            "member_links": member_links,
+            "internal_joints": internal,
+            "boundary_joints": boundary,
+        })
+    subassemblies.sort(key=lambda x: x["name"])
+    return {
+        "base_link": model.base_link,
+        "links": links,
+        "joints": joints,
+        "subassemblies": subassemblies,
+        "link_to_component": link_to_name,
+    }
+
+
+def _collapse_preview_payload(graph, yml_txt=""):
+    """Preview the tree after applying current sub-assembly collapse modes.
+
+    No URDF is rebuilt here.  The payload is the canonical expanded tree with
+    links belonging to each currently-collapsed CAD sub-assembly replaced by
+    that sub-assembly's own link.
+    """
+    canonical = _canonical_tree_payload(graph, yml_txt)
+    states = _subassemblies_payload(graph, yml_txt)
+    by_sub = {s["name"]: s for s in canonical["subassemblies"]}
+    collapse_link = {}
+    collapsed = []
+    for row in states["subassemblies"]:
+        if row.get("expanded", True):
+            continue
+        sub = by_sub.get(row["name"])
+        if not sub or not sub["member_links"]:
+            continue
+        info = {
+            "name": row["name"],
+            "link_name": row["link_name"],
+            "override": row["override"],
+            "reason": row["reason"],
+            "member_links": sub["member_links"],
+            "member_components": sub["member_components"],
+            "internal_joints": sub["internal_joints"],
+            "boundary_joints": sub["boundary_joints"],
+        }
+        collapsed.append(info)
+        for link in sub["member_links"]:
+            collapse_link[link] = row["link_name"]
+
+    links = []
+    inserted = set()
+    for link in canonical["links"]:
+        ln = link["link_name"]
+        repl = collapse_link.get(ln)
+        if repl:
+            if repl not in inserted:
+                sub = next(s for s in collapsed if s["link_name"] == repl)
+                links.append({
+                    "name": sub["name"],
+                    "link_name": repl,
+                    "collapsed": True,
+                    "member_links": sub["member_links"],
+                })
+                inserted.add(repl)
+            continue
+        links.append({**link, "collapsed": False})
+
+    joints, dropped = [], []
+    for j in canonical["joints"]:
+        parent = collapse_link.get(j["parent"], j["parent"])
+        child = collapse_link.get(j["child"], j["child"])
+        out = {**j, "source_name": j["name"],
+               "parent": parent, "child": child}
+        if parent == child:
+            dropped.append(out)
+            continue
+        out["name"] = f"{parent}__{child}"
+        joints.append(out)
+
+    base = collapse_link.get(canonical["base_link"], canonical["base_link"])
+    return {
+        "base_link": base,
+        "links": links,
+        "joints": joints,
+        "tree_rows": _tree_rows_payload(base, links, joints),
+        "dropped_internal_joints": dropped,
+        "collapsed_subassemblies": collapsed,
+        "canonical_counts": {
+            "links": len(canonical["links"]),
+            "joints": len(canonical["joints"]),
+        },
+        "preview_counts": {
+            "links": len(links),
+            "joints": len(joints),
+        },
+    }
+
+
+def _tree_rows_payload(base_link, links, joints):
+    """Flatten a link/joint tree into display rows for preview UIs."""
+    link_info = {l["link_name"]: l for l in links}
+    by_parent = {}
+    child_links = set()
+    for j in joints:
+        by_parent.setdefault(j["parent"], []).append(j)
+        child_links.add(j["child"])
+    for rows in by_parent.values():
+        rows.sort(key=lambda j: (j["child"], j["name"]))
+
+    roots = []
+    if base_link in link_info:
+        roots.append(base_link)
+    roots.extend(sorted(ln for ln in link_info
+                        if ln not in child_links and ln != base_link))
+
+    out, seen = [], set()
+
+    def walk(link, depth, parent=None, joint=None):
+        if link in seen:
+            return
+        seen.add(link)
+        info = link_info.get(link, {})
+        out.append({
+            "link": link,
+            "name": info.get("name", link),
+            "depth": depth,
+            "parent": parent,
+            "joint": joint.get("name") if joint else None,
+            "source_joint": joint.get("source_name") if joint else None,
+            "joint_type": joint.get("type") if joint else "root",
+            "collapsed": bool(info.get("collapsed")),
+            "root": joint is None,
+        })
+        for child_joint in by_parent.get(link, []):
+            walk(child_joint["child"], depth + 1, link, child_joint)
+
+    for root in roots:
+        walk(root, 0)
+    for link in sorted(link_info):
+        if link not in seen:
+            walk(link, 0)
+    return out
+
+
 def _upsert_yaml_map(txt, mapkey, key, value):
     """Set ``mapkey: {key: value}`` (block style) in joints.yaml text, replacing
     any existing entry for ``key`` and creating the map if needed."""
@@ -2610,6 +2859,40 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 payload = _subassemblies_payload(gs, txt)
                 payload["mode"] = "cad"
                 return self._send_json(payload)
+            if path == "/api/canonical_tree":
+                cls = type(self)
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._send_json(
+                        {"error": "canonical tree needs the CAD graph.json"},
+                        400)
+                from sw2robot.exporter.state import GraphState
+                gs = GraphState.load(os.path.join(cls.pkg_dir, "graph.json"))
+                name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
+                yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
+                txt = open(yml, encoding="utf-8").read() \
+                    if os.path.exists(yml) else ""
+                payload = _canonical_tree_payload(gs, txt)
+                payload["mode"] = "cad"
+                return self._send_json(payload)
+            if path == "/api/collapse_preview":
+                cls = type(self)
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._send_json(
+                        {"error": "collapse preview needs the CAD graph.json"},
+                        400)
+                from sw2robot.exporter.state import GraphState
+                gs = GraphState.load(os.path.join(cls.pkg_dir, "graph.json"))
+                name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
+                yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
+                txt = open(yml, encoding="utf-8").read() \
+                    if os.path.exists(yml) else ""
+                payload = _collapse_preview_payload(gs, txt)
+                payload["mode"] = "cad"
+                return self._send_json(payload)
             if path == "/api/fs":
                 # tiny server-side file browser: the OS file dialog cannot
                 # hand a PATH to the page, so the page browses through us
@@ -3404,6 +3687,51 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 return self._send_json(
                     {"detected": len(applied) + len(missed),
                      "applied": applied, "missed": missed})
+            if parsed.path == "/api/set_subassembly_mode":
+                cls = type(self)
+                n = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(n) or b"{}")
+                name_in = (body.get("name") or "").strip()
+                mode = (body.get("mode") or "").strip()
+                if not cls.pkg_dir:
+                    return self._send_json({"error": "no package open"}, 400)
+                if not _cad_mode(cls.pkg_dir):
+                    return self._send_json(
+                        {"error": "sub-assembly modes need the CAD graph.json"},
+                        400)
+                if not name_in:
+                    return self._send_json({"error": "name required"}, 400)
+                from sw2robot.exporter.state import GraphState
+                graph = GraphState.load(os.path.join(cls.pkg_dir, "graph.json"))
+                name = os.path.splitext(os.path.basename(cls.urdf_rel))[0]
+                yml = os.path.join(cls.pkg_dir, name + ".joints.yaml")
+                if not os.path.exists(yml):
+                    return self._send_json(
+                        {"error": "joints.yaml not found -- re-extract once"},
+                        400)
+                with open(yml, encoding="utf-8") as f:
+                    txt = f.read()
+                try:
+                    txt, members = _set_subassembly_mode_yaml(
+                        txt, graph, name_in, mode)
+                except ValueError as e:
+                    return self._send_json({"error": str(e)}, 400)
+                _snapshot(cls.pkg_dir, yml,
+                          f"sub-assembly {name_in} -> {mode}")
+                with open(yml, "w", encoding="utf-8") as f:
+                    f.write(txt)
+                from sw2robot.exporter.export import build
+                try:
+                    build(cls.pkg_dir, config_path=yml)
+                except Exception as e:
+                    return self._send_json(
+                        {"error": f"rebuild failed: {e}"}, 500)
+                payload = _subassemblies_payload(graph, txt)
+                payload.update({"ok": True, "name": name_in, "mode": mode,
+                                **members})
+                print(f"[sw2robot.web] set_subassembly_mode: "
+                      f"{name_in} -> {mode}")
+                return self._send_json(payload)
             if parsed.path == "/api/set_base":
                 cls = type(self)
                 n = int(self.headers.get("Content-Length", 0))

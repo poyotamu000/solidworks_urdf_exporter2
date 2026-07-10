@@ -101,6 +101,125 @@ def test_no_expand_override_keeps_instance():
     assert {c.name for c in comps} == {"plate-1", "servo-1"}
 
 
+def test_no_expand_reuses_fully_expanded_directed_tree():
+    cfg = {
+        # This is the fully-expanded tree written by the rename/joints panel.
+        # no_expand should collapse only the sub-assembly boundary, not discard
+        # the saved tree and attach the preserved instance somewhere arbitrary.
+        "base": "plate-1",
+        "no_expand": ["servo"],
+        "joints": [
+            {"parent": "plate-1", "child": "servo-1/case-1",
+             "type": "fixed"},
+            {"parent": "servo-1/case-1", "child": "servo-1/horn-1",
+             "type": "revolute"},
+        ],
+    }
+    model = build_model(make_graph(), config=cfg)
+    assert {c.name for c in model.components} == {"plate-1", "servo-1"}
+    assert [(j.parent, j.child, j.jtype) for j in model.joints] == [
+        ("plate_1", "servo_1", "fixed")
+    ]
+
+
+def test_no_expand_maps_expanded_base_hint_to_preserved_instance():
+    cfg = {
+        "base": "servo-1/case-1",
+        "no_expand": ["servo"],
+        "joints": [
+            {"parent": "plate-1", "child": "servo-1/case-1",
+             "type": "fixed"},
+            {"parent": "servo-1/case-1", "child": "servo-1/horn-1",
+             "type": "revolute"},
+        ],
+    }
+    model = build_model(make_graph(), config=cfg)
+    assert model.base_link == "servo_1"
+
+
+def test_canonical_tree_payload_ignores_subassembly_modes():
+    from sw2robot.editor.webserver import _canonical_tree_payload
+
+    payload = _canonical_tree_payload(
+        make_graph(), "base: plate-1\nno_expand:\n- servo\n")
+    link_names = {x["link_name"] for x in payload["links"]}
+    assert "servo_1" not in link_names
+    assert {"servo_1__case_1", "servo_1__horn_1"} <= link_names
+
+    sub = payload["subassemblies"][0]
+    assert sub["name"] == "servo-1"
+    assert set(sub["member_links"]) == {"servo_1__case_1",
+                                        "servo_1__horn_1"}
+    assert {j["child"] for j in sub["internal_joints"]} == {
+        "servo_1__horn_1"}
+    assert {j["child"] for j in sub["boundary_joints"]} == {
+        "servo_1__case_1"}
+
+
+def test_canonical_tree_payload_keeps_directed_tree_edits():
+    from sw2robot.editor.webserver import _canonical_tree_payload
+
+    txt = """
+base: plate-1
+no_expand:
+- servo
+joints:
+  - parent: plate-1
+    child:  servo-1/case-1
+    type:   fixed
+  - parent: servo-1/case-1
+    child:  servo-1/horn-1
+    type:   fixed
+"""
+    payload = _canonical_tree_payload(make_graph(), txt)
+    sub = payload["subassemblies"][0]
+    assert [(j["parent"], j["child"], j["type"])
+            for j in sub["internal_joints"]] == [
+        ("servo_1__case_1", "servo_1__horn_1", "fixed")
+    ]
+
+
+def test_collapse_preview_replaces_no_expand_subassembly_members():
+    from sw2robot.editor.webserver import _collapse_preview_payload
+
+    txt = "base: plate-1\nno_expand:\n- servo\n"
+    payload = _collapse_preview_payload(make_graph(), txt)
+    assert payload["canonical_counts"] == {"links": 3, "joints": 2}
+    assert payload["preview_counts"] == {"links": 2, "joints": 1}
+    assert {x["link_name"] for x in payload["links"]} == {
+        "plate_1", "servo_1"}
+    assert payload["collapsed_subassemblies"][0]["name"] == "servo-1"
+    assert set(payload["collapsed_subassemblies"][0]["member_links"]) == {
+        "servo_1__case_1", "servo_1__horn_1"}
+    assert [(j["parent"], j["child"], j["type"])
+            for j in payload["joints"]] == [
+        ("plate_1", "servo_1", "fixed")
+    ]
+    assert [j["source_name"] for j in payload["dropped_internal_joints"]] == [
+        "servo_1__case_1__servo_1__horn_1"
+    ]
+    assert [(r["link"], r["depth"], r["joint_type"], r["collapsed"])
+            for r in payload["tree_rows"]] == [
+        ("plate_1", 0, "root", False),
+        ("servo_1", 1, "fixed", True),
+    ]
+
+
+def test_collapse_preview_keeps_expanded_override():
+    from sw2robot.editor.webserver import _collapse_preview_payload
+
+    txt = "base: plate-1\nexpand:\n- servo\n"
+    payload = _collapse_preview_payload(make_graph(), txt)
+    assert payload["collapsed_subassemblies"] == []
+    assert payload["preview_counts"] == payload["canonical_counts"]
+    assert [(r["link"], r["depth"], r["joint_type"], r["collapsed"])
+            for r in payload["tree_rows"]] == [
+        ("plate_1", 0, "root", False),
+        ("servo_1__case_1", 1, "fixed", False),
+        ("servo_1__horn_1", 2, "revolute", False),
+    ]
+
+
 def test_subassemblies_payload_reports_expansion_state():
     from sw2robot.editor.webserver import _subassemblies_payload
 
@@ -123,6 +242,48 @@ def test_subassemblies_payload_reports_no_expand_override():
     assert len(rows) == 1
     assert rows[0]["expanded"] is False
     assert rows[0]["override"] == "no_expand"
+
+
+def test_set_subassembly_mode_yaml_round_trips_exact_name():
+    from sw2robot.editor.webserver import (
+        _set_subassembly_mode_yaml,
+        _subassemblies_payload,
+    )
+
+    txt, members = _set_subassembly_mode_yaml("", make_graph(), "servo-1",
+                                              "no_expand")
+    assert members["expand"] == []
+    assert members["no_expand"] == ["servo-1"]
+    row = _subassemblies_payload(make_graph(), txt)["subassemblies"][0]
+    assert row["expanded"] is False
+    assert row["override"] == "no_expand"
+
+    txt, members = _set_subassembly_mode_yaml(txt, make_graph(), "servo-1",
+                                              "expand")
+    assert members["expand"] == ["servo-1"]
+    assert members["no_expand"] == []
+    row = _subassemblies_payload(make_graph(), txt)["subassemblies"][0]
+    assert row["expanded"] is True
+    assert row["override"] == "expand"
+
+    txt, members = _set_subassembly_mode_yaml(txt, make_graph(), "servo-1",
+                                              "auto")
+    assert members["expand"] == []
+    assert members["no_expand"] == []
+    row = _subassemblies_payload(make_graph(), txt)["subassemblies"][0]
+    assert row["override"] == "auto"
+
+
+def test_set_subassembly_mode_yaml_rejects_shared_substring_override():
+    from sw2robot.editor.webserver import _set_subassembly_mode_yaml
+
+    g = make_graph()
+    inst2 = _comp("servo-2", "servo_2", xyz=(0.2, 0, 0), sub=True,
+                  path="X:/fake/servo_unit.SLDASM")
+    g.components.append(inst2)
+    with pytest.raises(ValueError, match="also match other sub-assemblies"):
+        _set_subassembly_mode_yaml("no_expand:\n- servo\n", g, "servo-1",
+                                   "expand")
 
 
 def test_rigid_subassembly_not_expanded():
