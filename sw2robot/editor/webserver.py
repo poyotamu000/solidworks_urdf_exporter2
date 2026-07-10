@@ -1126,7 +1126,7 @@ def _set_subassembly_mode_yaml(txt, graph, name, mode):
     noexp = [str(x) for x in (cfg.get("no_expand") or [])]
     exp_rm, exp_shared = _matching_subasm_members(exp, name, names)
     noexp_rm, noexp_shared = _matching_subasm_members(noexp, name, names)
-    shared = exp_shared + noexp_shared
+    shared = [*exp_shared, *noexp_shared]
     if shared:
         raise ValueError(
             "cannot safely change this row because these substring override(s) "
@@ -1134,9 +1134,9 @@ def _set_subassembly_mode_yaml(txt, graph, name, mode):
     add_exp = [name] if mode == "expand" else []
     add_noexp = [name] if mode == "no_expand" else []
     txt, exp_members = _set_yaml_list_block(
-        txt, "expand", add=add_exp, remove=exp_rm + [name])
+        txt, "expand", add=add_exp, remove=[*exp_rm, name])
     txt, noexp_members = _set_yaml_list_block(
-        txt, "no_expand", add=add_noexp, remove=noexp_rm + [name])
+        txt, "no_expand", add=add_noexp, remove=[*noexp_rm, name])
     return txt, {"expand": exp_members, "no_expand": noexp_members}
 
 
