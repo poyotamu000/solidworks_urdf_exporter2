@@ -2909,10 +2909,15 @@ function bindSubassemblyParentChoices(root, ov) {
 
 function originLinkChoicesHtml(groupChoices) {
   const choices = (groupChoices || []).filter(c =>
-    (c.groups || []).length > 1 || c.selected_origin_link);
+    (c.groups || []).length > 1 || c.selected_origin_link ||
+    c.stale_origin_link);
   if (!choices.length) { return ''; }
   const rows = choices.map(c => {
     const selected = c.selected_origin_link || '';
+    const stale = c.stale_origin_link
+      ? `<div style="color:#d68c8c">stale saved link: ` +
+        `${htmlEsc(c.stale_origin_link)}</div>`
+      : '';
     const opts = [`<option value=""${selected ? '' : ' selected'}>` +
       `${t('subasm.originLinkAuto')}</option>`].concat((c.groups || []).map((g, i) => {
       const label = `group ${i + 1} (${g.size || (g.links || []).length})`;
@@ -2932,8 +2937,8 @@ function originLinkChoicesHtml(groupChoices) {
       `<div><div style="color:#cfe3ff">${htmlEsc(c.subassembly)}</div>` +
       `<div style="color:#6b7480">${htmlEsc(c.link_name)}</div></div>` +
       `<div><select class="subasm-origin-link-choice" ` +
-      `data-name="${htmlEsc(c.subassembly)}" data-prev="${htmlEsc(selected)}">` +
-      opts + `</select>${groups}</div></div>`;
+      `data-name="${htmlEsc(c.subassembly)}">` +
+      opts + `</select>${stale}${groups}</div></div>`;
   }).join('');
   return `<div style="border:1px solid #4d4536;background:#24231d;` +
     `border-radius:4px;padding:6px 8px;margin:8px 0;font-size:11px">` +
@@ -2964,6 +2969,9 @@ async function setSubassemblyOriginLinkChoice(name, originLink, ov) {
     log(t('subasm.originLinkSetFail', { e: e.message ?? e }), 'err');
     if (ov) {
       await openSubassemblyPreview(ov);
+    } else {
+      document.querySelectorAll('.subasm-origin-link-choice')
+        .forEach(x => { x.disabled = false; });
     }
   }
 }
