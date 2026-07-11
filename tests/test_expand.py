@@ -501,13 +501,8 @@ def test_validate_collapsed_tree_reports_multiple_parents_and_cycles():
     assert payload["ok"] is False
 
 
-def test_subassembly_cycle_break_choices_drop_source_joint():
-    from sw2robot.editor.webserver import (
-        _collapse_cycle_break_choices,
-        _set_subassembly_cycle_break_joint_yaml,
-        _subassembly_cycle_break_joints,
-        _validate_collapsed_tree,
-    )
+def test_collapse_preview_applies_cycle_break_before_choices(monkeypatch):
+    from sw2robot.editor import webserver
 
     links = [{"link_name": n} for n in ("base", "arm")]
     joints = [
@@ -516,21 +511,85 @@ def test_subassembly_cycle_break_choices_drop_source_joint():
         {"name": "arm__base", "parent": "arm", "child": "base",
          "type": "fixed", "source_name": "j2"},
     ]
-    choices = _collapse_cycle_break_choices("base", links, joints, set())
-    assert len(choices) == 1
-    assert choices[0]["links"] == ["base", "arm", "base"]
-    assert [c["source_joint"] for c in choices[0]["candidates"]] == [
-        "j1", "j2"]
+    monkeypatch.setattr(webserver, "_canonical_tree_payload", lambda *_: {
+        "base_link": "base",
+        "links": links,
+        "joints": joints,
+        "subassemblies": [],
+    })
+    monkeypatch.setattr(webserver, "_subassemblies_payload", lambda *_: {
+        "subassemblies": [],
+    })
+
+    payload = webserver._collapse_preview_payload(
+        object(), "subassembly_cycle_break_joints:\n- arm__base\n")
+
+    assert [j["source_name"] for j in payload["joints"]] == ["base__arm"]
+    assert not any(i["code"] == "cycle"
+                   for i in payload["validation"]["issues"])
+    assert payload["cycle_break_choices"] == [{
+        "links": [],
+        "joints": [],
+        "source_joints": ["arm__base"],
+        "selected_source_joint": "arm__base",
+        "stale": True,
+        "candidates": [{
+            "joint": "arm__base",
+            "source_joint": "arm__base",
+            "parent": "",
+            "child": "",
+        }],
+    }]
+
+
+def test_subassembly_cycle_break_yaml_adds_and_resets_source_joint():
+    from sw2robot.editor.webserver import (
+        _set_subassembly_cycle_break_joint_yaml,
+        _subassembly_cycle_break_joints,
+    )
 
     txt = _set_subassembly_cycle_break_joint_yaml("", "j2", True)
-    drops = _subassembly_cycle_break_joints(txt)
-    assert drops == {"j2"}
-    kept = [j for j in joints if j["source_name"] not in drops]
-    assert _validate_collapsed_tree(
-        "base", links, kept, [])["ok"] is True
+    assert _subassembly_cycle_break_joints(txt) == {"j2"}
 
     txt = _set_subassembly_cycle_break_joint_yaml(txt, "", False, "j2")
     assert _subassembly_cycle_break_joints(txt) == set()
+
+
+def test_directed_cycle_reports_self_loop():
+    from sw2robot.editor.webserver import _directed_cycle_reports
+
+    reports = _directed_cycle_reports(
+        "base", [{"link_name": "base"}], [{
+            "name": "base__base", "parent": "base", "child": "base",
+            "type": "fixed", "source_name": "self_joint",
+        }])
+
+    assert len(reports) == 1
+    assert reports[0]["links"] == ["base", "base"]
+    assert reports[0]["source_joints"] == ["self_joint"]
+
+
+def test_cycle_break_shared_candidate_resolves_two_cycles():
+    from sw2robot.editor.webserver import _directed_cycle_reports
+
+    links = [{"link_name": n} for n in ("base", "arm", "tip")]
+    joints = [
+        {"name": "base__arm", "parent": "base", "child": "arm",
+         "source_name": "shared"},
+        {"name": "arm__base", "parent": "arm", "child": "base",
+         "source_name": "short_return"},
+        {"name": "arm__tip", "parent": "arm", "child": "tip",
+         "source_name": "to_tip"},
+        {"name": "tip__base", "parent": "tip", "child": "base",
+         "source_name": "long_return"},
+    ]
+
+    reports = _directed_cycle_reports("base", links, joints)
+    assert len(reports) == 2
+    assert all("shared" in r["source_joints"] for r in reports)
+
+    kept = [j for j in joints if j["source_name"] != "shared"]
+    assert _directed_cycle_reports("base", links, kept) == []
 
 
 def test_validate_collapsed_tree_reports_disconnected_members():

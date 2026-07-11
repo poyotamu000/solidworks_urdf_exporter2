@@ -1393,8 +1393,6 @@ def _collapse_preview_payload(graph, yml_txt=""):
         joints.append(out)
 
     base = collapse_link.get(canonical["base_link"], canonical["base_link"])
-    cycle_break_choices = _collapse_cycle_break_choices(
-        base, links, joints, cycle_break_joints)
     dropped_cycle_joints = []
     if cycle_break_joints:
         kept = []
@@ -1404,6 +1402,8 @@ def _collapse_preview_payload(graph, yml_txt=""):
             else:
                 kept.append(j)
         joints = kept
+    cycle_break_choices = _collapse_cycle_break_choices(
+        base, links, joints, cycle_break_joints)
 
     validation = _validate_collapsed_tree(base, links, joints, collapsed,
                                           collapse_link)
@@ -1541,8 +1541,7 @@ def _directed_cycle_reports(base_link, links, joints):
             return
         cycle_links = [*stack_links[i:], child]
         cycle_edges = [*stack_edges[i:], back_edge]
-        key = tuple(_joint_source_name(j) for j in cycle_edges) or \
-            tuple(cycle_links)
+        key = tuple(_joint_source_name(j) for j in cycle_edges)
         if key in seen_cycles:
             return
         seen_cycles.add(key)
@@ -1598,7 +1597,7 @@ def _collapse_cycle_break_choices(base_link, links, joints, selected_sources):
         choices.append({
             **cycle,
             "selected_source_joint": selected,
-            "resolved": False,
+            "stale": False,
         })
     for source in sorted(selected_sources - active_sources):
         choices.append({
@@ -1606,7 +1605,7 @@ def _collapse_cycle_break_choices(base_link, links, joints, selected_sources):
             "joints": [],
             "source_joints": [source],
             "selected_source_joint": source,
-            "resolved": True,
+            "stale": True,
             "candidates": [{
                 "joint": source,
                 "source_joint": source,
