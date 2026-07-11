@@ -1300,7 +1300,7 @@ def _collapse_preview_payload(graph, yml_txt=""):
         for c in parent_choices
         if c.get("selected_parent")
     }
-    joints, dropped, dropped_parent_override = [], [], []
+    joints, dropped = [], []
     for j in canonical["joints"]:
         parent = collapse_link.get(j["parent"], j["parent"])
         child = collapse_link.get(j["child"], j["child"])
@@ -1311,7 +1311,6 @@ def _collapse_preview_payload(graph, yml_txt=""):
             continue
         selected = selected_by_link.get(child)
         if selected and parent != selected:
-            dropped_parent_override.append(out)
             continue
         out["name"] = f"{parent}__{child}"
         joints.append(out)
@@ -1326,7 +1325,6 @@ def _collapse_preview_payload(graph, yml_txt=""):
         "tree_rows": _tree_rows_payload(base, links, joints),
         "validation": validation,
         "dropped_internal_joints": dropped,
-        "dropped_parent_override_joints": dropped_parent_override,
         "collapsed_subassemblies": collapsed,
         "parent_choices": parent_choices,
         "canonical_counts": {

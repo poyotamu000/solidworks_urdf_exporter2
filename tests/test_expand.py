@@ -262,10 +262,6 @@ joints:
         ("bracket_1", "servo_1"),
         ("plate_1", "bracket_1"),
     ]
-    assert [j["source_name"]
-            for j in payload["dropped_parent_override_joints"]] == [
-        "plate_1__servo_1__case_1"
-    ]
     assert "multiple_boundary_parents" not in {
         i["code"] for i in payload["validation"]["issues"]
     }
