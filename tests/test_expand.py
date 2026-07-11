@@ -2,6 +2,12 @@
 graph: a 'servo unit' sub-assembly whose horn turns inside, mounted on a
 base plate.  Expansion must splice the children in, keep the internal
 revolute, and re-attach the mounting mate to the owning child."""
+import json
+import socket
+import threading
+import urllib.error
+import urllib.request
+
 import numpy as np
 import pytest
 from test_classify_geo import O, Z, coinc_planes, conc, dup
@@ -63,6 +69,25 @@ def make_graph():
                       components=[plate, inst], edges=[mount],
                       ground=["plate-1"],
                       subassemblies={"X:/fake/servo_unit.SLDASM": sub})
+
+
+def _free_port():
+    s = socket.socket()
+    s.bind(("", 0))
+    p = s.getsockname()[1]
+    s.close()
+    return p
+
+
+def _post_json(base, path, body):
+    req = urllib.request.Request(
+        base + path, data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urllib.request.urlopen(req) as r:
+            return r.status, json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode("utf-8"))
 
 
 def test_expand_splices_children():
@@ -279,9 +304,95 @@ joints:
     payload = _collapse_preview_payload(graph, txt)
     assert payload["group_choices"][0]["selected_origin_link"] == \
         "servo_1__horn_1"
-    assert "disconnected_members" not in {
-        i["code"] for i in payload["validation"]["issues"]
-    }
+    anchored = next(
+        i for i in payload["validation"]["issues"]
+        if i["code"] == "disconnected_members")
+    assert anchored["severity"] == "info"
+    assert anchored["origin_link"] == "servo_1__horn_1"
+
+
+def test_collapse_preview_reports_stale_subassembly_origin_link():
+    from sw2robot.editor.webserver import _collapse_preview_payload
+
+    txt = """
+base: plate-1
+no_expand:
+- servo
+subassembly_origin_links:
+  servo-1: missing_link
+"""
+    payload = _collapse_preview_payload(make_graph(), txt)
+    choices = payload["group_choices"]
+    assert choices[0]["subassembly"] == "servo-1"
+    assert choices[0]["selected_origin_link"] == ""
+    assert choices[0]["stale_origin_link"] == "missing_link"
+    assert payload["collapsed_subassemblies"][0]["selected_origin_link"] == ""
+    assert payload["collapsed_subassemblies"][0]["stale_origin_link"] == \
+        "missing_link"
+    issue = next(
+        i for i in payload["validation"]["issues"]
+        if i["code"] == "invalid_origin_link")
+    assert issue["origin_link"] == "missing_link"
+
+
+def test_set_subassembly_origin_link_rejects_non_candidate(tmp_path):
+    from sw2robot.editor import webserver
+
+    graph = make_graph()
+    graph.components.append(_comp("bracket-1", "bracket_1", xyz=(0, 0.1, 0)))
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "urdf").mkdir()
+    graph.save(pkg / "graph.json")
+    yml = pkg / "t.joints.yaml"
+    yml.write_text("""
+base: plate-1
+no_expand:
+- servo
+joints:
+  - parent: plate-1
+    child:  servo-1/case-1
+    type:   fixed
+  - parent: bracket-1
+    child:  servo-1/horn-1
+    type:   fixed
+  - parent: plate-1
+    child:  bracket-1
+    type:   fixed
+""", encoding="utf-8")
+
+    old_state = (
+        webserver._Handler.pkg_dir,
+        webserver._Handler.urdf_rel,
+        webserver._Handler.robot_name,
+        webserver._Handler.root_dir,
+    )
+    webserver._Handler.pkg_dir = str(pkg)
+    webserver._Handler.urdf_rel = "urdf/t.urdf"
+    webserver._Handler.robot_name = "t"
+    webserver._Handler.root_dir = str(pkg)
+    httpd, port = webserver._bind_free_port(
+        webserver._Handler, _free_port())
+    httpd.daemon_threads = True
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    try:
+        code, payload = _post_json(
+            f"http://127.0.0.1:{port}",
+            "/api/set_subassembly_origin_link",
+            {"name": "servo-1", "origin_link": "not_a_member"})
+        assert code == 400
+        assert "not a member origin link candidate" in payload["error"]
+        assert "subassembly_origin_links" not in yml.read_text(
+            encoding="utf-8")
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        (
+            webserver._Handler.pkg_dir,
+            webserver._Handler.urdf_rel,
+            webserver._Handler.robot_name,
+            webserver._Handler.root_dir,
+        ) = old_state
 
 
 def test_collapse_preview_ignores_stale_subassembly_parent_override():

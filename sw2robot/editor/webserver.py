@@ -1168,7 +1168,11 @@ def _set_subassembly_parent_override_yaml(txt, graph, name, parent):
 
 
 def _subassembly_origin_links(yml_txt):
-    """Preview-only representative member links for collapsed sub-assemblies."""
+    """Preview-only representative member links for collapsed sub-assemblies.
+
+    The build/export path does not consume this yet; it only documents the
+    user's intended anchor for collapsed preview diagnostics.
+    """
     import yaml as _yaml
 
     try:
@@ -1307,6 +1311,16 @@ def _collapse_preview_payload(graph, yml_txt=""):
         sub["selected_parent"] = selected_parent_by_subassembly.get(
             sub["name"], "")
     group_choices = _collapse_group_choices(collapsed, origin_links)
+    origin_choice_by_subassembly = {
+        c.get("subassembly"): c
+        for c in group_choices
+    }
+    for sub in collapsed:
+        choice = origin_choice_by_subassembly.get(sub["name"], {})
+        sub["selected_origin_link"] = choice.get("selected_origin_link", "")
+        stale = choice.get("stale_origin_link", "")
+        if stale:
+            sub["stale_origin_link"] = stale
 
     links = []
     inserted = set()
@@ -1436,13 +1450,20 @@ def _collapse_group_choices(collapsed, origin_links):
     choices = []
     for sub in collapsed:
         groups = _subassembly_member_groups(sub)
-        selected = origin_links.get(sub.get("name"), "")
-        if len(groups) <= 1 and not selected:
+        members = set(sub.get("member_links") or [])
+        raw_selected = origin_links.get(sub.get("name"), "")
+        selected = raw_selected if raw_selected in members else ""
+        stale = (
+            raw_selected
+            if raw_selected and raw_selected not in members
+            else "")
+        if len(groups) <= 1 and not selected and not stale:
             continue
         choices.append({
             "subassembly": sub.get("name"),
             "link_name": sub.get("link_name"),
             "selected_origin_link": selected,
+            "stale_origin_link": stale,
             "groups": [
                 {"origin_link": g[0], "links": g, "size": len(g)}
                 for g in groups
@@ -1510,22 +1531,33 @@ def _validate_collapsed_tree(base_link, links, joints, collapsed,
 
     for sub in collapsed:
         comps = _subassembly_member_groups(sub)
-        if len(comps) <= 1:
-            continue
-        selected_origin_link = sub.get("selected_origin_link")
-        if selected_origin_link and any(selected_origin_link in comp for comp in comps):
-            pass
-        elif selected_origin_link:
+        stale_origin_link = sub.get("stale_origin_link")
+        if stale_origin_link:
             issues.append({
                 "severity": "warning",
                 "code": "invalid_origin_link",
                 "subassembly": sub.get("name"),
                 "link": sub.get("link_name"),
-                "origin_link": selected_origin_link,
+                "origin_link": stale_origin_link,
                 "components": comps,
                 "message": (
                     f"{sub.get('name')} uses stale origin link "
-                    f"{selected_origin_link}"),
+                    f"{stale_origin_link}"),
+            })
+        selected_origin_link = sub.get("selected_origin_link")
+        if len(comps) <= 1:
+            continue
+        if selected_origin_link:
+            issues.append({
+                "severity": "info",
+                "code": "disconnected_members",
+                "subassembly": sub.get("name"),
+                "link": sub.get("link_name"),
+                "origin_link": selected_origin_link,
+                "components": comps,
+                "message": (
+                    f"{sub.get('name')} maps to {len(comps)} disconnected "
+                    f"member groups; anchored at {selected_origin_link}"),
             })
         else:
             issues.append({
