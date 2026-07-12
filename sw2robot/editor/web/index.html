@@ -1101,6 +1101,9 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.originConfiguredIgnored': {
       en: 'The manual choice is saved, but this root sub-assembly uses the base link.',
       ja: '手動選択は保存されていますが、root のサブアセンブリでは base link を使います。' },
+    'subasm.originStaleFallback': {
+      en: a => `Saved origin link ${a.link} is unavailable; a member link is selected automatically.`,
+      ja: a => `保存済み原点link ${a.link} は利用できないため、構成linkを自動選択します。` },
     'subasm.originLinkSetOk': { en: a => `${a.name}: origin link ${a.originLink} ✓`,
                                 ja: a => `${a.name}: origin link ${a.originLink} ✓` },
     'subasm.originLinkSetting': { en: a => `saving origin link: ${a.name} → ${a.originLink} ...`,
@@ -2991,22 +2994,42 @@ function bindSubassemblyParentChoices(root, ov) {
   });
 }
 
+function originSourceLabel(src) {
+  if (src === 'canonical_base') { return t('subasm.originSourceCanonicalBase'); }
+  if (src === 'user') { return t('subasm.originSourceUser'); }
+  return t('subasm.originSourceAuto');
+}
+
+function originDiagnosticsHtml(s) {
+  const selected = s.selected_origin_link || '';
+  const configured = s.configured_origin_link || '';
+  const stale = s.stale_origin_link || '';
+  const source = originSourceLabel(s.selected_origin_source || '');
+  const lines = [
+    `<div style="color:#a9bdd8">${htmlEsc(t('subasm.originEffective'))}: ` +
+      `<span style="color:#cfe3ff">` +
+      `${htmlEsc(selected || t('subasm.originLinkAuto'))}</span> ` +
+      `<span style="color:#6b7480">(${htmlEsc(source)})</span></div>`,
+  ];
+  if (configured && configured !== selected &&
+      s.selected_origin_source === 'canonical_base') {
+    lines.push(`<div style="color:#d6b36b">` +
+      `${htmlEsc(t('subasm.originConfiguredIgnored'))}</div>`);
+  }
+  if (stale) {
+    lines.push(`<div style="color:#d68c8c">` +
+      `${htmlEsc(t('subasm.originStaleFallback', { link: stale }))}</div>`);
+  }
+  return lines.join('');
+}
+
 function originLinkChoicesHtml(groupChoices) {
   const choices = (groupChoices || []).filter(c =>
     (c.groups || []).length > 1 || c.selected_origin_link ||
     c.stale_origin_link);
   if (!choices.length) { return ''; }
-  const originSourceLabel = src => {
-    if (src === 'canonical_base') { return t('subasm.originSourceCanonicalBase'); }
-    if (src === 'user') { return t('subasm.originSourceUser'); }
-    return t('subasm.originSourceAuto');
-  };
   const rows = choices.map(c => {
     const selected = c.selected_origin_link || '';
-    const stale = c.stale_origin_link
-      ? `<div style="color:#d68c8c">stale saved link: ` +
-        `${htmlEsc(c.stale_origin_link)}</div>`
-      : '';
     const configured = c.configured_origin_link || '';
     const groupOrigins = new Set((c.groups || []).map(g =>
       g.origin_link || (g.links || [])[0] || '').filter(Boolean));
@@ -3015,7 +3038,8 @@ function originLinkChoicesHtml(groupChoices) {
       extraOpts.push(`<option value="${htmlEsc(selected)}" selected>` +
         `${htmlEsc(t('subasm.originEffective'))}: ${htmlEsc(selected)}</option>`);
     }
-    if (configured && configured !== selected && !groupOrigins.has(configured)) {
+    if (configured && configured !== selected && !c.stale_origin_link &&
+        !groupOrigins.has(configured)) {
       extraOpts.push(`<option value="${htmlEsc(configured)}">` +
         `${htmlEsc(t('subasm.originConfigured'))}: ${htmlEsc(configured)}</option>`);
     }
@@ -3027,18 +3051,7 @@ function originLinkChoicesHtml(groupChoices) {
         `${selected === originLink ? ' selected' : ''}>` +
         `${htmlEsc(label)} origin link: ${htmlEsc(originLink)}</option>`;
     })).join('');
-    const source = originSourceLabel(c.selected_origin_source || '');
-    const diag = `<div style="color:#a9bdd8;margin-top:3px">` +
-      `${htmlEsc(t('subasm.originEffective'))}: ` +
-      `<span style="color:#cfe3ff">${htmlEsc(selected || t('subasm.originLinkAuto'))}</span>` +
-      ` <span style="color:#6b7480">(${htmlEsc(source)})</span></div>` +
-      (configured && configured !== selected && c.selected_origin_source === 'canonical_base'
-        ? `<div style="color:#d6b36b">${htmlEsc(t('subasm.originConfiguredIgnored'))}</div>`
-        : (configured && configured !== selected ? `<div style="color:#6b7480">` +
-          `${htmlEsc(t('subasm.originConfigured'))}: ${htmlEsc(configured)}</div>` : '')) +
-      (configured && configured === selected ? `<div style="color:#6b7480">` +
-        `${htmlEsc(t('subasm.originConfigured'))}</div>`
-        : '');
+    const diag = originDiagnosticsHtml(c);
     const groups = (c.groups || []).map((g, i) => {
       const links = (g.links || []).slice(0, 4).map(htmlEsc).join(', ');
       const more = (g.links || []).length > 4
@@ -3051,7 +3064,7 @@ function originLinkChoicesHtml(groupChoices) {
       `<div style="color:#6b7480">${htmlEsc(c.link_name)}</div></div>` +
       `<div><select class="subasm-origin-link-choice" ` +
       `data-name="${htmlEsc(c.subassembly)}">` +
-      opts + `</select>${diag}${stale}${groups}</div></div>`;
+      opts + `</select><div style="margin-top:3px">${diag}</div>${groups}</div></div>`;
   }).join('');
   return `<div style="border:1px solid #4d4536;background:#24231d;` +
     `border-radius:4px;padding:6px 8px;margin:8px 0;font-size:11px">` +
@@ -3107,22 +3120,7 @@ function bindSubassemblyOriginLinkChoices(root, ov) {
 }
 
 function subassemblyOriginSummaryHtml(s) {
-  const effective = s.selected_origin_link || '';
-  const configured = s.configured_origin_link || '';
-  const source = s.selected_origin_source === 'canonical_base'
-    ? t('subasm.originSourceCanonicalBase')
-    : (s.selected_origin_source === 'user'
-      ? t('subasm.originSourceUser') : t('subasm.originSourceAuto'));
-  const lines = [];
-  lines.push(`<div style="color:#cfe3ff">${htmlEsc(effective || t('subasm.originLinkAuto'))}</div>`);
-  lines.push(`<div style="color:#6b7480">${htmlEsc(source)}</div>`);
-  if (configured && configured !== effective && s.selected_origin_source === 'canonical_base') {
-    lines.push(`<div style="color:#d6b36b">${htmlEsc(t('subasm.originConfiguredIgnored'))}</div>`);
-  } else if (configured && configured !== effective) {
-    lines.push(`<div style="color:#d6b36b">${htmlEsc(t('subasm.originConfigured'))}: ` +
-      `${htmlEsc(configured)}</div>`);
-  }
-  return lines.join('');
+  return originDiagnosticsHtml(s);
 }
 
 function driverJointChoicesHtml(driverChoices) {
