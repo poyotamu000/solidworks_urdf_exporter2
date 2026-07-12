@@ -1044,9 +1044,6 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'rename.resetAllBtn': { en: '↺ reset all to defaults', ja: '↺ 全デフォルト名に戻す' },
     'rename.resetAllBtnTitle': { en: 'revert every joint/link name to its original',
                                  ja: 'すべての joint 名・link 名を元の名前に戻す' },
-    'subasm.btn': { en: 'Sub-assemblies', ja: 'サブアセンブリ' },
-    'subasm.btnTitle': { en: 'show CAD sub-assemblies and whether they are expanded',
-                         ja: 'CADサブアセンブリと展開状態を表示' },
     'subasm.directBtn': { en: 'sub-assemblies', ja: 'サブアセンブリ' },
     'subasm.directBtnTitle': { en: 'open CAD sub-assembly mode',
                                ja: 'CADサブアセンブリmodeを開く' },
@@ -1066,7 +1063,6 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.thState': { en: 'state', ja: '状態' },
     'subasm.thMode': { en: 'mode', ja: 'mode' },
     'subasm.thPath': { en: 'file', ja: 'ファイル' },
-    'subasm.back': { en: '← rename list', ja: '← 改名リスト' },
     'subasm.previewBtn': { en: 'preview collapse', ja: '畳み込み preview' },
     'subasm.previewRobotBtn': { en: 'preview robot', ja: 'ロボットpreview' },
     'subasm.normalRobotBtn': { en: 'normal robot', ja: '通常ロボット' },
@@ -3412,13 +3408,12 @@ async function setSubassemblyMode(name, mode, ov) {
   }
 }
 
-async function openSubassemblyList(ov, entrySource = null) {
+async function openSubassemblyList(ov) {
   if (!viewer.robot && !currentInfo) { log(t('common.openFirst'), 'wrn'); return; }
   document.getElementById('masslist')?.remove();
   if (!ov) { document.getElementById('renamelist')?.remove(); }
   const owned = ov || document.createElement('div');
   owned.id = 'renamelist';
-  if (entrySource) { owned.dataset.subassemblyEntry = entrySource; }
   dockPanelBelowViews(owned);
   try {
     const resp = await fetch('/api/subassemblies');
@@ -3468,16 +3463,12 @@ async function openSubassemblyList(ov, entrySource = null) {
     card.innerHTML = html;
     const bar = document.createElement('div');
     bar.style.cssText = 'display:flex;gap:8px;margin-top:10px';
-    const back = document.createElement('button');
-    back.textContent = t('subasm.back');
-    back.addEventListener('click', () => openRenameList(owned));
     const preview = document.createElement('button');
     preview.textContent = t('subasm.previewBtn');
     preview.addEventListener('click', () => openSubassemblyPreview(owned));
     const close = document.createElement('button');
     close.textContent = t('common.close');
     close.addEventListener('click', () => owned.remove());
-    if (owned.dataset.subassemblyEntry === 'rename') { bar.appendChild(back); }
     bar.append(preview, close);
     card.appendChild(bar);
     owned.replaceChildren(card);
@@ -3639,14 +3630,10 @@ function openRenameList(ov = null) {
   resetAll.textContent = t('rename.resetAllBtn');
   resetAll.title = t('rename.resetAllBtnTitle');
   resetAll.addEventListener('click', resetAllNames);
-  const subasm = document.createElement('button');
-  subasm.textContent = t('subasm.btn');
-  subasm.title = t('subasm.btnTitle');
-  subasm.addEventListener('click', () => openSubassemblyList(ov, 'rename'));
   const close = document.createElement('button');
   close.textContent = t('common.close');
   close.addEventListener('click', () => ov.remove());
-  bar.append(resetAll, subasm, close);
+  bar.append(resetAll, close);
   card.appendChild(bar);
   ov.replaceChildren(card);
   card.querySelectorAll('.rn-input').forEach(inp => {
@@ -3675,7 +3662,7 @@ function syncSubassemblyAccessButton() {
 }
 
 document.getElementById('subassemblybtn')
-  .addEventListener('click', () => openSubassemblyList(null, 'direct'));
+  .addEventListener('click', () => openSubassemblyList());
 
 // shared material/density presets (label -> density kg/m³; 'custom' = prompt),
 // used by both the mass editor and the per-link select popup
