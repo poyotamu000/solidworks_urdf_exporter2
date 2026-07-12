@@ -232,6 +232,7 @@ def test_collapse_preview_replaces_no_expand_subassembly_members():
         "servo_1__case_1", "servo_1__horn_1"]
     plan = payload["collapse_plan"]
     assert plan["ready_for_urdf"] is True
+    assert plan["blocking_issue_count"] == 0
     assert plan["collapsed_subassemblies"] == [{
         "name": "servo-1",
         "link": "servo_1",
@@ -316,6 +317,7 @@ joints:
     assert plan["version"] == 1
     assert plan["base_link"] == payload["base_link"]
     assert plan["ready_for_urdf"] is False
+    assert plan["blocking_issue_count"] == 1
     servo_link = next(l for l in plan["links"] if l["link"] == "servo_1")
     assert servo_link["kind"] == "collapsed_subassembly"
     assert servo_link["source_subassembly"] == "servo-1"
@@ -351,6 +353,9 @@ joints:
         if i["code"] == "disconnected_members")
     assert anchored["severity"] == "info"
     assert anchored["origin_link"] == "servo_1__horn_1"
+    plan = payload["collapse_plan"]
+    assert plan["ready_for_urdf"] is True
+    assert plan["blocking_issue_count"] == 0
 
 
 def test_collapse_preview_reports_stale_subassembly_origin_link():

@@ -1828,10 +1828,15 @@ def _collapse_plan_payload(base_link, links, joints, collapsed, collapse_link,
     for row in dropped_cycle:
         dropped_joints.append(plan_joint(row, "dropped_cycle_break"))
 
+    blocking_issue_count = sum(
+        issue.get("severity") != "info"
+        for issue in (validation.get("issues") or []))
+
     return {
         "version": 1,
         "base_link": base_link,
-        "ready_for_urdf": int(validation.get("issue_count") or 0) == 0,
+        "ready_for_urdf": blocking_issue_count == 0,
+        "blocking_issue_count": blocking_issue_count,
         "links": [plan_link(row) for row in links],
         "joints": [plan_joint(row) for row in joints],
         "dropped_joints": dropped_joints,
