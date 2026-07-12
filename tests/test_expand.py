@@ -252,8 +252,7 @@ def test_collapse_preview_replaces_no_expand_subassembly_members():
         "selected_origin_link": "",
     }
     assert plan_sub["selected_driver_joint"] == ""
-    assert plan_sub["auto_driver_joint"] == \
-        "servo_1__case_1__servo_1__horn_1"
+    assert plan_sub["auto_driver_joint"] == "plate_1__servo_1"
     assert plan["link_replacements"] == [
         {"source_link": "servo_1__case_1", "collapsed_link": "servo_1"},
         {"source_link": "servo_1__horn_1", "collapsed_link": "servo_1"},
@@ -341,13 +340,22 @@ def test_collapse_preview_lists_subassembly_driver_joint_candidates():
     assert plan_joint["driver_type"] == "fixed"
 
 
-def test_set_subassembly_driver_joint_validates_resets_and_saves(tmp_path):
+def test_driver_joint_endpoints_validate_reset_and_save(tmp_path):
     from sw2robot.editor import webserver
 
     graph = make_graph()
     pkg = tmp_path / "pkg"
     pkg.mkdir()
     (pkg / "urdf").mkdir()
+    (pkg / "urdf" / "t.urdf").write_text("""
+<robot name="t">
+  <link name="plate_1"/>
+  <link name="servo_1"/>
+  <joint name="plate_1__servo_1" type="fixed">
+    <parent link="plate_1"/><child link="servo_1"/>
+  </joint>
+</robot>
+""", encoding="utf-8")
     graph.save(pkg / "graph.json")
     yml = pkg / "t.joints.yaml"
     yml.write_text("""
@@ -375,7 +383,7 @@ subassembly_driver_joints:
     base = f"http://127.0.0.1:{port}"
     try:
         code, payload = _get_json(base, "/api/collapse_preview")
-        assert code == 200
+        assert code == 200, payload
         choice = payload["driver_joint_choices"][0]
         assert choice["selected_driver_joint"] == "removed_joint"
         stale = next(c for c in choice["candidates"]
@@ -396,14 +404,15 @@ subassembly_driver_joints:
         assert webserver._subassembly_driver_joints(
             yml.read_text(encoding="utf-8")) == {}
 
-        selected = "servo_1__case_1__servo_1__horn_1"
+        selected = "plate_1__servo_1"
         code, payload = _post_json(
-            base, "/api/set_subassembly_driver_joint",
-            {"name": "servo-1", "source_joint": selected})
-        assert code == 200
+            base, "/api/set_collapsed_driver_joint",
+            {"edge": "plate_1__servo_1", "source_joint": selected})
+        assert code == 200, payload
         assert payload["source_joint"] == selected
-        assert webserver._subassembly_driver_joints(
-            yml.read_text(encoding="utf-8")) == {"servo-1": selected}
+        assert webserver._collapsed_driver_joints(
+            yml.read_text(encoding="utf-8")) == {
+                "plate_1__servo_1": selected}
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -439,6 +448,76 @@ def test_collapse_driver_joint_choices_are_unique_per_edge():
     assert len(choices) == 1
     assert choices[0]["edge"] == "parent__sub"
     assert choices[0]["auto_driver_joint"] == "parent__sub"
+
+
+def test_collapse_driver_joint_fuzzy_matches_require_explicit_selection():
+    from sw2robot.editor.webserver import (
+        _collapse_driver_joint_choices,
+        _collapse_plan_payload,
+    )
+
+    boundary = {
+        "name": "base__sub", "parent": "base", "child": "sub",
+        "type": "fixed", "source_name": "cad_boundary",
+        "decision": "kept_boundary",
+    }
+    current = [
+        {"name": "base__motor__sub__hinge", "parent": "base_mount",
+         "child": "sub_link", "type": "revolute"},
+        {"name": "baseframe__subframe", "parent": "baseframe",
+         "child": "subframe", "type": "revolute"},
+    ]
+    collapsed = [{
+        "name": "sub-1", "link_name": "sub", "member_links": ["sub__part"],
+    }]
+    choices = _collapse_driver_joint_choices(
+        [boundary], current, collapsed, {"sub__part": "sub"}, {}, {})
+
+    assert [c["source_joint"] for c in choices[0]["candidates"]] == [
+        "base__motor__sub__hinge"]
+    assert choices[0]["auto_driver_joint"] == ""
+    assert choices[0]["requires_explicit_selection"] is True
+
+    plan = _collapse_plan_payload(
+        "base",
+        [{"link_name": "base"},
+         {"link_name": "sub", "collapsed": True,
+          "member_links": ["sub__part"]}],
+        [boundary], collapsed, {"sub__part": "sub"}, [], [], [],
+        {"issue_count": 0}, choices)
+    assert "driver_source_joint" not in plan["joints"][0]
+
+
+def test_collapse_driver_joint_fuzzy_match_applies_after_user_selection():
+    from sw2robot.editor.webserver import (
+        _collapse_driver_joint_choices,
+        _collapse_plan_payload,
+    )
+
+    boundary = {
+        "name": "base__sub", "parent": "base", "child": "sub",
+        "type": "fixed", "source_name": "cad_boundary",
+        "decision": "kept_boundary",
+    }
+    selected = "base__motor__sub__hinge"
+    collapsed = [{
+        "name": "sub-1", "link_name": "sub", "member_links": ["sub__part"],
+    }]
+    choices = _collapse_driver_joint_choices(
+        [boundary], [{"name": selected, "parent": "base_mount",
+                     "child": "sub_link", "type": "revolute"}],
+        collapsed, {"sub__part": "sub"}, {"base__sub": selected}, {})
+
+    assert choices[0]["selected_driver_joint"] == selected
+    assert choices[0]["requires_explicit_selection"] is False
+    plan = _collapse_plan_payload(
+        "base",
+        [{"link_name": "base"},
+         {"link_name": "sub", "collapsed": True,
+          "member_links": ["sub__part"]}],
+        [boundary], collapsed, {"sub__part": "sub"}, [], [], [],
+        {"issue_count": 0}, choices)
+    assert plan["joints"][0]["driver_source_joint"] == selected
 
 
 def test_collapse_preview_keeps_expanded_override():
@@ -761,13 +840,15 @@ def test_collapse_preview_applies_cycle_break_before_choices(monkeypatch):
         "subassemblies": [],
     })
 
-    unresolved = webserver._collapse_preview_payload(object(), "")
+    unresolved = webserver._collapse_preview_payload(
+        object(), "", current_joints=[])
     assert any(i["code"] == "cycle"
                for i in unresolved["validation"]["issues"])
     assert unresolved["collapse_plan"]["ready_for_urdf"] is False
 
     payload = webserver._collapse_preview_payload(
-        object(), "subassembly_cycle_break_joints:\n- arm__base\n")
+        object(), "subassembly_cycle_break_joints:\n- arm__base\n",
+        current_joints=[])
 
     assert [j["source_name"] for j in payload["joints"]] == ["base__arm"]
     assert not any(i["code"] == "cycle"
@@ -809,7 +890,8 @@ def test_collapse_plan_rejects_unreachable_second_root(monkeypatch):
         "subassemblies": [],
     })
 
-    payload = webserver._collapse_preview_payload(object(), "")
+    payload = webserver._collapse_preview_payload(
+        object(), "", current_joints=[])
 
     issues = {i["code"]: i for i in payload["validation"]["issues"]}
     assert issues["invalid_roots"]["roots"] == ["base", "orphan"]

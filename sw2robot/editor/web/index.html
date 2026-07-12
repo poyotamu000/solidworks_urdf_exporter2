@@ -1101,6 +1101,9 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
       en: 'Normal joints provide type, axis, and limits for preview joints; the preview robot moves its own collapsed joints.',
       ja: 'normal joint は preview joint の type / axis / limit のコピー元です。実際に動かすのは畳み込みロボット内の preview joint です。' },
     'subasm.driverJointAuto': { en: 'auto', ja: 'auto' },
+    'subasm.driverJointAmbiguous': {
+      en: 'Ambiguous: select a motion joint',
+      ja: '候補が曖昧です: motion代表jointを選択してください' },
     'subasm.driverJointSetOk': { en: a => `${a.name}: driver joint ${a.sourceJoint} ✓`,
                                  ja: a => `${a.name}: driver joint ${a.sourceJoint} ✓` },
     'subasm.driverJointSetting': { en: a => `saving driver joint: ${a.name} → ${a.sourceJoint} ...`,
@@ -3065,6 +3068,7 @@ function driverJointChoicesHtml(driverChoices) {
   const rows = choices.map(c => {
     const selected = c.selected_driver_joint || '';
     const auto = c.auto_driver_joint || '';
+    const ambiguous = !!c.requires_explicit_selection;
     const edge = c.edge || '';
     const edgeLabel = c.parent && c.child
       ? `${c.parent} → ${c.child}` : edge;
@@ -3100,7 +3104,10 @@ function driverJointChoicesHtml(driverChoices) {
       `<div style="color:#6b7480">${htmlEsc(c.subassembly || c.link_name || edge)}</div></div>` +
       `<div><select class="subasm-driver-joint-choice" ` +
       `data-edge="${htmlEsc(edge)}">` +
-      opts + `</select>${details}${more}</div></div>`;
+      opts + `</select>` +
+      `${ambiguous ? `<div style="color:#e0b45d;margin-top:3px">` +
+        `${htmlEsc(t('subasm.driverJointAmbiguous'))}</div>` : ''}` +
+      `${details}${more}</div></div>`;
   }).join('');
   return `<div style="border:1px solid #3d5244;background:#1f2a25;` +
     `border-radius:4px;padding:6px 8px;margin:8px 0;font-size:11px">` +

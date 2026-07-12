@@ -1761,6 +1761,18 @@ def _collapse_driver_joint_choices(joints, current_joints, collapsed,
                 out.add(s.replace("__", "_"))
         return out
 
+    def contains_link_token(value, token):
+        """Match a link token without accepting partial identifier words."""
+        value = str(value or "")
+        variants = {str(token or "")}
+        variants.add(str(token or "").replace("__", "_"))
+        return any(
+            variant and re.search(
+                rf"(?<![A-Za-z0-9]){re.escape(variant)}(?![A-Za-z0-9])",
+                value)
+            for variant in variants
+        )
+
     for edge, edge_info in edge_rows.items():
         parent = edge_info.get("parent")
         child = edge_info.get("child")
@@ -1801,9 +1813,13 @@ def _collapse_driver_joint_choices(joints, current_joints, collapsed,
             if source_parent == parent and source_child == child:
                 add_candidate(joint, "normal_exact_edge", "normal")
                 continue
-            haystack = " ".join((source, source_parent, source_child))
-            near_child = any(tok and tok in haystack for tok in child_tokens)
-            near_parent = any(tok and tok in haystack for tok in parent_tokens)
+            source_fields = (source, source_parent, source_child)
+            near_child = any(
+                contains_link_token(value, token)
+                for token in child_tokens for value in source_fields)
+            near_parent = any(
+                contains_link_token(value, token)
+                for token in parent_tokens for value in source_fields)
             if near_child and near_parent:
                 add_candidate(joint, "normal_near_parent_child", "normal")
 
@@ -1838,16 +1854,12 @@ def _collapse_driver_joint_choices(joints, current_joints, collapsed,
         if not auto:
             auto = next((c.get("source_joint") for c in candidates
                          if c.get("role") == "normal_exact_edge"), "")
-        if not auto:
-            auto = next((c.get("source_joint") for c in candidates
-                         if c.get("role") == "normal_near_parent_child"
-                         and c.get("movable")), "")
-        if not auto:
-            auto = next((c.get("source_joint") for c in candidates
-                         if c.get("role") == "normal_near_parent_child"), "")
-        if not auto:
-            auto = next((c.get("source_joint") for c in candidates
-                         if c.get("movable")), "")
+        selected_is_valid = any(
+            c.get("source_joint") == selected and c.get("role") != "stale"
+            for c in candidates)
+        requires_explicit_selection = bool(
+            not auto and not selected_is_valid and
+            any(c.get("role") != "stale" for c in candidates))
         choices.append({
             "edge": edge,
             "parent": parent,
@@ -1856,6 +1868,7 @@ def _collapse_driver_joint_choices(joints, current_joints, collapsed,
             "link_name": child,
             "selected_driver_joint": selected,
             "auto_driver_joint": auto,
+            "requires_explicit_selection": requires_explicit_selection,
             "candidates": candidates,
         })
     return choices
@@ -2130,14 +2143,23 @@ def _collapse_plan_payload(base_link, links, joints, collapsed, collapse_link,
     driver_by_edge = {}
     for choice in driver_choices or []:
         edge = choice.get("edge")
-        selected = choice.get("selected_driver_joint") or \
-            choice.get("auto_driver_joint") or ""
         candidates = {
             c.get("source_joint"): c for c in choice.get("candidates", [])
         }
-        if edge and selected:
+        selected = choice.get("selected_driver_joint") or ""
+        driver = candidates.get(selected) if selected else None
+        if driver and driver.get("role") == "stale":
+            driver = None
+        if not selected:
+            auto = choice.get("auto_driver_joint") or ""
+            auto_candidate = candidates.get(auto)
+            if auto_candidate and \
+                    auto_candidate.get("role") == "normal_exact_edge":
+                selected = auto
+                driver = auto_candidate
+        if edge and selected and driver:
             driver_by_edge[edge] = {
-                **candidates.get(selected, {}),
+                **driver,
                 "source_joint": selected,
             }
 
