@@ -320,6 +320,7 @@ def test_collapse_preview_lists_subassembly_driver_joint_candidates():
     assert choices[0]["child"] == "servo_1"
     assert choices[0]["auto_driver_joint"] == \
         "plate_1__servo_1"
+    assert choices[0]["effective_driver_joint"] == "plate_1__servo_1"
     assert [(c["source_joint"], c["role"], c["type"],
              c["source_kind"])
             for c in choices[0]["candidates"]] == [
@@ -386,6 +387,10 @@ subassembly_driver_joints:
         assert code == 200, payload
         choice = payload["driver_joint_choices"][0]
         assert choice["selected_driver_joint"] == "removed_joint"
+        assert choice["effective_driver_joint"] == ""
+        assert choice["requires_explicit_selection"] is True
+        assert "driver_source_joint" not in \
+            payload["collapse_plan"]["joints"][0]
         stale = next(c for c in choice["candidates"]
                      if c["source_joint"] == "removed_joint")
         assert stale["role"] == "stale"
@@ -476,6 +481,7 @@ def test_collapse_driver_joint_fuzzy_matches_require_explicit_selection():
     assert [c["source_joint"] for c in choices[0]["candidates"]] == [
         "base__motor__sub__hinge"]
     assert choices[0]["auto_driver_joint"] == ""
+    assert choices[0]["effective_driver_joint"] == ""
     assert choices[0]["requires_explicit_selection"] is True
 
     plan = _collapse_plan_payload(
@@ -509,6 +515,7 @@ def test_collapse_driver_joint_fuzzy_match_applies_after_user_selection():
         collapsed, {"sub__part": "sub"}, {"base__sub": selected}, {})
 
     assert choices[0]["selected_driver_joint"] == selected
+    assert choices[0]["effective_driver_joint"] == selected
     assert choices[0]["requires_explicit_selection"] is False
     plan = _collapse_plan_payload(
         "base",

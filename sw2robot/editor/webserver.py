@@ -1857,8 +1857,10 @@ def _collapse_driver_joint_choices(joints, current_joints, collapsed,
         selected_is_valid = any(
             c.get("source_joint") == selected and c.get("role") != "stale"
             for c in candidates)
+        effective = selected if selected_is_valid else (
+            auto if not selected else "")
         requires_explicit_selection = bool(
-            not auto and not selected_is_valid and
+            not effective and
             any(c.get("role") != "stale" for c in candidates))
         choices.append({
             "edge": edge,
@@ -1868,6 +1870,7 @@ def _collapse_driver_joint_choices(joints, current_joints, collapsed,
             "link_name": child,
             "selected_driver_joint": selected,
             "auto_driver_joint": auto,
+            "effective_driver_joint": effective,
             "requires_explicit_selection": requires_explicit_selection,
             "candidates": candidates,
         })

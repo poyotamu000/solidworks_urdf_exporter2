@@ -1119,6 +1119,7 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.driverJointAmbiguous': {
       en: 'Ambiguous: select a motion joint',
       ja: '候補が曖昧です: motion代表jointを選択してください' },
+    'subasm.driverJointNotSelected': { en: 'not selected', ja: '未選択' },
     'subasm.driverEffective': { en: 'copy from normal joint', ja: 'コピー元normal joint' },
     'subasm.driverConfigured': { en: 'manual choice', ja: '手動選択' },
     'subasm.driverJointSetOk': { en: a => `${a.name}: driver joint ${a.sourceJoint} ✓`,
@@ -3131,7 +3132,7 @@ function driverJointChoicesHtml(driverChoices) {
     const selected = c.selected_driver_joint || '';
     const auto = c.auto_driver_joint || '';
     const ambiguous = !!c.requires_explicit_selection;
-    const effective = selected || auto || '';
+    const effective = c.effective_driver_joint || '';
     const edge = c.edge || '';
     const edgeLabel = c.parent && c.child
       ? `${c.parent} → ${c.child}` : edge;
@@ -3163,7 +3164,8 @@ function driverJointChoicesHtml(driverChoices) {
       : '';
     const diag = `<div style="color:#a9bdd8;margin-top:3px">` +
       `${htmlEsc(t('subasm.driverEffective'))}: ` +
-      `<span style="color:#cfe3ff">${htmlEsc(effective || t('subasm.driverJointAuto'))}</span>` +
+      `<span style="color:#cfe3ff">` +
+      `${htmlEsc(effective || t('subasm.driverJointNotSelected'))}</span>` +
       `</div>` +
       (selected ? `<div style="color:#6b7480">` +
         `${htmlEsc(t('subasm.driverConfigured'))}: ${htmlEsc(selected)}</div>` : '');
