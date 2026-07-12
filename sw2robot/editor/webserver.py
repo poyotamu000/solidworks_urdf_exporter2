@@ -2510,6 +2510,9 @@ def _collapsed_preview_urdf_text(urdf_text, plan, robot_name=None,
         src_child_T = src_link_poses.get(src_child)
         if axis_elem is not None and src_child_T is not None:
             axis = _np.asarray(_urdf_vec(axis_elem.get("xyz"), 3), float)
+            # Both source URDFs describe the zero pose with their root at the
+            # identity, so their link poses share one world frame.  Convert the
+            # normal joint axis through that frame into the collapsed child.
             world_axis = src_child_T[:3, :3] @ axis
             _set_urdf_axis(joint, child_T[:3, :3].T @ world_axis)
         out_root.append(joint)

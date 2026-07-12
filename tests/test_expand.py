@@ -1161,6 +1161,64 @@ def test_collapsed_preview_urdf_uses_normal_driver_joint_source():
     assert joint.find("limit").get("effort") == "4"
 
 
+def test_collapsed_preview_urdf_reexpresses_driver_axis_in_collapsed_frame():
+    import xml.etree.ElementTree as ET
+
+    from sw2robot.editor.webserver import _collapsed_preview_urdf_text
+
+    expanded_urdf = """<robot name="demo">
+  <link name="base"/>
+  <link name="member_origin"/>
+  <joint name="base__member_origin" type="fixed">
+    <origin xyz="0 0 0" rpy="0 0 -1.5707963267948966"/>
+    <parent link="base"/><child link="member_origin"/>
+  </joint>
+</robot>
+"""
+    normal_urdf = """<robot name="demo">
+  <link name="base"/>
+  <link name="normal_child"/>
+  <joint name="normal_driver" type="revolute">
+    <origin xyz="0 0 0" rpy="0 0 1.5707963267948966"/>
+    <axis xyz="1 0 0"/>
+    <parent link="base"/><child link="normal_child"/>
+    <limit lower="-1" upper="1" effort="1" velocity="1"/>
+  </joint>
+</robot>
+"""
+    plan = {
+        "version": 1,
+        "base_link": "base",
+        "ready_for_urdf": True,
+        "links": [
+            {"link": "base", "name": "base", "kind": "expanded_link"},
+            {"link": "sub", "name": "sub", "kind": "collapsed_subassembly",
+             "member_links": ["member_origin"],
+             "selected_origin_link": "member_origin"},
+        ],
+        "joints": [
+            {"name": "base__sub", "parent": "base", "child": "sub",
+             "type": "fixed", "source_joint": "base__member_origin",
+             "driver_source_joint": "normal_driver",
+             "driver_type": "revolute", "decision": "kept_boundary"},
+        ],
+        "dropped_joints": [],
+        "collapsed_subassemblies": [],
+        "link_replacements": [
+            {"source_link": "member_origin", "collapsed_link": "sub"},
+        ],
+    }
+
+    root = ET.fromstring(_collapsed_preview_urdf_text(
+        expanded_urdf, plan, driver_urdf_text=normal_urdf))
+    joint = next(j for j in root.findall("joint")
+                 if j.get("name") == "base__sub")
+    axis = np.asarray([float(v) for v in
+                       joint.find("axis").get("xyz").split()])
+
+    assert axis == pytest.approx([-1.0, 0.0, 0.0], abs=1e-9)
+
+
 def test_collapse_preview_http_cache_reuses_identical_input(tmp_path, monkeypatch):
     from sw2robot.editor import webserver
 
