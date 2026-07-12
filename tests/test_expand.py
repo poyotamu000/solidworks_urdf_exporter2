@@ -90,6 +90,11 @@ def _post_json(base, path, body):
         return e.code, json.loads(e.read().decode("utf-8"))
 
 
+def _get_json(base, path):
+    with urllib.request.urlopen(base + path) as response:
+        return response.status, json.loads(response.read().decode("utf-8"))
+
+
 def test_expand_splices_children():
     comps, adj, ground = from_graph(make_graph())
     names = {c.name for c in comps}
@@ -233,14 +238,22 @@ def test_collapse_preview_replaces_no_expand_subassembly_members():
     plan = payload["collapse_plan"]
     assert plan["ready_for_urdf"] is True
     assert plan["blocking_issue_count"] == 0
-    assert plan["collapsed_subassemblies"] == [{
+    assert len(plan["collapsed_subassemblies"]) == 1
+    plan_sub = plan["collapsed_subassemblies"][0]
+    assert {key: plan_sub[key] for key in (
+        "name", "link", "member_links", "member_components",
+        "selected_parent", "selected_origin_link",
+    )} == {
         "name": "servo-1",
         "link": "servo_1",
         "member_links": ["servo_1__case_1", "servo_1__horn_1"],
         "member_components": ["servo-1/case-1", "servo-1/horn-1"],
         "selected_parent": "",
         "selected_origin_link": "",
-    }]
+    }
+    assert plan_sub["selected_driver_joint"] == ""
+    assert plan_sub["auto_driver_joint"] == \
+        "servo_1__case_1__servo_1__horn_1"
     assert plan["link_replacements"] == [
         {"source_link": "servo_1__case_1", "collapsed_link": "servo_1"},
         {"source_link": "servo_1__horn_1", "collapsed_link": "servo_1"},
@@ -265,7 +278,7 @@ def test_collapse_preview_lists_subassembly_driver_joint_candidates():
     choices = payload["driver_joint_choices"]
     assert choices[0]["subassembly"] == "servo-1"
     assert choices[0]["auto_driver_joint"] == \
-        "plate_1__servo_1__case_1"
+        "servo_1__case_1__servo_1__horn_1"
     assert [(c["source_joint"], c["role"], c["type"])
             for c in choices[0]["candidates"]] == [
         ("plate_1__servo_1__case_1", "incoming_boundary", "fixed"),
@@ -288,6 +301,80 @@ def test_collapse_preview_lists_subassembly_driver_joint_candidates():
         "plate_1__servo_1__case_1",
         "servo_1__case_1__servo_1__horn_1",
     ]
+
+
+def test_set_subassembly_driver_joint_validates_resets_and_saves(tmp_path):
+    from sw2robot.editor import webserver
+
+    graph = make_graph()
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "urdf").mkdir()
+    graph.save(pkg / "graph.json")
+    yml = pkg / "t.joints.yaml"
+    yml.write_text("""
+base: plate-1
+no_expand:
+- servo
+subassembly_driver_joints:
+  servo-1: removed_joint
+""", encoding="utf-8")
+
+    old_state = (
+        webserver._Handler.pkg_dir,
+        webserver._Handler.urdf_rel,
+        webserver._Handler.robot_name,
+        webserver._Handler.root_dir,
+    )
+    webserver._Handler.pkg_dir = str(pkg)
+    webserver._Handler.urdf_rel = "urdf/t.urdf"
+    webserver._Handler.robot_name = "t"
+    webserver._Handler.root_dir = str(pkg)
+    httpd, port = webserver._bind_free_port(
+        webserver._Handler, _free_port())
+    httpd.daemon_threads = True
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    try:
+        code, payload = _get_json(base, "/api/collapse_preview")
+        assert code == 200
+        choice = payload["driver_joint_choices"][0]
+        assert choice["selected_driver_joint"] == "removed_joint"
+        stale = next(c for c in choice["candidates"]
+                     if c["source_joint"] == "removed_joint")
+        assert stale["role"] == "stale"
+
+        code, payload = _post_json(
+            base, "/api/set_subassembly_driver_joint",
+            {"name": "servo-1", "source_joint": "not_a_candidate"})
+        assert code == 400
+        assert "not a driver joint candidate" in payload["error"]
+
+        code, payload = _post_json(
+            base, "/api/set_subassembly_driver_joint",
+            {"name": "servo-1", "source_joint": "auto"})
+        assert code == 200
+        assert payload["source_joint"] == ""
+        assert webserver._subassembly_driver_joints(
+            yml.read_text(encoding="utf-8")) == {}
+
+        selected = "servo_1__case_1__servo_1__horn_1"
+        code, payload = _post_json(
+            base, "/api/set_subassembly_driver_joint",
+            {"name": "servo-1", "source_joint": selected})
+        assert code == 200
+        assert payload["source_joint"] == selected
+        assert webserver._subassembly_driver_joints(
+            yml.read_text(encoding="utf-8")) == {"servo-1": selected}
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        (
+            webserver._Handler.pkg_dir,
+            webserver._Handler.urdf_rel,
+            webserver._Handler.robot_name,
+            webserver._Handler.root_dir,
+        ) = old_state
 
 
 def test_collapse_preview_keeps_expanded_override():

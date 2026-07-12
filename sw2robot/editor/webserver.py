@@ -1682,10 +1682,10 @@ def _collapse_driver_joint_choices(collapsed, collapse_link, driver_joints):
                      and c.get("movable")), "")
         if not auto:
             auto = next((c.get("source_joint") for c in candidates
-                         if c.get("role") == "incoming_boundary"), "")
+                         if c.get("movable")), "")
         if not auto:
             auto = next((c.get("source_joint") for c in candidates
-                         if c.get("movable")), "")
+                         if c.get("role") == "incoming_boundary"), "")
         choices.append({
             "subassembly": sub.get("name"),
             "link_name": link_name,
