@@ -1061,9 +1061,11 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.thPath': { en: 'file', ja: 'ファイル' },
     'subasm.back': { en: '← rename list', ja: '← 改名リスト' },
     'subasm.previewBtn': { en: 'preview collapse', ja: '畳み込み preview' },
+    'subasm.previewRobotBtn': { en: 'preview robot', ja: 'ロボットpreview' },
+    'subasm.normalRobotBtn': { en: 'normal robot', ja: '通常ロボット' },
     'subasm.previewTitle': { en: 'Sub-assembly collapse preview',
                              ja: 'サブアセンブリ畳み込み preview' },
-    'subasm.previewHelp': { en: 'Read-only preview from the canonical expanded tree. URDF output is not changed here.',
+    'subasm.previewHelp': { en: 'Read-only preview from the expanded tree. URDF output is not changed here.',
                             ja: '全展開treeから作った読み取り専用previewです。ここではURDF出力は変更しません。' },
     'subasm.previewCounts': { en: a => `links ${a.cl} → ${a.pl}, joints ${a.cj} → ${a.pj}`,
                               ja: a => `links ${a.cl} → ${a.pl}, joints ${a.cj} → ${a.pj}` },
@@ -1074,6 +1076,7 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
     'subasm.thTreeJoint': { en: 'joint', ja: 'joint' },
     'subasm.thMembers': { en: 'members', ja: '構成link' },
     'subasm.thDropped': { en: 'internal joints', ja: '内部joint' },
+    'subasm.thOrigin': { en: 'origin link', ja: '原点link' },
     'subasm.collapsedTag': { en: 'collapsed', ja: '畳み込み' },
     'subasm.parentChoicesTitle': { en: 'Attach parent choices',
                                    ja: '接続先parent候補' },
@@ -1086,13 +1089,45 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
                               ja: a => `接続先parentの保存に失敗: ${a.e}` },
     'subasm.originLinkChoicesTitle': { en: 'Sub-assembly origin links',
                                       ja: 'サブアセンブリ原点link' },
+    'subasm.originLinkChoicesHelp': {
+      en: 'Choose which internal link frame represents each collapsed sub-assembly. If it contains the robot root, the base link is used automatically.',
+      ja: '畳み込んだサブアセンブリの座標系として使う内部linkを選びます。ロボットrootを含む場合は base link を自動で使います。' },
     'subasm.originLinkAuto': { en: 'auto', ja: 'auto' },
+    'subasm.originEffective': { en: 'used origin link', ja: '使う原点link' },
+    'subasm.originConfigured': { en: 'manual choice', ja: '手動選択' },
+    'subasm.originSourceUser': { en: 'manual', ja: '手動' },
+    'subasm.originSourceCanonicalBase': { en: 'base link', ja: 'base link' },
+    'subasm.originSourceAuto': { en: 'auto', ja: 'auto' },
+    'subasm.originConfiguredIgnored': {
+      en: 'The manual choice is saved, but this root sub-assembly uses the base link.',
+      ja: '手動選択は保存されていますが、root のサブアセンブリでは base link を使います。' },
+    'subasm.originStaleFallback': {
+      en: a => `Saved origin link ${a.link} is unavailable; a member link is selected automatically.`,
+      ja: a => `保存済み原点link ${a.link} は利用できないため、構成linkを自動選択します。` },
     'subasm.originLinkSetOk': { en: a => `${a.name}: origin link ${a.originLink} ✓`,
                                 ja: a => `${a.name}: origin link ${a.originLink} ✓` },
     'subasm.originLinkSetting': { en: a => `saving origin link: ${a.name} → ${a.originLink} ...`,
                                   ja: a => `サブアセンブリ原点linkを保存中: ${a.name} → ${a.originLink} ...` },
     'subasm.originLinkSetFail': { en: a => `origin link failed: ${a.e}`,
                                   ja: a => `サブアセンブリ原点linkの保存に失敗: ${a.e}` },
+    'subasm.driverJointChoicesTitle': { en: 'Motion driver joints',
+                                        ja: 'motion代表joint' },
+    'subasm.driverJointChoicesHelp': {
+      en: 'Choose the normal robot joint whose type, axis, and limits are copied to each collapsed preview joint.',
+      ja: '畳み込みpreviewのjointにコピーする、通常ロボット側のjoint type / axis / limit の元を選びます。' },
+    'subasm.driverJointAuto': { en: 'auto', ja: 'auto' },
+    'subasm.driverJointAmbiguous': {
+      en: 'Ambiguous: select a motion joint',
+      ja: '候補が曖昧です: motion代表jointを選択してください' },
+    'subasm.driverJointNotSelected': { en: 'not selected', ja: '未選択' },
+    'subasm.driverEffective': { en: 'copy from normal joint', ja: 'コピー元normal joint' },
+    'subasm.driverConfigured': { en: 'manual choice', ja: '手動選択' },
+    'subasm.driverJointSetOk': { en: a => `${a.name}: driver joint ${a.sourceJoint} ✓`,
+                                 ja: a => `${a.name}: driver joint ${a.sourceJoint} ✓` },
+    'subasm.driverJointSetting': { en: a => `saving driver joint: ${a.name} → ${a.sourceJoint} ...`,
+                                   ja: a => `motion代表jointを保存中: ${a.name} → ${a.sourceJoint} ...` },
+    'subasm.driverJointSetFail': { en: a => `driver joint failed: ${a.e}`,
+                                   ja: a => `motion代表jointの保存に失敗: ${a.e}` },
     'subasm.cycleBreakChoicesTitle': { en: 'Cycle break joints',
                                        ja: 'cycle解消joint' },
     'subasm.cycleBreakAuto': { en: 'auto', ja: 'auto' },
@@ -1119,6 +1154,21 @@ the config and does NOT re-detect). Needs graph.json (CAD mode).">🔗 re-detect
                              ja: a => `${a.name}: ${a.mode} ✓ (preview更新・URDF/viewerは未変更)` },
     'subasm.setFail': { en: a => `sub-assembly mode failed: ${a.e}`,
                         ja: a => `サブアセンブリモード変更に失敗: ${a.e}` },
+    'subasm.previewRobotLoading': { en: 'building collapsed preview robot...',
+                                    ja: '畳み込みロボットpreviewを生成中...' },
+    'subasm.previewRobotOk': { en: 'collapsed preview robot loaded',
+                               ja: '畳み込みロボットpreviewを読み込みました' },
+    'subasm.previewRobotFail': { en: a => `collapsed preview robot failed: ${a.e}`,
+                                 ja: a => `畳み込みロボットpreviewに失敗: ${a.e}` },
+    'subasm.normalRobotOk': { en: 'normal robot loaded',
+                              ja: '通常ロボットを読み込みました' },
+    'subasm.previewSlidersTitle': { en: 'Collapsed preview joints',
+                                    ja: '畳み込みpreview joint' },
+    'subasm.previewSlidersHelp': {
+      en: 'These sliders move preview joints in the displayed collapsed robot. Source normal joints only supply type, axis, and limits.',
+      ja: 'このスライダーは表示中の畳み込みロボットの preview joint を動かします。source normal joint は type / axis / limit のコピー元です。' },
+    'subasm.previewSlidersEmpty': { en: 'No movable preview joints.',
+                                    ja: '動かせるpreview jointがありません。' },
     'subasm.largeConfirm': {
       en: a => `${a.name} contains ${a.children} children and ${a.edges} mates. Changing a large sub-assembly can take a long time. Continue?`,
       ja: a => `${a.name} は子 ${a.children} 個、mate ${a.edges} 個を含みます。大きいサブアセンブリの切り替えには時間がかかることがあります。続行しますか？` },
@@ -2675,6 +2725,8 @@ let jointFilter = '';          // substring filter: when set, the tree collapses
                                // to exactly the matches (see buildJointRows)
 let treeViewMode = 'expanded'; // expanded = editable URDF tree; subassembly =
                                // read-only collapse_preview tree
+let robotViewMode = 'normal';  // normal | collapsed_preview
+let pendingRobotViewMode = null;
 let subasmTreeRequest = 0;     // discard stale async preview responses
 const playRows = new Map();    // joint name -> "move" mode slider record
 let playMode = false;          // movable-joints-only panel active
@@ -2700,6 +2752,28 @@ function previewJoint(name, val) {
   const pr = playRows.get(name);
   if (pr) { pr.slider.value = val; pr.val.value = pr.fmt(val); }
   if (jpSync && jpSync.name === name) { jpSync.set(val); }
+}
+
+function jointLinkOf(j, tag) {
+  return [...(j?.urdfNode?.children ?? [])]
+    .find(el => el.tagName === tag)?.getAttribute('link') ?? '';
+}
+
+function parentJointForLink(linkName) {
+  const link = viewer.robot?.links?.[linkName];
+  return link?.parent?.isURDFJoint ? link.parent : null;
+}
+
+function previewJointForPlanRow(row) {
+  // Prefer the actual parent joint of the displayed child link.  The collapsed
+  // preview URDF may suffix duplicate joint names (e.g. "..._3"), and this is
+  // the same path the in-viewer joint editor uses after a link click.
+  const byChild = parentJointForLink(row?.child || '');
+  if (byChild) { return byChild; }
+  const byName = viewer.robot?.joints?.[row?.name || ''];
+  if (byName) { return byName; }
+  return Object.values(viewer.robot?.joints ?? {})
+    .find(j => jointLinkOf(j, 'child') === row?.child) || null;
 }
 
 const collapsed = new Set();    // link names folded in the tree (persists
@@ -2896,13 +2970,15 @@ async function setSubassemblyParentChoice(name, parent, ov) {
     if (ov) {
       await openSubassemblyPreview(ov);
     }
-    if (viewer.robot && treeViewMode === 'subassembly') {
+    if (viewer.robot && effectiveTreeViewMode() === 'subassembly') {
       buildJointRows(viewer.robot);
     }
   } catch (e) {
     log(t('subasm.parentSetFail', { e: e.message ?? e }), 'err');
     if (ov) {
       await openSubassemblyPreview(ov);
+    } else if (viewer.robot && effectiveTreeViewMode() === 'subassembly') {
+      buildJointRows(viewer.robot);
     }
   }
 }
@@ -2919,6 +2995,35 @@ function bindSubassemblyParentChoices(root, ov) {
   });
 }
 
+function originSourceLabel(src) {
+  if (src === 'canonical_base') { return t('subasm.originSourceCanonicalBase'); }
+  if (src === 'user') { return t('subasm.originSourceUser'); }
+  return t('subasm.originSourceAuto');
+}
+
+function originDiagnosticsHtml(s) {
+  const selected = s.selected_origin_link || '';
+  const configured = s.configured_origin_link || '';
+  const stale = s.stale_origin_link || '';
+  const source = originSourceLabel(s.selected_origin_source || '');
+  const lines = [
+    `<div style="color:#a9bdd8">${htmlEsc(t('subasm.originEffective'))}: ` +
+      `<span style="color:#cfe3ff">` +
+      `${htmlEsc(selected || t('subasm.originLinkAuto'))}</span> ` +
+      `<span style="color:#6b7480">(${htmlEsc(source)})</span></div>`,
+  ];
+  if (configured && configured !== selected &&
+      s.selected_origin_source === 'canonical_base') {
+    lines.push(`<div style="color:#d6b36b">` +
+      `${htmlEsc(t('subasm.originConfiguredIgnored'))}</div>`);
+  }
+  if (stale) {
+    lines.push(`<div style="color:#d68c8c">` +
+      `${htmlEsc(t('subasm.originStaleFallback', { link: stale }))}</div>`);
+  }
+  return lines.join('');
+}
+
 function originLinkChoicesHtml(groupChoices) {
   const choices = (groupChoices || []).filter(c =>
     (c.groups || []).length > 1 || c.selected_origin_link ||
@@ -2926,18 +3031,28 @@ function originLinkChoicesHtml(groupChoices) {
   if (!choices.length) { return ''; }
   const rows = choices.map(c => {
     const selected = c.selected_origin_link || '';
-    const stale = c.stale_origin_link
-      ? `<div style="color:#d68c8c">stale saved link: ` +
-        `${htmlEsc(c.stale_origin_link)}</div>`
-      : '';
+    const configured = c.configured_origin_link || '';
+    const groupOrigins = new Set((c.groups || []).map(g =>
+      g.origin_link || (g.links || [])[0] || '').filter(Boolean));
+    const extraOpts = [];
+    if (selected && !groupOrigins.has(selected)) {
+      extraOpts.push(`<option value="${htmlEsc(selected)}" selected>` +
+        `${htmlEsc(t('subasm.originEffective'))}: ${htmlEsc(selected)}</option>`);
+    }
+    if (configured && configured !== selected && !c.stale_origin_link &&
+        !groupOrigins.has(configured)) {
+      extraOpts.push(`<option value="${htmlEsc(configured)}">` +
+        `${htmlEsc(t('subasm.originConfigured'))}: ${htmlEsc(configured)}</option>`);
+    }
     const opts = [`<option value=""${selected ? '' : ' selected'}>` +
-      `${t('subasm.originLinkAuto')}</option>`].concat((c.groups || []).map((g, i) => {
+      `${t('subasm.originLinkAuto')}</option>`].concat(extraOpts).concat((c.groups || []).map((g, i) => {
       const label = `group ${i + 1} (${g.size || (g.links || []).length})`;
       const originLink = g.origin_link || (g.links || [])[0] || '';
       return `<option value="${htmlEsc(originLink)}"` +
         `${selected === originLink ? ' selected' : ''}>` +
         `${htmlEsc(label)} origin link: ${htmlEsc(originLink)}</option>`;
     })).join('');
+    const diag = originDiagnosticsHtml(c);
     const groups = (c.groups || []).map((g, i) => {
       const links = (g.links || []).slice(0, 4).map(htmlEsc).join(', ');
       const more = (g.links || []).length > 4
@@ -2950,11 +3065,13 @@ function originLinkChoicesHtml(groupChoices) {
       `<div style="color:#6b7480">${htmlEsc(c.link_name)}</div></div>` +
       `<div><select class="subasm-origin-link-choice" ` +
       `data-name="${htmlEsc(c.subassembly)}">` +
-      opts + `</select>${stale}${groups}</div></div>`;
+      opts + `</select><div style="margin-top:3px">${diag}</div>${groups}</div></div>`;
   }).join('');
   return `<div style="border:1px solid #4d4536;background:#24231d;` +
     `border-radius:4px;padding:6px 8px;margin:8px 0;font-size:11px">` +
     `<div style="color:#d6c18c">${t('subasm.originLinkChoicesTitle')}</div>` +
+    `<div style="color:#8a93a3;margin:2px 0 5px">` +
+    `${htmlEsc(t('subasm.originLinkChoicesHelp'))}</div>` +
     rows + `</div>`;
 }
 
@@ -2974,7 +3091,7 @@ async function setSubassemblyOriginLinkChoice(name, originLink, ov) {
     if (ov) {
       await openSubassemblyPreview(ov);
     }
-    if (viewer.robot && treeViewMode === 'subassembly') {
+    if (viewer.robot && effectiveTreeViewMode() === 'subassembly') {
       buildJointRows(viewer.robot);
     }
   } catch (e) {
@@ -2984,6 +3101,9 @@ async function setSubassemblyOriginLinkChoice(name, originLink, ov) {
     } else {
       document.querySelectorAll('.subasm-origin-link-choice')
         .forEach(x => { x.disabled = false; });
+      if (viewer.robot && effectiveTreeViewMode() === 'subassembly') {
+        buildJointRows(viewer.robot);
+      }
     }
   }
 }
@@ -2996,6 +3116,122 @@ function bindSubassemblyOriginLinkChoices(root, ov) {
       root.querySelectorAll('.subasm-origin-link-choice')
         .forEach(x => { x.disabled = true; });
       setSubassemblyOriginLinkChoice(name, originLink, ov);
+    });
+  });
+}
+
+function subassemblyOriginSummaryHtml(s) {
+  return originDiagnosticsHtml(s);
+}
+
+function driverJointChoicesHtml(driverChoices) {
+  const choices = (driverChoices || []).filter(c =>
+    (c.candidates || []).length || c.selected_driver_joint);
+  if (!choices.length) { return ''; }
+  const rows = choices.map(c => {
+    const selected = c.selected_driver_joint || '';
+    const auto = c.auto_driver_joint || '';
+    const ambiguous = !!c.requires_explicit_selection;
+    const effective = c.effective_driver_joint || '';
+    const edge = c.edge || '';
+    const edgeLabel = c.parent && c.child
+      ? `${c.parent} → ${c.child}` : edge;
+    const opts = [`<option value=""${selected ? '' : ' selected'}>` +
+      `${t('subasm.driverJointAuto')}${auto ? `: ${htmlEsc(auto)}` : ''}` +
+      `</option>`].concat((c.candidates || []).map(j => {
+        const source = j.source_joint || j.joint || '';
+        const edge = j.source_parent && j.source_child
+          ? `${j.source_parent} → ${j.source_child}`
+          : (j.parent && j.child ? `${j.parent} → ${j.child}` : source);
+        const kind = j.source_kind ? `${j.source_kind} ` : '';
+        const label = `${kind}${j.role || 'joint'} ${j.type || ''}: ${edge}`;
+        return `<option value="${htmlEsc(source)}"` +
+          `${selected === source ? ' selected' : ''}>` +
+          `${htmlEsc(label)}</option>`;
+      })).join('');
+    const details = (c.candidates || []).slice(0, 5).map(j => {
+      const source = j.source_joint || j.joint || '';
+      const edge = j.source_parent && j.source_child
+        ? `${j.source_parent} → ${j.source_child}` : '';
+      const kind = j.source_kind ? `${j.source_kind} ` : '';
+      const mov = j.movable ? 'movable' : 'fixed';
+      return `<div style="color:#6b7480">${htmlEsc(kind + (j.role || 'joint'))}: ` +
+        `${htmlEsc(source)} ${htmlEsc(j.type || '')} ${htmlEsc(mov)}` +
+        `${edge ? ` (${htmlEsc(edge)})` : ''}</div>`;
+    }).join('');
+    const more = (c.candidates || []).length > 5
+      ? `<div style="color:#6b7480">+${(c.candidates || []).length - 5} more</div>`
+      : '';
+    const diag = `<div style="color:#a9bdd8;margin-top:3px">` +
+      `${htmlEsc(t('subasm.driverEffective'))}: ` +
+      `<span style="color:#cfe3ff">` +
+      `${htmlEsc(effective || t('subasm.driverJointNotSelected'))}</span>` +
+      `</div>` +
+      (selected ? `<div style="color:#6b7480">` +
+        `${htmlEsc(t('subasm.driverConfigured'))}: ${htmlEsc(selected)}</div>` : '');
+    return `<div style="display:grid;grid-template-columns:minmax(110px,1fr) ` +
+      `minmax(150px,1.7fr);gap:6px;align-items:start;margin-top:5px">` +
+      `<div><div style="color:#cfe3ff">${htmlEsc(edgeLabel)}</div>` +
+      `<div style="color:#6b7480">${htmlEsc(c.subassembly || c.link_name || edge)}</div></div>` +
+      `<div><select class="subasm-driver-joint-choice" ` +
+      `data-edge="${htmlEsc(edge)}">` +
+      opts + `</select>` +
+      `${ambiguous ? `<div style="color:#e0b45d;margin-top:3px">` +
+        `${htmlEsc(t('subasm.driverJointAmbiguous'))}</div>` : ''}` +
+      `${diag}${details}${more}</div></div>`;
+  }).join('');
+  return `<div style="border:1px solid #3d5244;background:#1f2a25;` +
+    `border-radius:4px;padding:6px 8px;margin:8px 0;font-size:11px">` +
+    `<div style="color:#9bd6ad">${t('subasm.driverJointChoicesTitle')}</div>` +
+    `<div style="color:#8a93a3;margin:2px 0 5px">` +
+    `${htmlEsc(t('subasm.driverJointChoicesHelp'))}</div>` +
+    rows + `</div>`;
+}
+
+async function setSubassemblyDriverJointChoice(edge, sourceJoint, ov) {
+  const label = sourceJoint || t('subasm.driverJointAuto');
+  op('collapsed_driver_joint', { edge, source_joint: sourceJoint });
+  log(t('subasm.driverJointSetting', { name: edge, sourceJoint: label }));
+  try {
+    const resp = await fetch('/api/set_collapsed_driver_joint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ edge, source_joint: sourceJoint }) });
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    log(t('subasm.driverJointSetOk', { name: edge, sourceJoint: label }), 'ok');
+    refreshHistory();
+    if (ov) {
+      await openSubassemblyPreview(ov);
+    } else {
+      document.querySelectorAll('.subasm-driver-joint-choice')
+        .forEach(x => { x.disabled = false; });
+    }
+    if (viewer.robot && effectiveTreeViewMode() === 'subassembly') {
+      buildJointRows(viewer.robot);
+    }
+  } catch (e) {
+    log(t('subasm.driverJointSetFail', { e: e.message ?? e }), 'err');
+    if (ov) {
+      await openSubassemblyPreview(ov);
+    } else {
+      document.querySelectorAll('.subasm-driver-joint-choice')
+        .forEach(x => { x.disabled = false; });
+      if (viewer.robot && effectiveTreeViewMode() === 'subassembly') {
+        buildJointRows(viewer.robot);
+      }
+    }
+  }
+}
+
+function bindSubassemblyDriverJointChoices(root, ov) {
+  root.querySelectorAll('.subasm-driver-joint-choice').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const edge = sel.dataset.edge;
+      const sourceJoint = sel.value;
+      root.querySelectorAll('.subasm-driver-joint-choice')
+        .forEach(x => { x.disabled = true; });
+      setSubassemblyDriverJointChoice(edge, sourceJoint, ov);
     });
   });
 }
@@ -3074,7 +3310,7 @@ async function setSubassemblyCycleBreakChoice(sourceJoint, previousSourceJoint, 
       document.querySelectorAll('.subasm-cycle-break-choice')
         .forEach(x => { x.disabled = false; });
     }
-    if (viewer.robot && treeViewMode === 'subassembly') {
+    if (viewer.robot && effectiveTreeViewMode() === 'subassembly') {
       buildJointRows(viewer.robot);
     }
   } catch (e) {
@@ -3084,6 +3320,9 @@ async function setSubassemblyCycleBreakChoice(sourceJoint, previousSourceJoint, 
     } else {
       document.querySelectorAll('.subasm-cycle-break-choice')
         .forEach(x => { x.disabled = false; });
+      if (viewer.robot && effectiveTreeViewMode() === 'subassembly') {
+        buildJointRows(viewer.robot);
+      }
     }
   }
 }
@@ -3098,6 +3337,41 @@ function bindSubassemblyCycleBreakChoices(root, ov) {
       setSubassemblyCycleBreakChoice(sourceJoint, previousSourceJoint, ov);
     });
   });
+}
+
+async function loadCollapsedPreviewRobot() {
+  if (!currentInfo) { log(t('common.openFirst'), 'wrn'); return; }
+  log(t('subasm.previewRobotLoading'));
+  try {
+    const resp = await fetch('/api/collapsed_preview_urdf');
+    const r = await resp.json();
+    if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+    loadRobot({
+      ...currentInfo,
+      name: `${currentInfo.name} collapsed preview`,
+      urdf: r.urdf,
+    }, {
+      keepPose: false,
+      previewOnly: true,
+      followCamera: true,
+      restoreAngles: {},
+    });
+    const meshIssues = (r.mesh_report || []).filter(x =>
+      Number(x.missing_count || 0) || Number(x.visuals || 0) === 0);
+    for (const issue of meshIssues.slice(0, 5)) {
+      log(`collapsed mesh: ${issue.link} visuals=${issue.visuals} ` +
+          `missing=${issue.missing_count}`, 'wrn');
+    }
+    log(t('subasm.previewRobotOk'), 'ok');
+  } catch (e) {
+    log(t('subasm.previewRobotFail', { e: e.message ?? e }), 'err');
+  }
+}
+
+function loadNormalRobot() {
+  if (!currentInfo) { log(t('common.openFirst'), 'wrn'); return; }
+  loadRobot(currentInfo, { keepPose: false });
+  log(t('subasm.normalRobotOk'), 'ok');
 }
 
 function pathBase(p) {
@@ -3128,7 +3402,7 @@ async function setSubassemblyMode(name, mode, ov) {
     log(t('subasm.setPreviewOk', { name, mode }), 'ok');
     refreshHistory();
     await openSubassemblyList(ov);
-    if (viewer.robot && treeViewMode === 'subassembly') {
+    if (viewer.robot && effectiveTreeViewMode() === 'subassembly') {
       buildJointRows(viewer.robot);
     }
   } catch (e) {
@@ -3253,6 +3527,7 @@ async function openSubassemblyPreview(ov) {
       validationIssuesHtml(r.validation) +
       parentChoicesHtml(r.parent_choices) +
       originLinkChoicesHtml(r.group_choices) +
+      driverJointChoicesHtml(r.driver_joint_choices) +
       cycleBreakChoicesHtml(r.cycle_break_choices);
     const rows = r.collapsed_subassemblies || [];
     if (!rows.length) {
@@ -3262,6 +3537,7 @@ async function openSubassemblyPreview(ov) {
         t('subasm.thName') + '</th><th>' + t('subasm.thLink') +
         '</th><th>' + t('subasm.thMembers') + '</th><th>' +
         t('subasm.thDropped') + '</th><th>' +
+        t('subasm.thOrigin') + '</th><th>' +
         t('subasm.thMode') + '</th></tr></thead><tbody>';
       for (const s of rows) {
         html += `<tr title="${htmlEsc(s.reason)}">` +
@@ -3269,6 +3545,7 @@ async function openSubassemblyPreview(ov) {
           `<td style="color:#cfe3ff">${htmlEsc(s.link_name)}</td>` +
           `<td>${s.member_links?.length ?? 0}</td>` +
           `<td>${s.internal_joints?.length ?? 0}</td>` +
+          `<td>${subassemblyOriginSummaryHtml(s)}</td>` +
           `<td>${subasmOverrideLabel(s.override)}</td></tr>`;
       }
       html += '</tbody></table>';
@@ -3296,16 +3573,23 @@ async function openSubassemblyPreview(ov) {
     card.innerHTML = html;
     bindSubassemblyParentChoices(card, owned);
     bindSubassemblyOriginLinkChoices(card, owned);
+    bindSubassemblyDriverJointChoices(card, owned);
     bindSubassemblyCycleBreakChoices(card, owned);
     const bar = document.createElement('div');
     bar.style.cssText = 'display:flex;gap:8px;margin-top:10px';
     const back = document.createElement('button');
     back.textContent = t('subasm.backSubasm');
     back.addEventListener('click', () => openSubassemblyList(owned));
+    const previewRobot = document.createElement('button');
+    previewRobot.textContent = t('subasm.previewRobotBtn');
+    previewRobot.addEventListener('click', () => loadCollapsedPreviewRobot());
+    const normalRobot = document.createElement('button');
+    normalRobot.textContent = t('subasm.normalRobotBtn');
+    normalRobot.addEventListener('click', () => loadNormalRobot());
     const close = document.createElement('button');
     close.textContent = t('common.close');
     close.addEventListener('click', () => owned.remove());
-    bar.append(back, close);
+    bar.append(back, previewRobot, normalRobot, close);
     card.appendChild(bar);
     owned.replaceChildren(card);
     if (!owned.parentElement) {
@@ -3611,19 +3895,30 @@ document.getElementById('masslistbtn').addEventListener('click', () => {
 });
 
 function syncTreeModeControls() {
-  const readonly = treeViewMode === 'subassembly';
+  const subassemblyModeAvailable = currentInfo?.mode !== 'urdf';
+  const effectiveMode = robotViewMode === 'collapsed_preview'
+    ? 'subassembly'
+    : subassemblyModeAvailable ? treeViewMode : 'expanded';
+  const readonly = effectiveMode === 'subassembly';
   const treeMode = document.getElementById('treemode');
   if (treeMode) {
     treeMode.querySelector('option[value="expanded"]').textContent =
       t('tree.modeExpanded');
     treeMode.querySelector('option[value="subassembly"]').textContent =
       t('tree.modeSubassembly');
-    treeMode.value = treeViewMode;
+    treeMode.value = effectiveMode;
+    treeMode.disabled = robotViewMode === 'collapsed_preview'
+      || !subassemblyModeAvailable;
   }
   for (const id of ['selall', 'bulktype', 'bulkset', 'bulkdel']) {
     const el = document.getElementById(id);
     if (el) { el.disabled = readonly; }
   }
+}
+
+function effectiveTreeViewMode() {
+  if (robotViewMode === 'collapsed_preview') { return 'subassembly'; }
+  return currentInfo?.mode === 'urdf' ? 'expanded' : treeViewMode;
 }
 
 function previewTreeLinkSet(row) {
@@ -3637,6 +3932,79 @@ function highlightPreviewTreeRow(row, on) {
   }
 }
 
+function collapsedPreviewSlidersHtml(plan) {
+  if (robotViewMode !== 'collapsed_preview') { return null; }
+  const seen = new Set();
+  const joints = [];
+  for (const row of (plan?.joints || [])) {
+    const name = row.name || '';
+    const j = previewJointForPlanRow(row);
+    if (!j || j.jointType === 'fixed' || j.mimicJoint) { continue; }
+    if (!name || seen.has(j.name)) { continue; }
+    seen.add(j.name);
+    joints.push({ row, joint: j });
+  }
+  const card = document.createElement('div');
+  card.className = 'joint';
+  card.style.cssText = 'border:1px solid #39465a;background:#1e2630;' +
+    'border-radius:4px;padding:6px 8px;margin:8px 0';
+  const title = document.createElement('div');
+  title.style.cssText = 'color:#cfe3ff;font-size:12px;margin-bottom:2px';
+  title.textContent = t('subasm.previewSlidersTitle');
+  card.appendChild(title);
+  const help = document.createElement('div');
+  help.style.cssText = 'color:#8a93a3;font-size:11px;margin-bottom:6px';
+  help.textContent = joints.length
+    ? t('subasm.previewSlidersHelp')
+    : t('subasm.previewSlidersEmpty');
+  card.appendChild(help);
+  for (const { row, joint } of joints) {
+    const [lo, hi] = _jointLimits(joint);
+    const um = _jointUnit(joint.jointType);
+    const fmtDisp = v => {
+      let d = um.toDisp(Number(v) || 0);
+      if (Object.is(d, -0) || Math.abs(d) < Math.pow(10, -um.dec) / 2) { d = 0; }
+      return d.toFixed(um.dec) + um.unit;
+    };
+    const item = document.createElement('div');
+    item.style.cssText = 'margin-top:6px';
+    const label = row.child || jointLinkOf(joint, 'child') || joint.name;
+    const source = row.driver_source_joint || row.source_joint || '';
+    const previewName = joint.name;
+    const nativeStep = um.pris ? 0.0005 : 0.01;
+    item.innerHTML =
+      `<div class="row1">` +
+      `<span class="caret">·</span>` +
+      `<span class="jname" title="${htmlEsc(previewName)}">` +
+      `${htmlEsc(label)}</span>` +
+      `<span class="jtype">${htmlEsc(joint.jointType)}</span>` +
+      `<span class="jval">${htmlEsc(fmtDisp(Number(joint.angle) || 0))}</span>` +
+      `</div>` +
+      `<div style="color:#6b7480;font-size:10px;overflow:hidden;` +
+      `text-overflow:ellipsis;white-space:nowrap;margin-left:17px">` +
+      `${htmlEsc('preview: ' + previewName)}` +
+      `${source ? htmlEsc(' / source normal: ' + source) : ''}</div>` +
+      `<div class="jslider" style="margin-left:17px">` +
+      `<input type="range" min="${lo}" max="${hi}" step="${nativeStep}" ` +
+      `value="${Number(joint.angle) || 0}"></div>`;
+    const slider = item.querySelector('input[type=range]');
+    const val = item.querySelector('.jval');
+    slider.addEventListener('input', () => {
+      previewJoint(joint.name, parseFloat(slider.value));
+    });
+    item.querySelector('.jname')?.addEventListener('click', () => {
+      const child = jointLinkOf(joint, 'child') || row.child;
+      if (child && viewer.robot?.links?.[child]) { selectLink(child); }
+    });
+    rows.set(joint.name, {
+      joint, row: item, slider, val, fmtDisp,
+      child: jointLinkOf(joint, 'child') || row.child,
+    });
+    card.appendChild(item);
+  }
+  return card;
+}
+
 async function renderSubassemblyTreeRows(robot, movable) {
   const req = ++subasmTreeRequest;
   rows.clear();
@@ -3647,7 +4015,9 @@ async function renderSubassemblyTreeRows(robot, movable) {
   try {
     const resp = await fetch('/api/collapse_preview');
     const r = await resp.json();
-    if (req !== subasmTreeRequest || treeViewMode !== 'subassembly') { return; }
+    if (req !== subasmTreeRequest || effectiveTreeViewMode() !== 'subassembly') {
+      return;
+    }
     if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
     const q = jointFilter.trim().toLowerCase();
     const allRows = r.tree_rows || [];
@@ -3680,12 +4050,23 @@ async function renderSubassemblyTreeRows(robot, movable) {
       jointsEl.appendChild(groups);
       bindSubassemblyOriginLinkChoices(groups);
     }
+    const driverChoices = driverJointChoicesHtml(r.driver_joint_choices);
+    if (driverChoices) {
+      const drivers = document.createElement('div');
+      drivers.innerHTML = driverChoices;
+      jointsEl.appendChild(drivers);
+      bindSubassemblyDriverJointChoices(drivers);
+    }
     const cycleChoices = cycleBreakChoicesHtml(r.cycle_break_choices);
     if (cycleChoices) {
       const cycles = document.createElement('div');
       cycles.innerHTML = cycleChoices;
       jointsEl.appendChild(cycles);
       bindSubassemblyCycleBreakChoices(cycles);
+    }
+    const previewSliders = collapsedPreviewSlidersHtml(r.collapse_plan);
+    if (previewSliders) {
+      jointsEl.appendChild(previewSliders);
     }
     const hint = document.createElement('div');
     hint.className = 'joint';
@@ -3728,7 +4109,9 @@ async function renderSubassemblyTreeRows(robot, movable) {
       jointsEl.appendChild(el);
     }
   } catch (e) {
-    if (req !== subasmTreeRequest || treeViewMode !== 'subassembly') { return; }
+    if (req !== subasmTreeRequest || effectiveTreeViewMode() !== 'subassembly') {
+      return;
+    }
     jointsEl.innerHTML = `<div class="joint" style="color:#ffb4b4">` +
       `${htmlEsc(t('tree.subasmUnavailable', { e: e.message ?? e }))}</div>`;
     if (countEl) { countEl.textContent = ''; }
@@ -3740,35 +4123,29 @@ function buildJointRows(robot) {
   jointsEl.innerHTML = '';
   rows.clear();
   syncTreeModeControls();
-  // kinematic tree: parent link -> [joint, ...]; root = never a child
-  const linkOf = (j, tag) => [...(j.urdfNode?.children ?? [])]
-    .find(el => el.tagName === tag)?.getAttribute('link') ?? '';
+  const movable = Object.values(robot?.joints ?? {})
+    .filter(j => j.jointType !== 'fixed').length;
+  if (effectiveTreeViewMode() === 'subassembly') {
+    renderSubassemblyTreeRows(robot, movable);
+    return movable;
+  }
   const byParent = new Map();
   const childLinks = new Set();
   for (const j of Object.values(robot.joints)) {
-    const p = linkOf(j, 'parent') || (j.parent?.name ?? '');
-    childLinks.add(linkOf(j, 'child'));
+    const p = jointLinkOf(j, 'parent') || (j.parent?.name ?? '');
+    childLinks.add(jointLinkOf(j, 'child'));
     if (!byParent.has(p)) { byParent.set(p, []); }
     byParent.get(p).push(j);
   }
   byParent.forEach(list => list.sort(
-    (a, b) => linkOf(a, 'child').localeCompare(linkOf(b, 'child'))));
+    (a, b) => jointLinkOf(a, 'child').localeCompare(jointLinkOf(b, 'child'))));
   const roots = Object.keys(robot.links)
     .filter(n => !childLinks.has(n));
-  // total movable joints in the robot -- counted over the whole model so the
-  // status summary stays accurate regardless of collapse / filter view state.
-  const movable = Object.values(robot.joints)
-    .filter(j => j.jointType !== 'fixed').length;
-  if (treeViewMode === 'subassembly') {
-    renderSubassemblyTreeRows(robot, movable);
-    return movable;
-  }
-
   function jointRow(j, depth, flat) {
     const isMimic = !!j.mimicJoint;
     const isMov = j.jointType !== 'fixed';
-    const parent = linkOf(j, 'parent');
-    const child = linkOf(j, 'child');
+    const parent = jointLinkOf(j, 'parent');
+    const child = jointLinkOf(j, 'child');
     const kids = byParent.get(child) ?? [];
     const row = document.createElement('div');
     row.className = 'joint';
@@ -4080,7 +4457,9 @@ viewer.addEventListener('angle-change', e => {
   const rec = rows.get(e.detail);
   if (rec && rec.slider) {
     rec.slider.value = Number(rec.joint.angle);
-    rec.val.textContent = fmt(Number(rec.joint.angle));
+    rec.val.textContent = rec.fmtDisp
+      ? rec.fmtDisp(Number(rec.joint.angle))
+      : fmt(Number(rec.joint.angle));
   }
   const pr = playRows.get(e.detail);
   if (pr) {
@@ -7899,6 +8278,10 @@ gridBtn.addEventListener('click', () => {
 });
 
 viewer.addEventListener('urdf-processed', () => {
+  if (pendingRobotViewMode) {
+    robotViewMode = pendingRobotViewMode;
+    pendingRobotViewMode = null;
+  }
   const n = buildJointRows(viewer.robot);
   if (playMode) { buildPlayRows(viewer.robot); }   // keep the move panel in sync
   log(t('urdf.parsed', { n: Object.keys(viewer.robot.links).length, m: n }), 'ok');
@@ -7906,6 +8289,16 @@ viewer.addEventListener('urdf-processed', () => {
 let pendingRestore = null;   // {angles} saved across an edit-rebuild reload
 let loadCover = null;        // visual clone shown while the URDF reloads,
                              // so re-root / type edits never flash blank
+
+function captureJointAngles(robot) {
+  const angles = {};
+  for (const [n, j] of Object.entries(robot?.joints ?? {})) {
+    if (j.jointType !== 'fixed' && !j.mimicJoint) {
+      angles[n] = Number(j.angle);
+    }
+  }
+  return angles;
+}
 
 function removeLoadCover() {
   if (loadCover) {
@@ -7990,6 +8383,7 @@ viewer.addEventListener('geometry-loaded', () => {
                          : t('status.summaryOk') });
 });
 viewer.addEventListener('urdf-error', e => {
+  pendingRobotViewMode = null;
   removeLoadCover();
   hideLoadbar();
   document.getElementById('loadbackdrop').style.display = 'none';
@@ -8057,6 +8451,8 @@ function clearViewer() {
   const r = viewer.robot;
   if (r && r.parent) { r.parent.remove(r); }
   viewer.robot = null;
+  robotViewMode = 'normal';
+  pendingRobotViewMode = null;
   jointsEl.innerHTML = '';
   rows.clear();
   document.getElementById('selbar').style.display = 'none';
@@ -8075,20 +8471,17 @@ document.getElementById('clearview').addEventListener('click', clearViewer);
 
 // ---- loading entry points -----------------------------------------------
 function loadRobot(info, { drop = false, keepPose = false,
-                           followCamera = false } = {}) {
+                           followCamera = false, previewOnly = false,
+                           restoreAngles = null } = {}) {
   // a keepPose reload is the SAME session (edit rebuild); anything else is a
   // fresh package -> drop the old actions/camera so they can't replay onto it
   if (!keepPose) { _resetSessionLogs(); }
-  op('loadRobot', { name: info?.name, keepPose, drop });
+  op('loadRobot', { name: info?.name, keepPose, drop, previewOnly });
+  pendingRobotViewMode = previewOnly ? 'collapsed_preview' : 'normal';
   cancelEndcoords();        // a rebuild invalidates any open placement session
   document.getElementById('emptyprompt').style.display = 'none';
-  if ((keepPose || followCamera) && viewer.robot) {
-    const angles = {};
-    for (const [n, j] of Object.entries(viewer.robot.joints)) {
-      if (j.jointType !== 'fixed' && !j.mimicJoint) {
-        angles[n] = Number(j.angle);
-      }
-    }
+  if (((keepPose || followCamera) && viewer.robot) || restoreAngles) {
+    const angles = restoreAngles || captureJointAngles(viewer.robot);
     let linkWorlds = null;
     if (followCamera) {
       viewer.robot.updateMatrixWorld(true);
@@ -8100,8 +8493,15 @@ function loadRobot(info, { drop = false, keepPose = false,
     pendingRestore = { angles, linkWorlds };
   }
   dropMode = drop;
-  if (!drop) { viewer.urlModifierFunc = null; currentInfo = info; }
-  else { currentInfo = null; }
+  if (drop) {
+    currentInfo = null;
+    viewer.urlModifierFunc = null;
+  } else {
+    viewer.urlModifierFunc = null;
+    if (!previewOnly) {
+      currentInfo = info;
+    }
+  }
   refreshExportName();          // export field placeholder follows the open pkg
   // cover the reload gap with a display-only clone of the current robot
   // (same world pose -> the swap is pixel-invisible); geometry/materials
@@ -8131,7 +8531,7 @@ function loadRobot(info, { drop = false, keepPose = false,
   document.title = `${info.name} — sw2robot`;
   if (!drop) {
     refreshRootBox({ resetBaseline: true });
-    refreshCompMeta();
+    if (!previewOnly) { refreshCompMeta(); }
   }
   statusEl.textContent = t('status.loadingUrdf');
   log(t('urdf.loading', { urdf: info.urdf }));
