@@ -766,6 +766,52 @@ exec ros2 launch "$PKG" display.launch.py
 """
 
 
+def _warn_dropped_geometry_on_export(pkg_dir):
+    """Print the dropped-geometry warning for the package about to be exported.
+
+    Best-effort by design -- it is advisory, and an export must never fail
+    because an optional check could not run.  Reads the package's OWN
+    joints.yaml so the ``frame_only:`` / ``mass_only:`` exemptions match what
+    the build applied (see exporter.export.dropped_geometry_exempt).
+    """
+    try:
+        import glob as _glob
+        import json as _json
+
+        from sw2robot.exporter.export import (
+            build_model,
+            dropped_geometry_exempt,
+        )
+        from sw2robot.exporter.state import GraphState
+        from sw2robot.exporter.validate import warn_dropped_geometry
+
+        graph_path = os.path.join(pkg_dir, "graph.json")
+        if not os.path.exists(graph_path):
+            return                       # URDF-input mode: no CAD to compare to
+        urdf = sorted(_glob.glob(os.path.join(pkg_dir, "urdf", "*.urdf")))
+        if not urdf:
+            return
+        cfgs = sorted(_glob.glob(os.path.join(pkg_dir, "*.joints.yaml")))
+        from sw2robot.exporter import jointcfg
+        config = jointcfg.load(cfgs[0]) if cfgs else None
+        graph = GraphState.load(graph_path)
+        import contextlib
+        import io as _sio
+        with contextlib.redirect_stdout(_sio.StringIO()):   # model log, not ours
+            model = build_model(graph, config=config)
+        with open(graph_path, encoding="utf-8") as f:
+            raw = _json.load(f)
+        dropped = warn_dropped_geometry(
+            pkg_dir, urdf[0], raw,
+            skip_components=dropped_geometry_exempt(model))
+        if dropped:
+            print("      -> add the parent sub-assembly to the joint config's "
+                  "`expand:` list to bring these parts into the exported "
+                  "package.")
+    except Exception as e:
+        print(f"      (dropped-geometry check skipped on export: {e!r})")
+
+
 def _export_zip(pkg_dir, robot_name, visual_fmt="dae", collision_fmt="stl",
                 ros_version=1, pkg_name=None, urdf_name=None, robot_tag=None,
                 colors=None,
@@ -791,6 +837,13 @@ def _export_zip(pkg_dir, robot_name, visual_fmt="dae", collision_fmt="stl",
         raise ValueError(f"unsupported visual mesh format: {visual_fmt}")
     if collision_fmt not in ("stl", "glb"):
         raise ValueError(f"unsupported collision mesh format: {collision_fmt}")
+
+    # The per-edit rebuilds skip the dropped-geometry check (it re-decodes every
+    # mesh -- 46.7 s of a 48.1 s rebuild on one humanoid -- to answer a question
+    # only the extraction and `expand:` can change).  Run it HERE instead, on the
+    # way out: shipping a package with parts silently missing is the failure it
+    # exists to catch, and this is the last moment to say so.
+    _warn_dropped_geometry_on_export(pkg_dir)
 
     import io as _io
     import zipfile
@@ -6056,7 +6109,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         f.write(txt)
                     from sw2robot.exporter.export import build
                     try:
-                        build(cls.pkg_dir, config_path=yml)
+                        build(cls.pkg_dir, config_path=yml, check_geometry=False)
                     except Exception as e:
                         return self._send_json(
                             {"error": f"rebuild failed: {e}"}, 500)
@@ -6180,7 +6233,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -6730,7 +6783,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -6804,7 +6857,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -6861,7 +6914,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -6912,7 +6965,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -6945,7 +6998,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -6993,7 +7046,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -7095,7 +7148,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -7137,7 +7190,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -7221,7 +7274,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 buf = _io.StringIO()
                 try:
                     with contextlib.redirect_stdout(buf):
-                        build(cls.pkg_dir, config_path=yml)
+                        build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     with open(yml, "w", encoding="utf-8") as f:
                         f.write(before)
@@ -7236,7 +7289,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     with open(yml, "w", encoding="utf-8") as f:
                         f.write(before)
                     with contextlib.redirect_stdout(_io.StringIO()):
-                        build(cls.pkg_dir, config_path=yml)
+                        build(cls.pkg_dir, config_path=yml, check_geometry=False)
                     return self._send_json(
                         {"error": refusal.group(1).strip()}, 400)
                 print(f"[sw2robot.web] set_mirror_limb: {comp} on={on} "
@@ -7372,7 +7425,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         # reset needs the DEFAULT name back, which only the full
                         # build knows -- rare, so a rebuild is fine here
                         from sw2robot.exporter.export import build
-                        build(cls.pkg_dir, config_path=yml)
+                        build(cls.pkg_dir, config_path=yml, check_geometry=False)
                     else:
                         # the common path: rewrite the name in the URDF in place
                         # (instant) instead of a full inertia-recomputing rebuild
@@ -7465,7 +7518,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -7509,7 +7562,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -7562,7 +7615,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(txt)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
@@ -7598,7 +7651,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     f.write(snap)
                 from sw2robot.exporter.export import build
                 try:
-                    build(cls.pkg_dir, config_path=yml)
+                    build(cls.pkg_dir, config_path=yml, check_geometry=False)
                 except Exception as e:
                     return self._send_json(
                         {"error": f"rebuild failed: {e}"}, 500)
