@@ -11,6 +11,9 @@ import {
   setLinkColor, toggleLinkVisible,
 } from './link-look.js';
 import { loadRobot } from './load.js';
+import {
+  DEFAULT_MIRROR_PLANE, hideMirrorPlane, showMirrorPlane, specThatGenerated,
+} from './mirror-plane.js';
 import { matPickDensity, matSelectHtml } from './mass-editor.js';
 import { refreshHistory } from './root-frame.js';
 import {
@@ -25,7 +28,7 @@ export function fillLinkInfo(name) {
   selectionState.jpSync = null;                  // the panel for the previous link is gone
   const el = document.getElementById('linkinfo');
   const link = viewer.robot?.links?.[name];
-  if (!link) { el.style.display = 'none'; return; }
+  if (!link) { el.style.display = 'none'; hideMirrorPlane(); return; }
   // the selection bar (name + 👁/🗑/⌂/✕) is folded in as this panel's header so
   // it is ONE panel, not two overlapping ones.  Park it outside #linkinfo before
   // the innerHTML rebuild below so the element (and its listeners) survives.
@@ -191,7 +194,15 @@ export function fillLinkInfo(name) {
   // the limb.  A link that was itself generated shows its origin instead --
   // editing the copy is meaningless, the real side is where changes belong.
   if (!urdfMode) {
-    const spec = (packageState.mirrorLimbs ?? []).find(s => s.root === name);
+    const specs = packageState.mirrorLimbs ?? [];
+    const spec = specs.find(s => s.root === name);
+    // Show the plane for whichever of the three states this link is in, and
+    // nothing for a link the feature does not apply to.  A two-letter plane
+    // name says nothing about where it cuts THIS robot, which is the whole
+    // reason to draw it.
+    const generated = specThatGenerated(specs, name, meta?.mirrored_from);
+    showMirrorPlane(spec?.plane ?? generated?.plane
+      ?? (j && !meta?.mirrored_from ? DEFAULT_MIRROR_PLANE : null));
     if (meta?.mirrored_from) {
       rowsHtml.push(
         `<tr><td>${t('li.mirrorLimb')}</td><td><span class="mass-note">` +
@@ -216,7 +227,8 @@ export function fillLinkInfo(name) {
         box('li_mirf', guess[0], 'R') + ' → ' + box('li_mirt', guess[1], 'L') +
         ` <select id="li_mirp" class="rn-input">` +
         ['xz', 'yz', 'xy'].map(p =>
-          `<option value="${p}">${p}</option>`).join('') +
+          `<option value="${p}"${p === DEFAULT_MIRROR_PLANE ? ' selected' : ''}>`
+          + `${p}</option>`).join('') +
         `</select> ` +
         `<button id="li_mirgo" class="rn-input" style="cursor:pointer">` +
         `${t('li.mirrorGo')}</button>` +
@@ -303,6 +315,10 @@ export function fillLinkInfo(name) {
       if (btn) { btn.disabled = false; btn.textContent = label; }
     }
   };
+  // repaint the preview as the user tries the planes -- the point of drawing
+  // it is to choose from what you see, not from a two-letter name
+  el.querySelector('#li_mirp')?.addEventListener(
+    'change', e => showMirrorPlane(e.target.value));
   el.querySelector('#li_mirgo')?.addEventListener('click', () => setMirror({
     link: name, on: true,
     plane: el.querySelector('#li_mirp')?.value ?? 'xz',

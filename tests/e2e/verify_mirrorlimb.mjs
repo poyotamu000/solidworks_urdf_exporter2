@@ -61,7 +61,7 @@ check('found a link with a parent joint', !!target, String(target));
 if (!target) { await browser.close(); process.exit(1); }
 
 const PREFIX = 'mirchk';
-const panel = () => page.evaluate(async (name) => {
+const panel = (which = target) => page.evaluate(async (name) => {
   const mod = await import('/link-info.js');
   mod.fillLinkInfo(name);
   const el = document.getElementById('linkinfo');
@@ -76,7 +76,7 @@ const panel = () => page.evaluate(async (name) => {
     label: [...(el?.querySelectorAll('td') ?? [])]
       .map(td => td.textContent.trim()).find(x => x.includes('ミラー')) ?? null,
   };
-}, target);
+}, which);
 
 const p0 = await panel();
 check('panel renders the mirror row', p0.visible && !!p0.label, p0.label ?? '');
@@ -84,6 +84,27 @@ check('it offers from / to / generate', p0.from && p0.to && p0.go);
 check('it offers all three planes', p0.plane.join(',') === 'xz,yz,xy',
       p0.plane.join(','));
 check('no undo button before anything is generated', !p0.undo);
+
+// the plane is drawn in the viewer while the panel offers it: a two-letter
+// name says nothing about where it cuts THIS robot
+const planes = () => page.evaluate(() => {
+  let n = 0;
+  window.viewer.robot.traverse(
+    o => { if (o.isMesh && o.geometry?.type === 'PlaneGeometry') { n += 1; } });
+  return n;
+});
+check('the mirror plane is drawn for a mirrorable link', await planes() === 1,
+      String(await planes()));
+await page.select('#li_mirp', 'yz');
+await new Promise(r => setTimeout(r, 400));
+check('switching the plane replaces it rather than stacking',
+      await planes() === 1, String(await planes()));
+await page.select('#li_mirp', 'xz');
+await new Promise(r => setTimeout(r, 400));
+// reopening must not leak a quad per open
+await panel(); await panel();
+check('reopening the panel does not stack planes', await planes() === 1,
+      String(await planes()));
 
 // generate: fill the rename boxes so the copies get names of their own
 await page.evaluate((name, prefix) => {
@@ -119,6 +140,24 @@ const meta = await page.evaluate(async (l) => {
   return st.packageState?.compMeta?.[l]?.mirrored_from ?? null;
 }, PREFIX + target);
 check('the generated link reports its origin', meta === target, String(meta));
+
+// a generated link says which plane it came from; a link the feature does not
+// apply to shows none
+await panel(PREFIX + target);
+await new Promise(r => setTimeout(r, 400));
+check('a generated link still shows its plane', await planes() === 1,
+      String(await planes()));
+const root = await page.evaluate(() => {
+  const r = window.viewer.robot;
+  return Object.keys(r.links).find(n => !r.links[n]?.parent?.isURDFJoint);
+});
+if (root) {
+  await panel(root);
+  await new Promise(r => setTimeout(r, 400));
+  check('the root link shows no plane', await planes() === 0,
+        `${root}: ${await planes()}`);
+}
+await panel();
 
 // restore: drop it again
 await page.evaluate(() => document.getElementById('li_unmirror')?.click());
