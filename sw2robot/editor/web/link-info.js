@@ -208,23 +208,30 @@ export function fillLinkInfo(name) {
         `<tr><td>${t('li.mirrorLimb')}</td><td><span class="mass-note">` +
         `${t('li.mirrorGenerated', { src: meta.mirrored_from })}</span></td></tr>`);
     } else if (spec) {
-      const to = Object.values(spec.rename ?? {})[0] ?? '?';
+      const to = spec.prefix
+        ? t('li.mirrorPrefixed', { p: spec.prefix })
+        : (Object.values(spec.rename ?? {})[0] ?? '?');
       rowsHtml.push(
         `<tr><td>${t('li.mirrorLimb')}</td><td>` +
         `<span class="mass-note">${t('li.mirrorActive', { to })}</span> ` +
         `<button id="li_unmirror" class="rn-input" style="cursor:pointer">` +
         `${t('li.mirrorRemove')}</button></td></tr>`);
     } else if (j) {
-      // seed the rename from the link's own name: a leading R/L is the usual
-      // side marker, and the user can overwrite both boxes anyway
-      const guess = /^R/.test(name) ? ['R', 'L']
-        : /^L/.test(name) ? ['L', 'R'] : ['', ''];
-      const box = (id, v, ph) =>
-        `<input id="${id}" class="rn-input" style="width:5.5em" ` +
+      // Seed the rename from the link's own name: a leading R/L is the usual
+      // side marker.  Plenty of robots have none -- limb parts named after the
+      // part and told apart by an instance number -- and for those a swap has
+      // nothing to swap, so fall back to prefixing every generated name.
+      const guess = /^[Rr]/.test(name) ? [name[0], name[0] === 'R' ? 'L' : 'l']
+        : /^[Ll]/.test(name) ? [name[0], name[0] === 'L' ? 'R' : 'r'] : null;
+      const box = (id, v, ph, w = '5.5em') =>
+        `<input id="${id}" class="rn-input" style="width:${w}" ` +
         `value="${escAttr(v)}" placeholder="${escAttr(ph)}">`;
       rowsHtml.push(
         `<tr><td>${t('li.mirrorLimb')}</td><td>` +
-        box('li_mirf', guess[0], 'R') + ' → ' + box('li_mirt', guess[1], 'L') +
+        (guess
+          ? box('li_mirf', guess[0], 'R') + ' → ' + box('li_mirt', guess[1], 'L')
+          : `<span class="mass-note">${t('li.mirrorPrefix')}</span> `
+            + box('li_mirpre', 'mirrored_', 'mirrored_', '8em')) +
         ` <select id="li_mirp" class="rn-input">` +
         ['xz', 'yz', 'xy'].map(p =>
           `<option value="${p}"${p === DEFAULT_MIRROR_PLANE ? ' selected' : ''}>`
@@ -324,6 +331,7 @@ export function fillLinkInfo(name) {
     plane: el.querySelector('#li_mirp')?.value ?? 'xz',
     rename_from: el.querySelector('#li_mirf')?.value ?? '',
     rename_to: el.querySelector('#li_mirt')?.value ?? '',
+    prefix: el.querySelector('#li_mirpre')?.value ?? '',
   }, 'li.mirrorOk'));
   el.querySelector('#li_unmirror')?.addEventListener('click', () =>
     setMirror({ link: name, on: false }, 'li.mirrorRemoved'));

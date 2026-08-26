@@ -258,8 +258,18 @@ def _mirror_meshes(jobs):
     return dict(_mirror_one(j) for j in jobs)
 
 
-def _rename(name, rules):
-    """Apply the config's substring substitutions to one name."""
+def _rename(name, rules, prefix=None):
+    """The generated link's name: a prefix, or a substring substitution.
+
+    Substituting a side marker (``right`` -> ``left``) reads best, but it only
+    works when the limb's links actually carry one.  On a robot whose limb parts
+    are named after the part and told apart by an instance number --
+    ``joint_frame_y_link_4`` next to ``joint_frame_y_link_5`` -- there is no
+    shared substring to swap, and every such robot would be locked out.  A
+    prefix always yields a fresh name, so it is the fallback that always works.
+    """
+    if prefix:
+        return f"{prefix}{name}"
     for src, dst in (rules or {}).items():
         if src in name:
             return name.replace(src, dst, 1)
@@ -298,8 +308,12 @@ def mirror_limbs(model, specs, meshes_dir=None):
 
         mirror_limbs:
           - root: right_arm_0        # the link the limb hangs from
-            plane: xz               # base_link plane to reflect through
+            plane: xz                # base_link plane to reflect through
             rename: {right: left}    # substring substitution for the new names
+          # ...or, when the limb's links carry no side marker to swap:
+          - root: shoulder_link_1
+            plane: yz
+            prefix: mirrored_        # prepended to every generated name
 
     The limb's own attachment joint is regenerated too, so the mirrored limb
     hangs off the same parent at the reflected pose.  ``model`` is mutated;
@@ -320,6 +334,7 @@ def mirror_limbs(model, specs, meshes_dir=None):
         limb_root = spec.get("root")
         plane = str(spec.get("plane") or DEFAULT_PLANE).lower()
         rules = spec.get("rename") or {}
+        prefix = str(spec.get("prefix") or "")
         if plane not in PLANES:
             reports.append({"root": limb_root,
                             "skip": f"unknown plane {plane!r}; expected one of "
@@ -340,15 +355,16 @@ def mirror_limbs(model, specs, meshes_dir=None):
 
         links = [ln for ln in subtree_links(model.joints, limb_root)
                  if ln in anchors]
-        names = {ln: _rename(ln, rules) for ln in links}
+        names = {ln: _rename(ln, rules, prefix) for ln in links}
         clashes = [ln for ln, new in names.items()
                    if new == ln or new in by_link]
         if clashes:
             reports.append({
                 "root": limb_root,
-                "skip": f"`rename` leaves {len(clashes)} name(s) unchanged or "
-                        f"colliding (e.g. {names[clashes[0]]!r}); a mirrored "
-                        f"link cannot share a name with a real one"})
+                "skip": f"`{'prefix' if prefix else 'rename'}` leaves "
+                        f"{len(clashes)} name(s) unchanged or colliding (e.g. "
+                        f"{names[clashes[0]]!r}); a mirrored link cannot share "
+                        f"a name with a real one"})
             continue
 
         # Without somewhere to write the reflected meshes there is no honest
@@ -405,7 +421,7 @@ def mirror_limbs(model, specs, meshes_dir=None):
             xyz, rpy = matrix_to_xyz_rpy(rel)
             import copy as _copy
             new_joint = _copy.copy(joint)
-            new_joint.name = _rename(joint.name, rules) or joint.name
+            new_joint.name = _rename(joint.name, rules, prefix) or joint.name
             if new_joint.name == joint.name:
                 new_joint.name = f"{joint.name}__mirrored"
             new_joint.parent = new_parent

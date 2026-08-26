@@ -211,3 +211,24 @@ def test_a_rename_that_does_not_match_the_link_is_refused(server):
                     {"link": "right_arm_0", "on": True, "plane": "xz",
                      "rename_from": "left_leg", "rename_to": "right_leg"})
     assert code == 400 and "does not appear" in r["error"]
+
+
+def test_a_prefix_is_accepted_when_there_is_no_side_marker(server):
+    """The panel offers a prefix box for a link with no leading R/L, so the
+    endpoint has to take one -- otherwise those robots cannot use the feature
+    at all."""
+    base, pkg = server
+    code, r = _post(base, "/api/set_mirror_limb",
+                    {"link": "right_arm_0", "on": True, "plane": "yz",
+                     "prefix": "mirrored_"})
+    assert code == 200 and r["prefix"] == "mirrored_"
+    assert _cfg(pkg)["mirror_limbs"] == [
+        {"root": "right_arm_0", "plane": "yz", "prefix": "mirrored_"}]
+    assert {"mirrored_right_arm_0", "mirrored_right_arm_1"} <= _urdf_links(pkg)
+
+
+def test_neither_a_prefix_nor_a_rename_is_refused(server):
+    base, _pkg = server
+    code, r = _post(base, "/api/set_mirror_limb",
+                    {"link": "right_arm_0", "on": True, "plane": "xz"})
+    assert code == 400 and "prefix" in r["error"]

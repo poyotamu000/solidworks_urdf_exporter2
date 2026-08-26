@@ -89,7 +89,8 @@ export function showMirrorPlane(plane) {
 
 /** The link name ``rename`` would give ``name``, matching the server's rule:
  *  the FIRST occurrence of each key, one substitution per name. */
-export function applyRename(name, rules) {
+export function applyRename(name, rules, prefix) {
+  if (prefix) { return prefix + name; }
   for (const [from, to] of Object.entries(rules ?? {})) {
     if (from && name.includes(from)) { return name.replace(from, to); }
   }
@@ -101,5 +102,6 @@ export function applyRename(name, rules) {
  *  nothing but what the panel already has. */
 export function specThatGenerated(specs, link, source) {
   if (!source) { return null; }
-  return (specs ?? []).find(s => applyRename(source, s.rename) === link) ?? null;
+  return (specs ?? []).find(
+    s => applyRename(source, s.rename, s.prefix) === link) ?? null;
 }

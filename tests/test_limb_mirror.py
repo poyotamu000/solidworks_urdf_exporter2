@@ -465,3 +465,43 @@ def test_a_newer_source_forces_a_fresh_reflection(tmp_path):
     big = big.to_geometry() if isinstance(big, trimesh.Scene) else big
     assert big.extents[0] == pytest.approx(0.08, rel=1e-6), big.extents
     assert small.extents[0] == pytest.approx(0.04, rel=1e-6)
+
+
+# ------------------------------------------------------------------ prefixing
+
+def test_a_prefix_names_the_generated_links_when_there_is_no_marker_to_swap():
+    """Swapping a side marker only works on a robot whose limb links carry one.
+    Plenty do not -- limb parts named after the part and told apart by an
+    instance number, `joint_frame_y_link_4` beside `joint_frame_y_link_5` --
+    and a prefix is what always yields a fresh name."""
+    model = _model()
+    reports = mirror_limbs(model, [{"root": "right_arm_0", "plane": "xz",
+                                    "prefix": "mirrored_"}])
+    assert reports[0].get("skip") is None
+    names = {c.link_name for c in model.components}
+    assert {"mirrored_right_arm_0", "mirrored_right_arm_1"} <= names
+
+
+def test_a_prefix_wins_over_a_rename_when_both_are_given():
+    model = _model()
+    mirror_limbs(model, [{"root": "right_arm_0", "plane": "xz",
+                          "prefix": "m_", "rename": {"right": "left"}}])
+    names = {c.link_name for c in model.components}
+    assert "m_right_arm_0" in names and "left_arm_0" not in names
+
+
+def test_a_prefix_that_would_collide_generates_nothing():
+    model = _model()
+    reports = mirror_limbs(model, [{"root": "right_arm_0", "plane": "xz",
+                                    "prefix": ""}])
+    assert reports[0]["skip"] and "unchanged or colliding" in reports[0]["skip"]
+    assert len(model.components) == 3
+
+
+def test_the_prefixed_joints_get_their_own_names_too():
+    model = _model()
+    mirror_limbs(model, [{"root": "right_arm_0", "plane": "xz",
+                          "prefix": "mirrored_"}])
+    names = [j.name for j in model.joints]
+    assert len(names) == len(set(names)), "duplicate joint names in the URDF"
+    assert any(n.startswith("mirrored_") for n in names)

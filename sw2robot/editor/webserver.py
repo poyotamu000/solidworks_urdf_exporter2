@@ -7216,6 +7216,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 plane = str(body.get("plane") or "xz").lower()
                 src = (body.get("rename_from") or "").strip()
                 dst = (body.get("rename_to") or "").strip()
+                prefix = (body.get("prefix") or "").strip()
                 if not cls.pkg_dir or not link:
                     return self._send_json({"error": "no package/link"}, 400)
                 if not _cad_mode(cls.pkg_dir):
@@ -7242,22 +7243,27 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     if idx is not None:
                         return self._send_json(
                             {"error": f"'{link}' already mirrors a limb"}, 400)
-                    if not src or not dst or src == dst:
-                        return self._send_json(
-                            {"error": "rename_from / rename_to must differ and "
-                                      "be non-empty -- the generated links need "
-                                      "names of their own"}, 400)
-                    if src not in comp:
-                        return self._send_json(
-                            {"error": f"'{src}' does not appear in "
-                                      f"'{comp}', so the rename would leave "
-                                      f"the generated links unnamed"}, 400)
+                    # a prefix always yields a fresh name, so it is what a
+                    # robot whose limb links carry no side marker to swap uses
+                    if not prefix:
+                        if not src or not dst or src == dst:
+                            return self._send_json(
+                                {"error": "give a prefix, or a rename_from / "
+                                          "rename_to pair that differs -- the "
+                                          "generated links need names of their "
+                                          "own"}, 400)
+                        if src not in comp:
+                            return self._send_json(
+                                {"error": f"'{src}' does not appear in "
+                                          f"'{comp}', so the rename would leave "
+                                          f"the generated links unnamed"}, 400)
                     _snapshot(cls.pkg_dir, yml, f"mirror limb {comp[:30]}")
-                    txt = _append_yaml_list_item(
-                        txt, "mirror_limbs",
-                        [f"root: {_yaml_scalar(comp)}",
-                         f"plane: {_yaml_scalar(plane)}",
-                         f"rename: {{{_yaml_scalar(src)}: {_yaml_scalar(dst)}}}"])
+                    item = [f"root: {_yaml_scalar(comp)}",
+                            f"plane: {_yaml_scalar(plane)}"]
+                    item.append(f"prefix: {_yaml_scalar(prefix)}" if prefix
+                                else f"rename: {{{_yaml_scalar(src)}: "
+                                     f"{_yaml_scalar(dst)}}}")
+                    txt = _append_yaml_list_item(txt, "mirror_limbs", item)
                 else:
                     if idx is None:
                         return self._send_json(
@@ -7293,10 +7299,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     return self._send_json(
                         {"error": refusal.group(1).strip()}, 400)
                 print(f"[sw2robot.web] set_mirror_limb: {comp} on={on} "
-                      f"plane={plane} {src}->{dst}")
+                      f"plane={plane} "
+                      + (f"prefix={prefix}" if prefix else f"{src}->{dst}"))
                 return self._send_json({"ok": True, "link": comp, "on": on,
                                         "plane": plane,
-                                        "rename": {src: dst} if on else None})
+                                        "prefix": prefix or None,
+                                        "rename": ({src: dst}
+                                                   if on and not prefix
+                                                   else None)})
             if parsed.path == "/api/set_color":
                 # per-link visual colour override, stored as a `colors:` block in
                 # joints.yaml ({component name -> '#RRGGBB'}).  The viewer paints

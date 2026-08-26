@@ -310,6 +310,8 @@
     'li.mirrorLimb': { en: 'mirror limb', ja: '手足のミラー生成' },
     'li.mirrorGo': { en: 'generate', ja: '生成' },
     'li.mirrorRemove': { en: 'remove', ja: '解除' },
+    'li.mirrorPrefix': { en: 'name prefix', ja: '名前の接頭辞' },
+    'li.mirrorPrefixed': { en: a => `${a.p}*`, ja: a => `${a.p}*` },
     'li.mirrorBusy': { en: 'rebuilding…', ja: 'リビルド中…' },
     'li.mirrorStart': {
       en: a => `mirroring the limb at ${a.name} — rebuilding, this takes a while on a big robot`,
