@@ -1,6 +1,7 @@
 import { viewer } from './dom.js';
 import { applyPersistedColors } from './link-look.js';
-import { openMassList } from './mass-editor.js';
+import { openMassList, updateMassChip } from './mass-editor.js';
+import { refreshMassHeat } from './mass-heatmap.js';
 import { packageState } from './state.js';
 import {
   ColladaLoader, GLTFLoader, OBJLoader, STLLoader, THREE, mergeGeometries,
@@ -64,6 +65,12 @@ export async function refreshCompMeta() {
       packageState.excludedList = r.excluded ?? [];
       // mass-only links (final URDF link names == the viewer's link names)
       packageState.massOnlyLinks = new Set(r.mass_only ?? []);
+      // the built URDF's per-link masses drive the total readout and the heat
+      // view; both repaint here so every edit that rebuilds is reflected
+      packageState.urdfMasses = r.urdf_masses ?? {};
+      packageState.defaultMassLinks = r.default_mass_links ?? [];
+      updateMassChip(r);
+      refreshMassHeat();
       const chip = document.getElementById('exclchip');
       chip.style.display = packageState.excludedList.length ? '' : 'none';
       chip.textContent = t('excl.chip', { n: packageState.excludedList.length });
@@ -243,6 +250,43 @@ function meshTick(name, ok, detail) {
                 t('mesh.barSub'));
 }
 
+// Every glTF mesh we load arrives as a MIRROR, and has to be talked out of it.
+//
+// glTF's `metallicFactor` defaults to 1.0 when unspecified, and three's
+// GLTFLoader honours that -- its createDefaultMaterial() (for a primitive with
+// no material at all) is literally `MeshStandardMaterial({metalness: 1,
+// roughness: 1})`.  Our 3DXML->GLB converter writes no material on most parts
+// (98 of 101 files in a typical package) and omits metallicFactor on the rest,
+// so EVERY CAD part renders as metal.  A metal has no diffuse term: its colour
+// only shows as reflections of an environment -- and urdf-loader's viewer sets
+// up a HemisphereLight and a DirectionalLight and no envMap / scene.environment
+// at all (urdf-viewer-element.js).  So the parts are lit by a single dim, very
+// rough specular lobe and nothing else.
+//
+// Measured against three r160's own BRDF: a colour we assign as #ef002f reaches
+// the screen as #83003c, and #4463ff as #485787.  The distance between the two
+// ends of the mass ramp collapses from 219 to 129 (of 441) -- 41% of the colour
+// separation is thrown away before anything is drawn.  That is why every
+// palette looked muddy no matter how it was chosen.
+//
+// metalness === 1 is the "unspecified" sentinel AND, with no environment to
+// reflect, a degenerate value whatever the author intended -- so that exact
+// value is the one we override.  An explicit partial metalness is left alone.
+// Materials are shared with the mesh cache, so this runs once per file.
+function _unmetal(obj) {
+  obj.traverse(o => {
+    const mats = Array.isArray(o.material) ? o.material
+      : (o.material ? [o.material] : []);
+    for (const m of mats) {
+      if (m.isMeshStandardMaterial && m.metalness === 1) {
+        m.metalness = 0;
+        m.needsUpdate = true;
+      }
+    }
+  });
+  return obj;
+}
+
 // NOTE: the element property is loadMeshFunc (NOT the loader's loadMeshCb)
 // meshCache: a rebuild after a joint edit only changes the URDF, never the
 // meshes -- serve repeat loads from memory (clone) so the reload is instant
@@ -273,9 +317,9 @@ viewer.loadMeshFunc = (path, manager, done) => {
   };
   if (lower.endsWith('.3dxml')) {
     const url = packageState.dropMode ? path : path + '?glb=1';
-    new GLTFLoader(manager).load(url, g => ok(g.scene), null, fail);
+    new GLTFLoader(manager).load(url, g => ok(_unmetal(g.scene)), null, fail);
   } else if (lower.endsWith('.glb') || lower.endsWith('.gltf')) {
-    new GLTFLoader(manager).load(path, g => ok(g.scene), null, fail);
+    new GLTFLoader(manager).load(path, g => ok(_unmetal(g.scene)), null, fail);
   } else if (lower.endsWith('.stl')) {
     new STLLoader(manager).load(path, geom => ok(new THREE.Mesh(geom,
       new THREE.MeshPhongMaterial({ color: 0x999999 }))), null, fail);

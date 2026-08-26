@@ -29,6 +29,7 @@ import {
 import { cancelMimic } from './mimic.js';
 import { buildPlayRows, withJointOpSuppressed } from './play-mode.js';
 import { refreshRootBox } from './root-frame.js';
+import { refreshMassHeat } from './mass-heatmap.js';
 import { mimicFollowers } from './selection.js';
 import { _cancelTweens, _resetSessionLogs, op } from './session-log.js';
 import {
@@ -82,6 +83,7 @@ viewer.addEventListener('geometry-loaded', () => {
     viewState.tfNodes = [];                  // old robot's TF nodes died with it
     undimAll();                    // restore shared (cached) materials!
     applyPersistedColors();        // re-paint server-saved colour overrides
+    refreshMassHeat();             // ...then re-apply the heat view over them
     collisionState.collisionLinks = new Set();    // fresh meshes wear no stale red
     initCollision();
     if (tfOn()) { setTF(true); }

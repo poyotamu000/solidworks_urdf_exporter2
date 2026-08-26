@@ -33,7 +33,13 @@ const browser = await puppeteer.launch({
   args: ['--no-sandbox', ...EXTRA_ARGS] });
 const page = await browser.newPage();
 await page.setViewport({ width: 1500, height: 900 });
-page.on('pageerror', e => { console.log('PAGEERROR', e.message); fails += 1; });
+// print the STACK, not just the message: a bare "Cannot read properties of
+// null" names neither the module nor the call, which is unlocatable across a
+// twenty-file front end when the failure only shows up on CI.
+page.on('pageerror', e => {
+  console.log('PAGEERROR', e.stack ?? e.message);
+  fails += 1;
+});
 await page.goto(URL, { waitUntil: 'networkidle2', timeout: 60000 });
 await page.waitForSelector('.joint .geo', { timeout: 30000 });
 

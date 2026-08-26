@@ -284,6 +284,22 @@ def test_components_lists_links_with_overlay_colour(server):
     assert comp["colors"][TIP_LINK] == "#00ff00"
 
 
+def test_components_reports_masses_and_tracks_inertial_edits(server):
+    """The editor's whole-robot total is a client-side sum of ``urdf_masses``,
+    so URDF mode has to report them -- from the OVERLAY-applied URDF, not the
+    pristine file, or the total lags one edit behind every mass change."""
+    comp = _get_json(server, "/api/components")
+    masses = comp["urdf_masses"]
+    assert masses, "URDF mode reported no link masses at all"
+    assert comp["links"][TIP_LINK]["current_mass"] == masses[TIP_LINK]
+    before = sum(masses.values())
+
+    _post(server, "/api/set_inertial", {"link": TIP_LINK, "mass": 2.5})
+    after = _get_json(server, "/api/components")["urdf_masses"]
+    assert after[TIP_LINK] == 2.5
+    assert sum(after.values()) == pytest.approx(before - masses[TIP_LINK] + 2.5)
+
+
 def test_live_urdf_reflects_edits_and_is_cache_stable(server):
     """collision / auto-limits read a hidden live URDF that tracks the overlay
     but only rewrites when edits change (so their (path, mtime) cache holds)."""

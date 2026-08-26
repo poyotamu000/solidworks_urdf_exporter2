@@ -42,8 +42,41 @@ export function matPickDensity(val) {
 }
 
 // the ⚖ 質量 list: per-link mass / density / mass-only, with default-mass ⚠
-const _fmtMass = m => (m == null) ? '—'
+export const fmtMass = m => (m == null) ? '—'
   : (m >= 0.1 ? `${m.toFixed(3)} kg` : `${(m * 1000).toFixed(1)} g`);
+const _fmtMass = fmtMass;
+
+// Whole-robot totals, straight from the built URDF's <inertial> masses -- the
+// same numbers a simulator would add up, so this IS the robot's mass.  Links
+// with no <inertial> (frame-only / merged-away) are simply absent from
+// `urdf_masses` and contribute nothing, which is correct rather than a guess.
+// `flagged` counts links still on a SolidWorks default mass: with any of those
+// the total is partly made up, and every readout says so instead of presenting
+// it as measured.
+export function massTotals(data) {
+  const um = data?.urdf_masses ?? {};
+  let total = 0, n = 0;
+  for (const v of Object.values(um)) {
+    if (typeof v === 'number' && isFinite(v)) { total += v; n += 1; }
+  }
+  return { total: n ? total : null, n,
+           flagged: (data?.default_mass_links ?? []).length };
+}
+
+// the ⚖ chip in the tool row: always-visible whole-robot mass, ⚠ when part of
+// it is a placeholder.  Fed from refreshCompMeta, so it tracks every edit.
+export function updateMassChip(data) {
+  const el = document.getElementById('masschip');
+  if (!el) { return; }
+  const { total, n, flagged } = massTotals(data);
+  if (total == null) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  el.classList.toggle('warn', flagged > 0);
+  el.textContent = (flagged ? '⚠ ' : '') + t('mass.chip', { m: fmtMass(total) });
+  el.title = [t('mass.chipTitle', { m: fmtMass(total), n }),
+              ...(flagged ? [t('mass.needReview', { n: flagged })] : [])]
+    .join('\n');
+}
 
 export async function openMassList() {
   // Fully data-driven (keyed by the server's final link names): do NOT depend
@@ -151,9 +184,13 @@ function _renderMassList(data) {
         : ''}</td>` +
       `</tr>`;
   }).join('');
-  const summary = flaggedN
+  const { total, n: massN } = massTotals(data);
+  // the headline number: what the robot weighs in the URDF being built
+  const totalLine = `<div class="mass-total">${t('mass.total',
+    { m: total == null ? '—' : fmtMass(total), n: massN })}</div>`;
+  const summary = totalLine + (flaggedN
     ? `<div class="mass-summary warn">${t('mass.needReview', { n: flaggedN })}</div>`
-    : `<div class="mass-summary ok">${t('mass.allGood')}</div>`;
+    : `<div class="mass-summary ok">${t('mass.allGood')}</div>`);
   card.innerHTML =
     '<div style="font-size:14px;margin-bottom:2px;color:#9fe0a8">' +
     t('mass.listTitle') + '</div>' +
@@ -230,6 +267,11 @@ function _renderMassList(data) {
   (document.getElementById('viewer').parentElement || document.body)
     .appendChild(ov);
 }
+// the total chip is a shortcut into the same panel
+document.getElementById('masschip')?.addEventListener('click', () => {
+  const p = document.getElementById('masslist');
+  if (p) { p.remove(); } else { openMassList(); }
+});
 document.getElementById('masslistbtn').addEventListener('click', () => {
   // toggle: the button always responds -- close an open panel, else (re)open it
   const p = document.getElementById('masslist');

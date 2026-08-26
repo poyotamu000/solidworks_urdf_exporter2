@@ -247,6 +247,32 @@
   .mass-summary { font-size: 11px; margin: 2px 0 8px; }
   .mass-summary.warn { color: #e8b84b; }
   .mass-summary.ok { color: #7bd88f; }
+  /* the headline whole-robot mass, above the per-link table */
+  .mass-total { font-size: 13px; color: #cfe3ff; margin: 2px 0 2px; }
+  /* the same number as an always-visible tool-row chip */
+  #masschip { color: #cfe3ff; }
+  #masschip.warn { color: #e8b84b; }
+  /* mass heat legend: bottom-RIGHT of the viewer -- bottom-left is #keyoverlay's */
+  #heatlegend { position: absolute; right: 10px; bottom: 10px; z-index: 6;
+                background: #181b20ee; border: 1px solid #39414d;
+                border-radius: 6px; padding: 7px 9px; font-size: 11px;
+                color: #dde; min-width: 200px; max-width: 320px;
+                box-shadow: 0 4px 16px #0007; pointer-events: auto; }
+  #heatlegend .heattitle { color: #8a93a3; font-size: 10px; margin-bottom: 3px; }
+  #heatlegend .heatramp { height: 9px; border-radius: 3px;
+                          border: 1px solid #39414d; }
+  #heatlegend .heatends { display: flex; justify-content: space-between;
+                          color: #8a93a3; font-size: 10px; margin-top: 2px; }
+  #heatlegend .heatflag { color: #c98fe8; font-size: 10px; margin-top: 4px; }
+  #heatlegend .heatrow { display: flex; align-items: center; gap: 5px;
+                         cursor: pointer; padding: 1px 2px; border-radius: 3px; }
+  #heatlegend .heatrow:hover { background: #262b33; }
+  #heatlegend .heatsw { width: 9px; height: 9px; border-radius: 2px;
+                        border: 1px solid #0006; flex: none; }
+  #heatlegend .heatname { flex: 1; overflow: hidden; text-overflow: ellipsis;
+                          white-space: nowrap; }
+  #heatlegend .heatval { color: #cfe3ff; }
+  #heatlegend .heatpct { color: #7a8494; font-size: 10px; }
   .joint .mimictag { font-size: 10px; padding: 0 4px; border-radius: 3px;
                      background: #3d3556; color: #c5b3ff; }
   .joint .motag { font-size: 10px; padding: 0 4px; border-radius: 3px;

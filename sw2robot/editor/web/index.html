@@ -77,6 +77,9 @@
               title="click a face: add a coordinate-only link (dummy_link port) there, +Z = face normal; click a port marker to remove it">⊕ port</button>
       <button id="vorigin" data-i18n-title="t.vorigin"
               title="CAD全体を動かして base_link を世界原点(0,0,0)に合わせる">⌖ origin</button>
+      <button id="massheat" class="toggle" data-i18n="heat.btn"
+              data-i18n-title="t.heat"
+              title="各リンクを質量で塗り分ける（青=軽い / 赤=重い、対数スケール）。SW既定質量のリンクはスケール外(紫)">🌡 質量ヒート</button>
       <button id="grid" class="toggle active" data-i18n-title="t.grid"
               title="ground grid at root Z=0">grid</button>
       <button id="boxselect" class="toggle" data-i18n="ui.boxselect"
@@ -295,6 +298,9 @@
       <button id="masslistbtn" data-i18n="ui.masslist"
               data-i18n-title="t.masslist"
               title="質量を一覧で編集">⚖ 質量</button>
+      <!-- whole-robot mass, always visible once a package is open; click opens
+           the mass editor.  Hidden while there is nothing to total. -->
+      <button id="masschip" style="display:none;font-size:11px"></button>
       <!-- Enabled only when the CAD graph carries the classic add-in's embedded
            configuration.  The wrapper carries the same title as the button: a
            DISABLED button gets no pointer events, so the "why is this grey"
