@@ -69,6 +69,7 @@ const panel = (which = target) => page.evaluate(async (name) => {
     visible: el?.style.display !== 'none',
     from: el?.querySelector('#li_mirf') != null,
     to: el?.querySelector('#li_mirt') != null,
+    prefix: el?.querySelector('#li_mirpre') != null,
     plane: [...(el?.querySelectorAll('#li_mirp option') ?? [])]
       .map(o => o.value),
     go: el?.querySelector('#li_mirgo') != null,
@@ -80,7 +81,11 @@ const panel = (which = target) => page.evaluate(async (name) => {
 
 const p0 = await panel();
 check('panel renders the mirror row', p0.visible && !!p0.label, p0.label ?? '');
-check('it offers from / to / generate', p0.from && p0.to && p0.go);
+// a side-marker swap when the limb's names allow one, a prefix when they do
+// not -- either way there has to be a way to name the copies
+check('it offers a way to name the copies, and a generate button',
+      p0.go && ((p0.from && p0.to) || p0.prefix),
+      `from/to=${p0.from && p0.to} prefix=${p0.prefix}`);
 check('it offers all three planes', p0.plane.join(',') === 'xz,yz,xy',
       p0.plane.join(','));
 check('no undo button before anything is generated', !p0.undo);
@@ -109,8 +114,12 @@ check('reopening the panel does not stack planes', await planes() === 1,
 // generate: fill the rename boxes so the copies get names of their own
 await page.evaluate((name, prefix) => {
   const el = document.getElementById('linkinfo');
-  el.querySelector('#li_mirf').value = name;
-  el.querySelector('#li_mirt').value = prefix + name;
+  if (el.querySelector('#li_mirpre')) {
+    el.querySelector('#li_mirpre').value = prefix;      // prefix mode
+  } else {
+    el.querySelector('#li_mirf').value = name;          // side-marker swap
+    el.querySelector('#li_mirt').value = prefix + name;
+  }
   el.querySelector('#li_mirgo').click();
 }, target, PREFIX);
 let generated = false;
@@ -124,7 +133,7 @@ try {
 const after = await links();
 check('clicking generate adds the mirrored links', generated,
       `${before.length} -> ${after.length}`);
-check('the generated links are named by the rename rule',
+check('the generated links are named by the rule the panel offered',
       after.some(l => l === PREFIX + target),
       after.filter(l => l.startsWith(PREFIX)).join(','));
 

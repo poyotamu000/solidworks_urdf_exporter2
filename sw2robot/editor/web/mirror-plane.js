@@ -87,6 +87,46 @@ export function showMirrorPlane(plane) {
   viewer.redraw?.();
 }
 
+/** Every link at or below ``link``, using the viewer's own joint tree. */
+export function subtreeLinks(robot, link) {
+  const out = [];
+  const walk = n => {
+    if (!n) { return; }
+    if (n.isURDFLink) { out.push(n.name); }
+    (n.children ?? []).forEach(c => {
+      if (c.isURDFJoint || c.isURDFLink) { walk(c); }
+    });
+  };
+  walk(robot?.links?.[link]);
+  return out;
+}
+
+/** A from/to swap that gives EVERY link below ``link`` a fresh name, or null.
+ *
+ *  A side marker in the limb root's name is not enough on its own: a leg called
+ *  `leg_right_1` holding four screws called `ISO_7045_M3x4_9` has nothing to
+ *  swap on the screws, so the rename would leave them colliding with the
+ *  originals and the build would refuse.  Test the whole subtree and fall back
+ *  to a prefix when any link comes back unchanged.
+ */
+export function guessRename(robot, link) {
+  const subtree = subtreeLinks(robot, link);
+  const taken = new Set(Object.keys(robot?.links ?? {}));
+  const candidates = [];
+  if (/right/i.test(link)) { candidates.push(['right', 'left'], ['Right', 'Left']); }
+  if (/left/i.test(link)) { candidates.push(['left', 'right'], ['Left', 'Right']); }
+  if (/^R[A-Z0-9_]/.test(link)) { candidates.push(['R', 'L']); }
+  if (/^L[A-Z0-9_]/.test(link)) { candidates.push(['L', 'R']); }
+  for (const [from, to] of candidates) {
+    const ok = subtree.every(n => {
+      const renamed = applyRename(n, { [from]: to });
+      return renamed !== n && !taken.has(renamed);
+    });
+    if (ok) { return [from, to]; }
+  }
+  return null;
+}
+
 /** The link name ``rename`` would give ``name``, matching the server's rule:
  *  the FIRST occurrence of each key, one substitution per name. */
 export function applyRename(name, rules, prefix) {

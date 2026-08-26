@@ -12,7 +12,8 @@ import {
 } from './link-look.js';
 import { loadRobot } from './load.js';
 import {
-  DEFAULT_MIRROR_PLANE, hideMirrorPlane, showMirrorPlane, specThatGenerated,
+  DEFAULT_MIRROR_PLANE, guessRename, hideMirrorPlane, showMirrorPlane,
+  specThatGenerated,
 } from './mirror-plane.js';
 import { matPickDensity, matSelectHtml } from './mass-editor.js';
 import { refreshHistory } from './root-frame.js';
@@ -217,12 +218,11 @@ export function fillLinkInfo(name) {
         `<button id="li_unmirror" class="rn-input" style="cursor:pointer">` +
         `${t('li.mirrorRemove')}</button></td></tr>`);
     } else if (j) {
-      // Seed the rename from the link's own name: a leading R/L is the usual
-      // side marker.  Plenty of robots have none -- limb parts named after the
-      // part and told apart by an instance number -- and for those a swap has
-      // nothing to swap, so fall back to prefixing every generated name.
-      const guess = /^[Rr]/.test(name) ? [name[0], name[0] === 'R' ? 'L' : 'l']
-        : /^[Ll]/.test(name) ? [name[0], name[0] === 'L' ? 'R' : 'r'] : null;
+      // Offer a side-marker swap only when it actually renames EVERY link in
+      // the limb -- a leg called `leg_right_1` carrying screws with no marker
+      // of their own would otherwise be offered a rename the build then
+      // refuses.  Anything else gets a prefix, which always yields fresh names.
+      const guess = guessRename(viewer.robot, name);
       const box = (id, v, ph, w = '5.5em') =>
         `<input id="${id}" class="rn-input" style="width:${w}" ` +
         `value="${escAttr(v)}" placeholder="${escAttr(ph)}">`;
