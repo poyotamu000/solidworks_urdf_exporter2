@@ -333,6 +333,11 @@ class Component:
     # per-body materials / mass override -- see exporter.mirror.  Provenance
     # only: the values themselves are already in sw_mass/sw_com/sw_inertia.
     mass_inherited_from: str | None = None
+    # link_name this component was generated from by reflecting a whole limb
+    # through the robot's sagittal plane (config `mirror_limbs:`, see
+    # exporter.limb_mirror).  Set only on GENERATED links -- they have no CAD
+    # behind them, so nothing downstream should treat them as extracted parts.
+    mirrored_from: str | None = None
     # set when a per-link density override (config / web editor) should drive
     # the inertial from the mesh, overriding the SolidWorks-native values
     density_override: bool = False
@@ -4210,8 +4215,96 @@ def _expand_subassemblies(graph, comps, adjacency, ground,
 # Build (no SolidWorks): GraphState + config -> RobotModel
 # ====================================================================
 
+def apply_link_overrides(comps, config, warn=True):
+    """Apply the per-link config overrides -- ``densities:``, ``masses:``,
+    ``mass_only:``, ``frame_only:`` -- to ``comps``.
+
+    Factored out because it runs TWICE: once over the extracted components,
+    and again over the links ``mirror_limbs`` generates, which do not exist
+    yet on the first pass.  Without the second pass a mass or a frame-only tick
+    the web editor writes for a generated link is accepted and silently does
+    nothing -- the editor cannot tell a generated link from a real one.
+
+    ``warn=False`` silences the "matched no link" notes, which are meaningless
+    on the second pass: most keys legitimately match nothing there.
+    """
+    def warn_(msg):
+        if warn:
+            print(msg)
+
+    if config and config.get("densities"):
+        # per-link density overrides (kg/m^3) -- the web editor's material
+        # setting; wins over the part's SolidWorks material
+        by_ln = {c.link_name: c for c in comps}
+        by_nm = {c.name: c for c in comps}
+        for k, v in config["densities"].items():
+            c = by_ln.get(str(k)) or by_nm.get(str(k))
+            if c is not None:
+                c.density = float(v)
+                # explicit density => drive mass from the mesh, not the
+                # SolidWorks-native value computed with the CAD material
+                c.density_override = True
+            else:
+                warn_(f"      WARN: densities: '{k}' matched no link")
+
+    if config and config.get("masses"):
+        # per-link target mass (kg) -- the web editor's direct-weight setting.
+        # Same name matching as densities.  Mutually exclusive with a density
+        # override: a target mass rescales the inertial to an exact weight, so
+        # clear any density override on the same link (mass wins).  Consumed in
+        # urdf_writer._inertial_xml via skrobot.utils.inertia.rescale_inertial_to_mass.
+        by_ln = {c.link_name: c for c in comps}
+        by_nm = {c.name: c for c in comps}
+        for k, v in config["masses"].items():
+            c = by_ln.get(str(k)) or by_nm.get(str(k))
+            if c is not None:
+                try:
+                    m = float(v)
+                except (TypeError, ValueError):
+                    warn_(f"      WARN: masses: '{k}' -> {v!r} is not a number")
+                    continue
+                if not (m > 0):
+                    warn_(f"      WARN: masses: '{k}' -> {m} is not positive")
+                    continue
+                c.mass_target = m
+                c.density_override = False   # mass wins over any density override
+            else:
+                warn_(f"      WARN: masses: '{k}' matched no link")
+
+    if config and config.get("mass_only"):
+        # mass-only links: keep the weight, drop the geometry.  Same name
+        # matching as densities (link name or SolidWorks name).  The only-fixed
+        # check happens below, once the tree (and so each part's joint) is known.
+        by_ln = {c.link_name: c for c in comps}
+        by_nm = {c.name: c for c in comps}
+        for k in config["mass_only"]:
+            c = by_ln.get(str(k)) or by_nm.get(str(k))
+            if c is not None:
+                c.mass_only = True
+            else:
+                warn_(f"      WARN: mass_only: '{k}' matched no link")
+
+    if config and config.get("frame_only"):
+        # frame-only links: a CAD-only part (dummy axis / locator) whose shape
+        # and weight are both fictional -- keep the frame, drop everything else.
+        # Same name matching as mass_only; no only-fixed check, a dummy part is
+        # just as fictional when it sits on a revolute joint.
+        by_ln = {c.link_name: c for c in comps}
+        by_nm = {c.name: c for c in comps}
+        for k in config["frame_only"]:
+            c = by_ln.get(str(k)) or by_nm.get(str(k))
+            if c is not None:
+                c.frame_only = True
+                # a frame carries no weight: drop any mass/density override that
+                # would otherwise fight the empty <inertial>
+                c.mass_target = None
+                c.mass_only = False
+            else:
+                warn_(f"      WARN: frame_only: '{k}' matched no link")
+
+
 def build_model(graph, robot_name=None, base_hint=None, config=None,
-                exclude=None):
+                exclude=None, meshes_dir=None):
     robot_name = robot_name or graph.robot_name
     exclude = list(exclude or [])
     if config and config.get("exclude"):
@@ -4444,75 +4537,7 @@ def build_model(graph, robot_name=None, base_hint=None, config=None,
             else:
                 print(f"      WARN: force_fixed edge not found: {pair}")
 
-    if config and config.get("densities"):
-        # per-link density overrides (kg/m^3) -- the web editor's material
-        # setting; wins over the part's SolidWorks material
-        by_ln = {c.link_name: c for c in comps}
-        by_nm = {c.name: c for c in comps}
-        for k, v in config["densities"].items():
-            c = by_ln.get(str(k)) or by_nm.get(str(k))
-            if c is not None:
-                c.density = float(v)
-                # explicit density => drive mass from the mesh, not the
-                # SolidWorks-native value computed with the CAD material
-                c.density_override = True
-            else:
-                print(f"      WARN: densities: '{k}' matched no link")
-
-    if config and config.get("masses"):
-        # per-link target mass (kg) -- the web editor's direct-weight setting.
-        # Same name matching as densities.  Mutually exclusive with a density
-        # override: a target mass rescales the inertial to an exact weight, so
-        # clear any density override on the same link (mass wins).  Consumed in
-        # urdf_writer._inertial_xml via skrobot.utils.inertia.rescale_inertial_to_mass.
-        by_ln = {c.link_name: c for c in comps}
-        by_nm = {c.name: c for c in comps}
-        for k, v in config["masses"].items():
-            c = by_ln.get(str(k)) or by_nm.get(str(k))
-            if c is not None:
-                try:
-                    m = float(v)
-                except (TypeError, ValueError):
-                    print(f"      WARN: masses: '{k}' -> {v!r} is not a number")
-                    continue
-                if not (m > 0):
-                    print(f"      WARN: masses: '{k}' -> {m} is not positive")
-                    continue
-                c.mass_target = m
-                c.density_override = False   # mass wins over any density override
-            else:
-                print(f"      WARN: masses: '{k}' matched no link")
-
-    if config and config.get("mass_only"):
-        # mass-only links: keep the weight, drop the geometry.  Same name
-        # matching as densities (link name or SolidWorks name).  The only-fixed
-        # check happens below, once the tree (and so each part's joint) is known.
-        by_ln = {c.link_name: c for c in comps}
-        by_nm = {c.name: c for c in comps}
-        for k in config["mass_only"]:
-            c = by_ln.get(str(k)) or by_nm.get(str(k))
-            if c is not None:
-                c.mass_only = True
-            else:
-                print(f"      WARN: mass_only: '{k}' matched no link")
-
-    if config and config.get("frame_only"):
-        # frame-only links: a CAD-only part (dummy axis / locator) whose shape
-        # and weight are both fictional -- keep the frame, drop everything else.
-        # Same name matching as mass_only; no only-fixed check, a dummy part is
-        # just as fictional when it sits on a revolute joint.
-        by_ln = {c.link_name: c for c in comps}
-        by_nm = {c.name: c for c in comps}
-        for k in config["frame_only"]:
-            c = by_ln.get(str(k)) or by_nm.get(str(k))
-            if c is not None:
-                c.frame_only = True
-                # a frame carries no weight: drop any mass/density override that
-                # would otherwise fight the empty <inertial>
-                c.mass_target = None
-                c.mass_only = False
-            else:
-                print(f"      WARN: frame_only: '{k}' matched no link")
+    apply_link_overrides(comps, config)
 
     directed = None
     root_rpy = None
@@ -4639,9 +4664,25 @@ def build_model(graph, robot_name=None, base_hint=None, config=None,
                 ln = by_comp.get(member)
                 if ln:
                     lumped.append(ln)
-    return RobotModel(name=robot_name, components=comps, joints=joints,
-                      detected_edges=detected, base_link=base.link_name,
-                      ports=ports,
-                      root_link_name=root_link_name or base.link_name,
-                      loop_closures=closures_out[0] if closures_out else None,
-                      lumped_links=lumped)
+    model = RobotModel(name=robot_name, components=comps, joints=joints,
+                       detected_edges=detected, base_link=base.link_name,
+                       ports=ports,
+                       root_link_name=root_link_name or base.link_name,
+                       loop_closures=closures_out[0] if closures_out else None,
+                       lumped_links=lumped)
+    # `mirror_limbs:` builds the side that was never modelled.  It runs HERE --
+    # after the tree exists, because reflecting a limb needs its link frames --
+    # and its output then goes back through the per-link overrides, so a mass or
+    # a frame-only tick set on a generated link behaves exactly as it does on an
+    # extracted one.  (It used to run in export.build(), after the overrides had
+    # already been applied, where those edits were accepted and silently lost.)
+    if config and config.get("mirror_limbs"):
+        from .limb_mirror import mirror_limbs, print_limb_report
+
+        before = len(model.components)
+        print_limb_report(mirror_limbs(model, config["mirror_limbs"],
+                                       meshes_dir=meshes_dir))
+        generated = model.components[before:]
+        if generated:
+            apply_link_overrides(generated, config, warn=False)
+    return model

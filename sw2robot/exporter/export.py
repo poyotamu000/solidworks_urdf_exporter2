@@ -655,7 +655,8 @@ def build(pkg_dir, config_path=None, base_hint=None, exclude=None,
         density = config.get("density")
     print("[build] model from graph ...")
     model = build_model(graph, base_hint=base_hint, config=config,
-                        exclude=exclude)
+                        exclude=exclude,
+                        meshes_dir=os.path.join(pkg_dir, "meshes"))
     print(f"      {len(model.components)} links, {len(model.joints)} joints")
 
     urdf_kwargs = {} if density is None else {"density": float(density)}
