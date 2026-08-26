@@ -488,22 +488,38 @@ def _um_colors(state):
     return {ln: le.color for ln, le in state.link_edits.items() if le.color}
 
 
-def _um_components(state):
+def _um_components(state, pkg_dir=None, urdf_rel=None):
     """The /api/components payload for URDF mode: links straight from the parsed
-    URDF, colours from the overlay (no CAD material/density concept here)."""
+    URDF, colours from the overlay (no CAD material/density concept here).
+
+    Masses come from the overlay-applied *live* URDF (not the pristine file on
+    disk), so an inertial edit made here shows up in the same request that
+    stores it -- and the total the editor sums is the mass the export carries.
+    """
+    # the live copy is regenerated only when the overlay changed, so this is a
+    # cheap read on the common no-edit refresh
+    urdf_masses = {}
+    if pkg_dir and urdf_rel:
+        try:
+            _, live_rel = _um_live_urdf(pkg_dir, urdf_rel)
+            urdf_masses = _urdf_link_masses(pkg_dir, live_rel)
+        except OSError:
+            pass          # no usable live copy -> report no masses, not stale ones
     links, colors, mass_only = {}, {}, []
     for ln in state.links:
         name = ln["name"]
         le = state.link_edits.get(name)
         col = le.color if le else None
         links[name] = {"material": None, "density": None, "name": name,
-                       "override": None, "color": col}
+                       "override": None, "color": col,
+                       "current_mass": urdf_masses.get(name)}
         if col:
             colors[name] = col
         if le and le.mass_only:
             mass_only.append(name)
     return {"links": links, "excluded": [], "colors": colors,
-            "mass_only": mass_only}
+            "mass_only": mass_only, "urdf_masses": urdf_masses,
+            "default_mass_links": []}
 
 
 def _um_set_limits(state, limits):
@@ -5058,7 +5074,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 if not cls.pkg_dir:
                     return self._send_json({"error": "no package open"}, 400)
                 if not _cad_mode(cls.pkg_dir):       # URDF-input mode
-                    return self._send_json(_um_components(_um["state"]))
+                    return self._send_json(_um_components(
+                        _um["state"], cls.pkg_dir, cls.urdf_rel))
                 from sw2robot.exporter.state import GraphState
                 gs = GraphState.load(
                     os.path.join(cls.pkg_dir, "graph.json"))

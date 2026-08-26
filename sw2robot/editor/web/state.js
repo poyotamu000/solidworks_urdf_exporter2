@@ -33,6 +33,12 @@ export const packageState = {
   linkColors: {},           // URDF/viewer link name -> '#rrggbb' override
   excludedList: [],         // component names excluded from the URDF
   massOnlyLinks: new Set(), // links flagged mass-only (weight kept, no mesh)
+  // viewer link name -> mass (kg) as built into the URDF's <inertial>.  The
+  // authoritative per-link mass (after density / target-mass resolution), and
+  // the only thing the total / heatmap read -- a link with no <inertial>
+  // (frame-only) is absent, which is exactly its zero contribution.
+  urdfMasses: {},
+  defaultMassLinks: [],     // links still carrying a SolidWorks default mass
   rootBaseName: null,       // which COMPONENT is base_link right now
                             // (the URDF rename hides it)
 };

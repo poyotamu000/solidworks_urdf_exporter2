@@ -16,6 +16,7 @@ import './play-mode.js';
 import './axis-markers.js';
 import './frames.js';
 import './link-look.js';
+import './mass-heatmap.js';
 import './selection.js';
 import './link-info.js';
 import './bulk-edit.js';
