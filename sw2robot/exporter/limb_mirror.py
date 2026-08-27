@@ -138,6 +138,94 @@ def subtree_links(joints, root):
     return out
 
 
+def _driver(parent_of, link):
+    """The nearest movable joint at or above ``link``, or None."""
+    while link in parent_of:
+        up = parent_of[link]
+        if up.jtype != "fixed":
+            return up
+        link = up.parent
+    return None
+
+
+def shared_actuator(joints, limb_root, attach_to=None):
+    """The joint that would drive BOTH the limb and its mirrored copy, or None.
+
+    ``mirror_limbs`` hangs the copy off the limb root's own parent, which is
+    right when that parent is rigidly attached to the base -- and a silent trap
+    when it is not.  A quadruped keeps its hip servos in the torso, so rooting
+    the mirror at the leg gives the copy no hip of its own: it bolts onto the
+    same horn as the original and the one hip joint swings both legs.  (The
+    same sharing is CORRECT for a pair of gripper jaws on one wrist, so this is
+    reported, not refused.)
+
+    ``attach_to`` is the spec's own attachment override.  Hanging the copy on
+    the OTHER side's existing mount is the way out of the trap without cloning
+    that mount: the copy is then driven by the far side's own joint, which is
+    not shared with anything, so nothing is reported.
+
+    Returns ``{"joint", "suggest"}`` -- the shared joint, and the link to root
+    the mirror at instead so the copy brings its own actuator -- or None.
+    """
+    parent_of = {j.child: j for j in joints}
+    joint = parent_of.get(limb_root)
+    if joint is None:
+        return None
+    mine = _driver(parent_of, attach_to or joint.parent)
+    if mine is None:
+        return None                      # rigidly grounded: nothing is shared
+    # shared only when that SAME joint also drives the limb being copied
+    if _driver(parent_of, joint.parent) is not mine:
+        return None
+    return {"joint": mine.name, "suggest": mine.child}
+
+
+def suggest_attach(poses, parent_of, limb_root, plane, tol=0.002):
+    """The far side's EXISTING mount for ``limb_root``, or None.
+
+    Robots that get mirrored are symmetric, so the mount the copy belongs on is
+    usually already modelled -- a quadruped's torso carries all four hip servos
+    even when two legs are missing.  Where that mount is, is not a guess: it is
+    wherever the source's own parent lands when reflected.  Look for a link
+    already sitting there, and it is the ``attach_to:`` the user would have
+    typed.
+
+    ``poses`` maps link name -> 4x4 world pose, ``parent_of`` child -> parent.
+    Position only: the counterpart's ORIENTATION follows whatever convention the
+    CAD used to place that side (this quad's legs are rotated copies, not
+    reflections), so requiring the rotation to match too would reject the very
+    mounts this is meant to find.
+
+    Returns None rather than a doubtful answer -- when nothing sits at the
+    reflected point, when more than one link does, or when the source's own
+    parent is the match (a parent ON the plane is its own reflection, and the
+    default attachment is already right).
+    """
+    signs = PLANES.get(str(plane or "").lower())
+    parent = parent_of.get(limb_root)
+    if signs is None or parent is None or parent not in poses:
+        return None
+    kids = {}
+    for child, par in parent_of.items():
+        kids.setdefault(par, []).append(child)
+    subtree, queue = set(), [limb_root]
+    while queue:
+        n = queue.pop()
+        if n in subtree:
+            continue
+        subtree.add(n)
+        queue.extend(kids.get(n, ()))
+
+    target = np.asarray(poses[parent], dtype=float)[:3, 3] * np.asarray(signs)
+    near = [n for n, T in poses.items()
+            if n not in subtree
+            and float(np.linalg.norm(np.asarray(T, dtype=float)[:3, 3]
+                                     - target)) <= tol]
+    if len(near) != 1:
+        return None                  # nothing there, or ambiguous -- don't guess
+    return None if near[0] == parent else near[0]
+
+
 def mirror_axis(axis, signs, jtype):
     """A joint axis, reflected, in the mirrored child's frame.
 
@@ -301,6 +389,28 @@ def _mirrored_component(comp, source_link, new_name, signs, mesh_file):
     return out
 
 
+def _sharing_to_report(joints, anchors, limb_root, plane, attach_to):
+    """The shared-actuator warning, or None when there is nothing to say.
+
+    Sharing the parent's joint is only a MISTAKE when the model already holds
+    the mount the copy should have used -- a quadruped's spare hip servo.  Two
+    arms on one chest joint, or two jaws on one wrist, share by design and there
+    is no second mount anywhere: warning about those would fire on every
+    humanoid arm ever mirrored, which is the main thing this feature is for.
+
+    So: report only when the limb is driven by its twin's joint AND a free
+    counterpart mount exists.  Then the advice is concrete -- use that mount.
+    """
+    sh = shared_actuator(joints, limb_root, attach_to)
+    if sh is None:
+        return None
+    parent_of = {j.child: j.parent for j in joints}
+    mount = suggest_attach(anchors, parent_of, limb_root, plane)
+    if mount is None:
+        return None                  # nowhere better to put it: stay quiet
+    return {"joint": sh["joint"], "attach_to": mount}
+
+
 def mirror_limbs(model, specs, meshes_dir=None):
     """Add a mirrored copy of each limb named in ``specs`` to ``model``.
 
@@ -314,10 +424,19 @@ def mirror_limbs(model, specs, meshes_dir=None):
           - root: shoulder_link_1
             plane: yz
             prefix: mirrored_        # prepended to every generated name
+            attach_to: right_hip_out # OPTIONAL: hang the copy here instead of
+                                     # on the source's own parent
 
     The limb's own attachment joint is regenerated too, so the mirrored limb
-    hangs off the same parent at the reflected pose.  ``model`` is mutated;
-    the return value is a list of report records for :func:`print_limb_report`.
+    hangs off the same parent at the reflected pose -- or off ``attach_to`` when
+    the spec names one.  That matters when the other side's MOUNT is already
+    modelled and only the limb itself is missing: a quadruped's torso carries
+    all four hip servos, so mirroring a leg onto its own parent either clones a
+    servo that already exists or leaves both legs on one horn.  Naming the far
+    side's horn puts the copy where the CAD has it, with no duplicate.
+
+    ``model`` is mutated; the return value is a list of report records for
+    :func:`print_limb_report`.
     """
     if not specs:
         return []
@@ -335,6 +454,7 @@ def mirror_limbs(model, specs, meshes_dir=None):
         plane = str(spec.get("plane") or DEFAULT_PLANE).lower()
         rules = spec.get("rename") or {}
         prefix = str(spec.get("prefix") or "")
+        attach_to = spec.get("attach_to") or None
         if plane not in PLANES:
             reports.append({"root": limb_root,
                             "skip": f"unknown plane {plane!r}; expected one of "
@@ -349,12 +469,24 @@ def mirror_limbs(model, specs, meshes_dir=None):
                             "skip": "it is the robot's root, so there is no "
                                     "attachment joint to mirror"})
             continue
+        if attach_to is not None and attach_to not in by_link:
+            reports.append({"root": limb_root,
+                            "skip": f"attach_to: {attach_to!r} is not a link "
+                                    f"in the model"})
+            continue
         signs = PLANES[plane]
         S = _reflection(signs)
         M = _reflection(signs)
 
         links = [ln for ln in subtree_links(model.joints, limb_root)
                  if ln in anchors]
+        if attach_to in links:
+            # it would hang off a link inside its own copy -- a cycle, or a
+            # parent that does not exist until the copy is made
+            reports.append({"root": limb_root,
+                            "skip": f"attach_to: {attach_to!r} is inside the "
+                                    f"limb being mirrored"})
+            continue
         names = {ln: _rename(ln, rules, prefix) for ln in links}
         clashes = [ln for ln, new in names.items()
                    if new == ln or new in by_link]
@@ -413,8 +545,8 @@ def mirror_limbs(model, specs, meshes_dir=None):
             joint = parent_of[link]
             parent_anchor = mirrored_anchors.get(joint.parent)
             if parent_anchor is None:            # the attachment joint
-                parent_anchor = anchors[joint.parent]
-                new_parent = joint.parent
+                new_parent = attach_to or joint.parent
+                parent_anchor = anchors[new_parent]
             else:
                 new_parent = names[joint.parent]
             rel = np.linalg.inv(parent_anchor) @ mirrored_anchors[link]
@@ -438,7 +570,11 @@ def mirror_limbs(model, specs, meshes_dir=None):
 
         reports.append({"root": limb_root, "plane": plane, "links": len(links),
                         "mass": added_mass,
-                        "names": [names[ln] for ln in links]})
+                        "names": [names[ln] for ln in links],
+                        "attach_to": attach_to,
+                        "shared": _sharing_to_report(
+                            model.joints, anchors, limb_root, plane,
+                            attach_to)})
     return reports
 
 
@@ -452,6 +588,13 @@ def print_limb_report(reports):
         print(f"      mirror_limbs: generated {r['links']} link(s) from "
               f"'{r['root']}' through the {r['plane']} plane "
               f"(+{r['mass']:.3f} kg): {', '.join(r['names'])}")
+        sh = r.get("shared")
+        if sh:
+            print(f"        WARN: the copy hangs off the same parent as "
+                  f"'{r['root']}', which joint '{sh['joint']}' drives -- so "
+                  f"that one joint now moves BOTH limbs.  The mount the copy "
+                  f"belongs on is already in the model: set "
+                  f"attach_to: {sh['attach_to']}")
     if any(not r.get("skip") for r in reports):
         print("        these links have NO CAD behind them -- they are exact "
               "reflections, so anything genuinely asymmetric is not modelled")
@@ -466,5 +609,7 @@ __all__ = [
     "mirror_mesh_file",
     "origin_matrix",
     "print_limb_report",
+    "shared_actuator",
     "subtree_links",
+    "suggest_attach",
 ]
