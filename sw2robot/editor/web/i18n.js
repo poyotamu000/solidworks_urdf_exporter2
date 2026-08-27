@@ -329,12 +329,26 @@
     'li.mirrorGenerated': {
       en: a => `generated from ${a.src} -- edit that side instead`,
       ja: a => `${a.src} から生成されたリンクです（編集は元の側で）` },
+    'li.mirrorAttach': { en: () => 'attach to', ja: () => '取り付け先' },
+    // blank is not "unset" -- it is the default attachment, so say what it does
+    'li.mirrorAttachAuto': {
+      en: () => 'blank = the same parent as the original',
+      ja: () => '空欄 = 元と同じ親に付ける' },
     'li.mirrorOk': { en: a => `mirrored the limb at ${a.name} ✓`,
                      ja: a => `${a.name} 以下をミラー生成しました ✓` },
     'li.mirrorRemoved': { en: a => `dropped the limb mirrored from ${a.name} ✓`,
                           ja: a => `${a.name} のミラー生成を解除しました ✓` },
     'li.mirrorFail': { en: a => `mirror failed: ${a.e}`,
                        ja: a => `ミラー生成に失敗: ${a.e}` },
+    // the copy hangs off a link that a joint already drives, so that one
+    // joint moves both limbs -- right for two jaws on a wrist, wrong for a leg
+    'li.mirrorShared': {
+      en: a => `heads up: the copy hangs off a link driven by ${a.joint}, so `
+        + `that one joint moves BOTH limbs. The mount it belongs on is `
+        + `already in the model -- set "attach to" to ${a.root}.`,
+      ja: a => `注意: コピーは ${a.joint} が動かすリンクにぶら下がるので、`
+        + `その関節1つで両方が動きます。本来の取り付け先が既にモデルに `
+        + `あります — 「取り付け先」に ${a.root} を入れてください。` },
     'mass.limbMirrored': { en: a => `generated from ${a.src}`,
                            ja: a => `${a.src} からミラー生成` },
     'mass.limbMirroredTitle': {

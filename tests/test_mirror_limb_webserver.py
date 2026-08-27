@@ -232,3 +232,54 @@ def test_neither_a_prefix_nor_a_rename_is_refused(server):
     code, r = _post(base, "/api/set_mirror_limb",
                     {"link": "right_arm_0", "on": True, "plane": "xz"})
     assert code == 400 and "prefix" in r["error"]
+
+
+# ------------------------------------------------------- attach_to / suggest
+
+def test_the_panel_is_offered_the_far_side_mount_when_one_exists(server):
+    """The synthetic robot has only one arm, so there is nothing at the
+    reflected point and the box must stay blank rather than guess."""
+    base, _pkg = server
+    r = _get_json(base, "/api/mirror_attach_suggest"
+                        "?link=right_arm_0&plane=xz")
+    assert r["attach_to"] is None
+
+
+def test_attach_to_is_written_into_the_config_and_used(server):
+    """Hanging the copy somewhere else is the whole point of the option: the
+    generated limb must come out under the link that was named."""
+    base, pkg = server
+    code, r = _post(base, "/api/set_mirror_limb",
+                    {"link": "right_arm_1", "on": True, "plane": "xz",
+                     "prefix": "m_", "attach_to": "base"})
+    assert code == 200 and r["attach_to"] == "base"
+    assert _cfg(pkg)["mirror_limbs"] == [
+        {"root": "right_arm_1", "plane": "xz", "prefix": "m_",
+         "attach_to": "base"}]
+
+    root = ET.parse(str(pkg / "urdf" / "demo.urdf")).getroot()
+    attach = next(j for j in root.findall("joint")
+                  if j.find("child").get("link") == "m_right_arm_1")
+    assert attach.find("parent").get("link") == "base_link"
+
+
+def test_an_attach_to_that_does_not_exist_is_refused_and_rolled_back(server):
+    base, pkg = server
+    code, r = _post(base, "/api/set_mirror_limb",
+                    {"link": "right_arm_0", "on": True, "plane": "xz",
+                     "prefix": "m_", "attach_to": "nowhere"})
+    assert code == 400 and "attach_to" in r["error"]
+    assert "mirror_limbs" not in _cfg(pkg)
+
+
+def test_omitting_attach_to_keeps_the_original_parent(server):
+    base, pkg = server
+    code, _r = _post(base, "/api/set_mirror_limb",
+                     {"link": "right_arm_1", "on": True, "plane": "xz",
+                      "prefix": "m_"})
+    assert code == 200
+    assert "attach_to" not in _cfg(pkg)["mirror_limbs"][0]
+    root = ET.parse(str(pkg / "urdf" / "demo.urdf")).getroot()
+    attach = next(j for j in root.findall("joint")
+                  if j.find("child").get("link") == "m_right_arm_1")
+    assert attach.find("parent").get("link") == "right_arm_0"

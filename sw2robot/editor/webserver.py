@@ -5185,6 +5185,33 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 m = re.search(r"(?m)^base:\s*(\S+)", txt)
                 return self._send_json({"rpy": rpy, "xyz": xyz,
                                         "base": m.group(1) if m else None})
+            if path == "/api/mirror_attach_suggest":
+                # Where the mirrored limb's mount ALREADY is, so the panel can
+                # offer it rather than making the user find the far side's
+                # counterpart by eye.  Read-only and cheap (no rebuild): it
+                # reads the URDF the editor is already serving.
+                cls = type(self)
+                link = (query.get("link") or [""])[0]
+                plane = (query.get("plane") or ["xz"])[0]
+                if not cls.pkg_dir or not link:
+                    return self._send_json({"error": "no package/link"}, 400)
+                urdf = os.path.join(cls.pkg_dir,
+                                    *str(cls.urdf_rel).split("/"))
+                if not os.path.exists(urdf):
+                    return self._send_json({"attach_to": None})
+                import xml.etree.ElementTree as _ET
+
+                from sw2robot.exporter.limb_mirror import suggest_attach
+                root_el = _ET.parse(urdf).getroot()
+                parent_of = {}
+                for j in root_el.findall("joint"):
+                    c, pa = j.find("child"), j.find("parent")
+                    if c is not None and pa is not None \
+                            and c.get("link") not in parent_of:
+                        parent_of[c.get("link")] = pa.get("link")
+                poses = _urdf_link_world_poses(root_el)
+                return self._send_json({
+                    "attach_to": suggest_attach(poses, parent_of, link, plane)})
             if path == "/api/components":
                 cls = type(self)
                 if not cls.pkg_dir:
@@ -7217,6 +7244,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 src = (body.get("rename_from") or "").strip()
                 dst = (body.get("rename_to") or "").strip()
                 prefix = (body.get("prefix") or "").strip()
+                attach_to = (body.get("attach_to") or "").strip()
                 if not cls.pkg_dir or not link:
                     return self._send_json({"error": "no package/link"}, 400)
                 if not _cad_mode(cls.pkg_dir):
@@ -7263,6 +7291,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     item.append(f"prefix: {_yaml_scalar(prefix)}" if prefix
                                 else f"rename: {{{_yaml_scalar(src)}: "
                                      f"{_yaml_scalar(dst)}}}")
+                    if attach_to:
+                        item.append(f"attach_to: {_yaml_scalar(attach_to)}")
                     txt = _append_yaml_list_item(txt, "mirror_limbs", item)
                 else:
                     if idx is None:
@@ -7301,9 +7331,25 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 print(f"[sw2robot.web] set_mirror_limb: {comp} on={on} "
                       f"plane={plane} "
                       + (f"prefix={prefix}" if prefix else f"{src}->{dst}"))
+                # The limb generated fine, but it may hang off a parent that a
+                # joint already drives -- the copy then rides the original's
+                # actuator and the robot silently has half the DOF the user
+                # expected.  Pass the build's warning up so the panel can say
+                # so at the moment they press the button.
+                shared = re.search(
+                    r"WARN: the copy hangs off the same parent as '"
+                    + re.escape(comp)
+                    + r"', which joint '([^']*)' drives"
+                      r".*?set attach_to: (\S+)", out, re.S)
                 return self._send_json({"ok": True, "link": comp, "on": on,
                                         "plane": plane,
                                         "prefix": prefix or None,
+                                        "attach_to": attach_to or None,
+                                        "shared_joint": (shared.group(1)
+                                                         if shared else None),
+                                        "suggest_attach_to": (shared.group(2)
+                                                              if shared
+                                                              else None),
                                         "rename": ({src: dst}
                                                    if on and not prefix
                                                    else None)})

@@ -239,6 +239,14 @@ export function fillLinkInfo(name) {
         `</select> ` +
         `<button id="li_mirgo" class="rn-input" style="cursor:pointer">` +
         `${t('li.mirrorGo')}</button>` +
+        // where the copy attaches.  On a symmetric robot the far side's mount
+        // is usually already modelled, so this is filled in from the URDF
+        // rather than left for the user to find by eye; blank means "the same
+        // parent as the original", which is what mirror_limbs does by default.
+        `<div style="margin-top:4px">` +
+        `<span class="mass-note">${t('li.mirrorAttach')}</span> ` +
+        `<input id="li_mirat" class="rn-input" style="width:16em" value="" ` +
+        `placeholder="${escAttr(t('li.mirrorAttachAuto'))}"></div>` +
         `<div class="mass-note">${t('li.mirrorHint')}</div></td></tr>`);
     }
   }
@@ -312,6 +320,10 @@ export function fillLinkInfo(name) {
       const r = await resp.json();
       if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
       log(t(okKey, { name }), 'ok');
+      if (r.shared_joint) {
+        log(t('li.mirrorShared',
+              { joint: r.shared_joint, root: r.suggest_attach_to }), 'warn');
+      }
       await refreshCompMeta();
       selectionState.reselectAfterLoad = name;
       loadRobot(packageState.currentInfo, { keepPose: true });
@@ -324,14 +336,35 @@ export function fillLinkInfo(name) {
   };
   // repaint the preview as the user tries the planes -- the point of drawing
   // it is to choose from what you see, not from a two-letter name
-  el.querySelector('#li_mirp')?.addEventListener(
-    'change', e => showMirrorPlane(e.target.value));
+  // the mount only makes sense for the plane in force, so re-ask on every
+  // change -- it is a read-only URDF lookup, not a rebuild
+  const fillAttach = async (plane) => {
+    const box = el.querySelector('#li_mirat');
+    if (!box) { return; }
+    try {
+      const r = await fetch('/api/mirror_attach_suggest?link='
+        + encodeURIComponent(name) + '&plane=' + encodeURIComponent(plane))
+        .then(x => x.json());
+      // never clobber something the user typed
+      if (box.dataset.touched !== '1') { box.value = r.attach_to ?? ''; }
+    } catch { /* leave it blank -- the default attachment still works */ }
+  };
+  el.querySelector('#li_mirat')?.addEventListener(
+    'input', e => { e.target.dataset.touched = '1'; });
+  el.querySelector('#li_mirp')?.addEventListener('change', e => {
+    showMirrorPlane(e.target.value);
+    fillAttach(e.target.value);
+  });
+  if (el.querySelector('#li_mirat')) {
+    fillAttach(el.querySelector('#li_mirp')?.value ?? DEFAULT_MIRROR_PLANE);
+  }
   el.querySelector('#li_mirgo')?.addEventListener('click', () => setMirror({
     link: name, on: true,
     plane: el.querySelector('#li_mirp')?.value ?? 'xz',
     rename_from: el.querySelector('#li_mirf')?.value ?? '',
     rename_to: el.querySelector('#li_mirt')?.value ?? '',
     prefix: el.querySelector('#li_mirpre')?.value ?? '',
+    attach_to: el.querySelector('#li_mirat')?.value ?? '',
   }, 'li.mirrorOk'));
   el.querySelector('#li_unmirror')?.addEventListener('click', () =>
     setMirror({ link: name, on: false }, 'li.mirrorRemoved'));

@@ -73,6 +73,7 @@ const panel = (which = target) => page.evaluate(async (name) => {
     plane: [...(el?.querySelectorAll('#li_mirp option') ?? [])]
       .map(o => o.value),
     go: el?.querySelector('#li_mirgo') != null,
+    attach: el?.querySelector('#li_mirat') != null,
     undo: el?.querySelector('#li_unmirror') != null,
     label: [...(el?.querySelectorAll('td') ?? [])]
       .map(td => td.textContent.trim()).find(x => x.includes('ミラー')) ?? null,
@@ -86,6 +87,9 @@ check('panel renders the mirror row', p0.visible && !!p0.label, p0.label ?? '');
 check('it offers a way to name the copies, and a generate button',
       p0.go && ((p0.from && p0.to) || p0.prefix),
       `from/to=${p0.from && p0.to} prefix=${p0.prefix}`);
+// the mount box is filled in from the URDF, so it must be there even when the
+// robot has no counterpart to suggest (it then stays blank = default parent)
+check('it offers an attach-to box', p0.attach);
 check('it offers all three planes', p0.plane.join(',') === 'xz,yz,xy',
       p0.plane.join(','));
 check('no undo button before anything is generated', !p0.undo);
