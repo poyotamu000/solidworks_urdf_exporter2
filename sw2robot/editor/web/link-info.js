@@ -11,6 +11,10 @@ import {
   setLinkColor, toggleLinkVisible,
 } from './link-look.js';
 import { loadRobot } from './load.js';
+import {
+  DEFAULT_MIRROR_PLANE, guessRename, hideMirrorPlane, showMirrorPlane,
+  specThatGenerated,
+} from './mirror-plane.js';
 import { matPickDensity, matSelectHtml } from './mass-editor.js';
 import { refreshHistory } from './root-frame.js';
 import {
@@ -25,7 +29,7 @@ export function fillLinkInfo(name) {
   selectionState.jpSync = null;                  // the panel for the previous link is gone
   const el = document.getElementById('linkinfo');
   const link = viewer.robot?.links?.[name];
-  if (!link) { el.style.display = 'none'; return; }
+  if (!link) { el.style.display = 'none'; hideMirrorPlane(); return; }
   // the selection bar (name + 👁/🗑/⌂/✕) is folded in as this panel's header so
   // it is ONE panel, not two overlapping ones.  Park it outside #linkinfo before
   // the innerHTML rebuild below so the element (and its listeners) survives.
@@ -186,6 +190,66 @@ export function fillLinkInfo(name) {
         + `${t('li.override')}</div>` : '') +
       `</td></tr>`);
   }
+  // Generate the limb on the OTHER side of the robot from this one.  Offered
+  // on any link that hangs off a joint: that link plus everything below it is
+  // the limb.  A link that was itself generated shows its origin instead --
+  // editing the copy is meaningless, the real side is where changes belong.
+  if (!urdfMode) {
+    const specs = packageState.mirrorLimbs ?? [];
+    const spec = specs.find(s => s.root === name);
+    // Show the plane for whichever of the three states this link is in, and
+    // nothing for a link the feature does not apply to.  A two-letter plane
+    // name says nothing about where it cuts THIS robot, which is the whole
+    // reason to draw it.
+    const generated = specThatGenerated(specs, name, meta?.mirrored_from);
+    showMirrorPlane(spec?.plane ?? generated?.plane
+      ?? (j && !meta?.mirrored_from ? DEFAULT_MIRROR_PLANE : null));
+    if (meta?.mirrored_from) {
+      rowsHtml.push(
+        `<tr><td>${t('li.mirrorLimb')}</td><td><span class="mass-note">` +
+        `${t('li.mirrorGenerated', { src: meta.mirrored_from })}</span></td></tr>`);
+    } else if (spec) {
+      const to = spec.prefix
+        ? t('li.mirrorPrefixed', { p: spec.prefix })
+        : (Object.values(spec.rename ?? {})[0] ?? '?');
+      rowsHtml.push(
+        `<tr><td>${t('li.mirrorLimb')}</td><td>` +
+        `<span class="mass-note">${t('li.mirrorActive', { to })}</span> ` +
+        `<button id="li_unmirror" class="rn-input" style="cursor:pointer">` +
+        `${t('li.mirrorRemove')}</button></td></tr>`);
+    } else if (j) {
+      // Offer a side-marker swap only when it actually renames EVERY link in
+      // the limb -- a leg called `leg_right_1` carrying screws with no marker
+      // of their own would otherwise be offered a rename the build then
+      // refuses.  Anything else gets a prefix, which always yields fresh names.
+      const guess = guessRename(viewer.robot, name);
+      const box = (id, v, ph, w = '5.5em') =>
+        `<input id="${id}" class="rn-input" style="width:${w}" ` +
+        `value="${escAttr(v)}" placeholder="${escAttr(ph)}">`;
+      rowsHtml.push(
+        `<tr><td>${t('li.mirrorLimb')}</td><td>` +
+        (guess
+          ? box('li_mirf', guess[0], 'R') + ' → ' + box('li_mirt', guess[1], 'L')
+          : `<span class="mass-note">${t('li.mirrorPrefix')}</span> `
+            + box('li_mirpre', 'mirrored_', 'mirrored_', '8em')) +
+        ` <select id="li_mirp" class="rn-input">` +
+        ['xz', 'yz', 'xy'].map(p =>
+          `<option value="${p}"${p === DEFAULT_MIRROR_PLANE ? ' selected' : ''}>`
+          + `${p}</option>`).join('') +
+        `</select> ` +
+        `<button id="li_mirgo" class="rn-input" style="cursor:pointer">` +
+        `${t('li.mirrorGo')}</button>` +
+        // where the copy attaches.  On a symmetric robot the far side's mount
+        // is usually already modelled, so this is filled in from the URDF
+        // rather than left for the user to find by eye; blank means "the same
+        // parent as the original", which is what mirror_limbs does by default.
+        `<div style="margin-top:4px">` +
+        `<span class="mass-note">${t('li.mirrorAttach')}</span> ` +
+        `<input id="li_mirat" class="rn-input" style="width:16em" value="" ` +
+        `placeholder="${escAttr(t('li.mirrorAttachAuto'))}"></div>` +
+        `<div class="mass-note">${t('li.mirrorHint')}</div></td></tr>`);
+    }
+  }
   const jointHtml = j ? jointPanelHtml(j, jParentLink, name) : '';
   el.innerHTML = jointHtml + `<table>${rowsHtml.join('')}</table>`;
   // re-insert the selection bar as the panel header (its buttons keep their
@@ -239,6 +303,71 @@ export function fillLinkInfo(name) {
       refreshHistory();
     } catch (err) { log(t('mass.fail', { e: err.message ?? err }), 'err'); }
   });
+  // generate / drop the mirrored limb; the server rebuilds and rolls the config
+  // back if the build refuses, so a failure here really means nothing changed
+  const setMirror = async (payload, okKey) => {
+    // A rebuild on a real robot takes tens of seconds, and until it returns the
+    // page looks untouched -- which reads as "the button did nothing" even when
+    // it worked.  Put the wait on the button itself.
+    const btn = el.querySelector(payload.on ? '#li_mirgo' : '#li_unmirror');
+    const label = btn?.textContent;
+    if (btn) { btn.disabled = true; btn.textContent = t('li.mirrorBusy'); }
+    log(t(payload.on ? 'li.mirrorStart' : 'li.mirrorRemoveStart', { name }));
+    try {
+      const resp = await fetch('/api/set_mirror_limb', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload) });
+      const r = await resp.json();
+      if (!resp.ok || r.error) { throw new Error(r.error ?? resp.status); }
+      log(t(okKey, { name }), 'ok');
+      if (r.shared_joint) {
+        log(t('li.mirrorShared',
+              { joint: r.shared_joint, root: r.suggest_attach_to }), 'warn');
+      }
+      await refreshCompMeta();
+      selectionState.reselectAfterLoad = name;
+      loadRobot(packageState.currentInfo, { keepPose: true });
+      refreshHistory();
+    } catch (err) {
+      log(t('li.mirrorFail', { e: err.message ?? err }), 'err');
+      // the panel is only rebuilt on success, so hand the button back here
+      if (btn) { btn.disabled = false; btn.textContent = label; }
+    }
+  };
+  // repaint the preview as the user tries the planes -- the point of drawing
+  // it is to choose from what you see, not from a two-letter name
+  // the mount only makes sense for the plane in force, so re-ask on every
+  // change -- it is a read-only URDF lookup, not a rebuild
+  const fillAttach = async (plane) => {
+    const box = el.querySelector('#li_mirat');
+    if (!box) { return; }
+    try {
+      const r = await fetch('/api/mirror_attach_suggest?link='
+        + encodeURIComponent(name) + '&plane=' + encodeURIComponent(plane))
+        .then(x => x.json());
+      // never clobber something the user typed
+      if (box.dataset.touched !== '1') { box.value = r.attach_to ?? ''; }
+    } catch { /* leave it blank -- the default attachment still works */ }
+  };
+  el.querySelector('#li_mirat')?.addEventListener(
+    'input', e => { e.target.dataset.touched = '1'; });
+  el.querySelector('#li_mirp')?.addEventListener('change', e => {
+    showMirrorPlane(e.target.value);
+    fillAttach(e.target.value);
+  });
+  if (el.querySelector('#li_mirat')) {
+    fillAttach(el.querySelector('#li_mirp')?.value ?? DEFAULT_MIRROR_PLANE);
+  }
+  el.querySelector('#li_mirgo')?.addEventListener('click', () => setMirror({
+    link: name, on: true,
+    plane: el.querySelector('#li_mirp')?.value ?? 'xz',
+    rename_from: el.querySelector('#li_mirf')?.value ?? '',
+    rename_to: el.querySelector('#li_mirt')?.value ?? '',
+    prefix: el.querySelector('#li_mirpre')?.value ?? '',
+    attach_to: el.querySelector('#li_mirat')?.value ?? '',
+  }, 'li.mirrorOk'));
+  el.querySelector('#li_unmirror')?.addEventListener('click', () =>
+    setMirror({ link: name, on: false }, 'li.mirrorRemoved'));
   el.querySelector('#li_bm')?.addEventListener('change', e => {
     // `||` (not `??`): a 0 / missing current mass falls to 0.1 so the seed
     // POST is never rejected by the positive-mass check

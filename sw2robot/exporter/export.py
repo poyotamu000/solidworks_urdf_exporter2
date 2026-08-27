@@ -639,10 +639,24 @@ def _loop_closures_cfg(model, joint_overrides):
 
 
 # ---------------------------------------------------------------- build
+def dropped_geometry_exempt(model):
+    """Component names whose geometry is missing from the URDF ON PURPOSE.
+
+    A ``frame_only:`` / ``mass_only:`` link has no shape by request, so the
+    dropped-geometry check must not report it as an accidentally lost part.
+    Shared with the editor's export path: the two callers have to agree on this
+    or one of them starts warning about links the user deliberately stripped.
+    """
+    return {c.name for c in model.components
+            if getattr(c, "frame_only", False)
+            or getattr(c, "mass_only", False)}
+
+
 def build(pkg_dir, config_path=None, base_hint=None, exclude=None,
           ros_pkg=False, density=None, ros_version=1, ros_pkg_name=None,
           ros_urdf_name=None, ros_robot_name=None, collision="copy",
-          coacd_quality="balanced", merge_fixed=False, ros_mesh_dir=None):
+          coacd_quality="balanced", merge_fixed=False, ros_mesh_dir=None,
+          check_geometry=True):
     _tolerant_console()
     graph = GraphState.load(os.path.join(pkg_dir, GRAPH_FILE))
     robot_name = graph.robot_name
@@ -655,7 +669,8 @@ def build(pkg_dir, config_path=None, base_hint=None, exclude=None,
         density = config.get("density")
     print("[build] model from graph ...")
     model = build_model(graph, base_hint=base_hint, config=config,
-                        exclude=exclude)
+                        exclude=exclude,
+                        meshes_dir=os.path.join(pkg_dir, "meshes"))
     print(f"      {len(model.components)} links, {len(model.joints)} joints")
 
     urdf_kwargs = {} if density is None else {"density": float(density)}
@@ -689,22 +704,30 @@ def build(pkg_dir, config_path=None, base_hint=None, exclude=None,
     # geometry itself returns [] when trimesh/scipy/skrobot are absent, so this
     # is a silent no-op there; the guard only catches unexpected failures and is
     # advisory -- it must never break the build.
-    try:
-        import json as _json
+    # This check re-decodes every mesh in the package, and on a humanoid that is
+    # essentially the whole build: 46.7 s of a 48.1 s rebuild, 197 meshes.  It
+    # answers a question about the EXTRACTION and the `expand:` config -- neither
+    # of which a per-link edit can change -- so the interactive editor turns it
+    # off and it runs when a package is exported instead (webserver._export_zip).
+    if not check_geometry:
+        print("      (dropped-geometry check skipped -- it runs on export; "
+              "`python -m sw2robot.exporter.build <pkg>` runs it now)")
+    else:
+        try:
+            import json as _json
 
-        from .validate import warn_dropped_geometry
-        with open(os.path.join(pkg_dir, GRAPH_FILE), encoding="utf-8") as _f:
-            _graph = _json.load(_f)
-        _no_geo = {c.name for c in model.components
-                   if getattr(c, "frame_only", False)
-                   or getattr(c, "mass_only", False)}
-        _dropped = warn_dropped_geometry(pkg_dir, urdf_path, _graph,
-                                         skip_components=_no_geo)
-        if _dropped:
-            print("      -> add the parent sub-assembly to the joint config's "
-                  "`expand:` list to bring these parts into the URDF.")
-    except Exception as _e:
-        print(f"      (dropped-geometry check skipped: {_e!r})")
+            from .validate import warn_dropped_geometry
+            with open(os.path.join(pkg_dir, GRAPH_FILE), encoding="utf-8") as _f:
+                _graph = _json.load(_f)
+            _dropped = warn_dropped_geometry(
+                pkg_dir, urdf_path, _graph,
+                skip_components=dropped_geometry_exempt(model))
+            if _dropped:
+                print("      -> add the parent sub-assembly to the joint "
+                      "config's `expand:` list to bring these parts into the "
+                      "URDF.")
+        except Exception as _e:
+            print(f"      (dropped-geometry check skipped: {_e!r})")
     write_ros_package(model, pkg_dir)
     tmpl = os.path.join(pkg_dir, robot_name + ".joints.yaml")
     if not config_path:

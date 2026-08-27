@@ -307,6 +307,55 @@
     'mass.setOk': { en: 'updated ✓ (mass/inertia rebuilt)', ja: '更新しました ✓（質量・慣性を再計算）' },
     'mass.fail': { en: a => `mass edit failed: ${a.e}`, ja: a => `質量編集に失敗: ${a.e}` },
     'mass.swOverride': { en: 'set in SW', ja: 'SWで設定済' },
+    'li.mirrorLimb': { en: 'mirror limb', ja: '手足のミラー生成' },
+    'li.mirrorGo': { en: 'generate', ja: '生成' },
+    'li.mirrorRemove': { en: 'remove', ja: '解除' },
+    'li.mirrorPrefix': { en: 'name prefix', ja: '名前の接頭辞' },
+    'li.mirrorPrefixed': { en: a => `${a.p}*`, ja: a => `${a.p}*` },
+    'li.mirrorBusy': { en: 'rebuilding…', ja: 'リビルド中…' },
+    'li.mirrorStart': {
+      en: a => `mirroring the limb at ${a.name} — rebuilding, this takes a while on a big robot`,
+      ja: a => `${a.name} 以下をミラー生成中 — リビルドします（大きいロボットでは時間がかかります）` },
+    'li.mirrorRemoveStart': {
+      en: a => `dropping the limb mirrored from ${a.name} — rebuilding`,
+      ja: a => `${a.name} のミラー生成を解除中 — リビルドします` },
+    'li.mirrorHint': {
+      en: 'this link and everything below it, reflected through that plane of '
+        + 'base_link; the same joint angle gives a mirror-symmetric pose',
+      ja: 'このリンク以下を base_link のその平面で反射します。同じ関節角で左右が'
+        + '鏡像姿勢になります' },
+    'li.mirrorActive': { en: a => `generating the ${a.to} side`,
+                         ja: a => `${a.to} 側を生成中` },
+    'li.mirrorGenerated': {
+      en: a => `generated from ${a.src} -- edit that side instead`,
+      ja: a => `${a.src} から生成されたリンクです（編集は元の側で）` },
+    'li.mirrorAttach': { en: () => 'attach to', ja: () => '取り付け先' },
+    // blank is not "unset" -- it is the default attachment, so say what it does
+    'li.mirrorAttachAuto': {
+      en: () => 'blank = the same parent as the original',
+      ja: () => '空欄 = 元と同じ親に付ける' },
+    'li.mirrorOk': { en: a => `mirrored the limb at ${a.name} ✓`,
+                     ja: a => `${a.name} 以下をミラー生成しました ✓` },
+    'li.mirrorRemoved': { en: a => `dropped the limb mirrored from ${a.name} ✓`,
+                          ja: a => `${a.name} のミラー生成を解除しました ✓` },
+    'li.mirrorFail': { en: a => `mirror failed: ${a.e}`,
+                       ja: a => `ミラー生成に失敗: ${a.e}` },
+    // the copy hangs off a link that a joint already drives, so that one
+    // joint moves both limbs -- right for two jaws on a wrist, wrong for a leg
+    'li.mirrorShared': {
+      en: a => `heads up: the copy hangs off a link driven by ${a.joint}, so `
+        + `that one joint moves BOTH limbs. The mount it belongs on is `
+        + `already in the model -- set "attach to" to ${a.root}.`,
+      ja: a => `注意: コピーは ${a.joint} が動かすリンクにぶら下がるので、`
+        + `その関節1つで両方が動きます。本来の取り付け先が既にモデルに `
+        + `あります — 「取り付け先」に ${a.root} を入れてください。` },
+    'mass.limbMirrored': { en: a => `generated from ${a.src}`,
+                           ja: a => `${a.src} からミラー生成` },
+    'mass.limbMirroredTitle': {
+      en: a => `this link has no CAD part -- mirror_limbs generated it by `
+        + `reflecting ${a.src} through the robot's sagittal plane`,
+      ja: a => `このリンクにCAD実体はありません。mirror_limbs が ${a.src} を`
+        + `矢状面で反射して生成したものです` },
     'mass.mirrorInherited': { en: a => `mirrored from ${a.src}`,
                               ja: a => `${a.src} のミラー元から継承` },
     'mass.mirrorInheritedTitle': {

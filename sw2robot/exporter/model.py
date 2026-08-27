@@ -333,6 +333,11 @@ class Component:
     # per-body materials / mass override -- see exporter.mirror.  Provenance
     # only: the values themselves are already in sw_mass/sw_com/sw_inertia.
     mass_inherited_from: str | None = None
+    # link_name this component was generated from by reflecting a whole limb
+    # through the robot's sagittal plane (config `mirror_limbs:`, see
+    # exporter.limb_mirror).  Set only on GENERATED links -- they have no CAD
+    # behind them, so nothing downstream should treat them as extracted parts.
+    mirrored_from: str | None = None
     # set when a per-link density override (config / web editor) should drive
     # the inertial from the mesh, overriding the SolidWorks-native values
     density_override: bool = False
@@ -1520,7 +1525,18 @@ def _cluster_axes(axes):
     return out
 
 
-_STRICT_MIN_RADIUS = 0.003   # below this a free axis is a screw/pin, not a bearing
+# Below this radius a free rotation axis inside a sub-assembly is read as a
+# screw or a pin rather than a bearing.  3 mm suits machined hardware, but a
+# robot built from hobby servos has real joints under it: an STS3215's horn
+# mates on a 2.4 mm boss, so every servo in that quadruped welded shut and the
+# robot came out with 0 revolute joints.  `strict_min_radius:` in joints.yaml
+# lets such a machine lower it without weakening the default for everyone else.
+_STRICT_MIN_RADIUS = 0.003
+
+
+def strict_min_radius(value):
+    """The fastener/bearing radius cut-off (metres), or the default for None."""
+    return _STRICT_MIN_RADIUS if value is None else float(value)
 
 
 def _max_concentric_radius(recs):
@@ -1529,7 +1545,7 @@ def _max_concentric_radius(recs):
     return max(radii) if radii else None
 
 
-def classify_edge_geo(mates, strict=False):
+def classify_edge_geo(mates, strict=False, min_radius=None):
     """(jtype, axis, note) from full mate geometry; None -> caller falls back.
 
     Builds the twist constraint matrix from the deduped mates and inspects
@@ -1567,7 +1583,7 @@ def classify_edge_geo(mates, strict=False):
         if np.linalg.norm(r) < 1e-6 * np.linalg.norm(xi):
             if strict:
                 rmax = _max_concentric_radius(recs)
-                if rmax is not None and rmax < _STRICT_MIN_RADIUS:
+                if rmax is not None and rmax < strict_min_radius(min_radius):
                     return "fixed", None, \
                         (f"geo: free axis but r={rmax*1000:.1f}mm "
                          f"= fastener, not bearing -> fixed" + extra)
@@ -1618,7 +1634,8 @@ def classify_edge_auto(rec):
     mates = rec.get("mates")
     if mates:
         try:
-            out = classify_edge_geo(mates, strict=rec.get("strict", False))
+            out = classify_edge_geo(mates, strict=rec.get("strict", False),
+                                    min_radius=rec.get("strict_min_radius"))
             if out is not None:
                 return out
         except Exception as e:
@@ -3921,6 +3938,7 @@ def _sw2urdf_merge_directed(sw2_directed, user_directed):
 
 
 def from_graph(graph, exclude=None, expand=None, no_expand=None,
+               strict_min_radius_cfg=None,
                force_no_expand=None):
     """GraphState -> (comps, adjacency, ground), applying ``exclude`` and
     expanding sub-assemblies whose internals move (see
@@ -3956,7 +3974,7 @@ def from_graph(graph, exclude=None, expand=None, no_expand=None,
     _snap_unsolved_mates(comps, adjacency)
     comps, adjacency, ground = _expand_subassemblies(
         graph, comps, adjacency, ground, expand=expand, no_expand=no_expand,
-        force_no_expand=force_no_expand)
+        force_no_expand=force_no_expand, min_radius=strict_min_radius_cfg)
     if exclude:
         # Apply `exclude` AGAIN after expansion: the filter at the top of this
         # function only sees top-level graph.components, so a part excluded from
@@ -4003,7 +4021,7 @@ def _transform_rec(rec, T):
     return out
 
 
-def _subgraph_is_movable(sub, subs, _seen=None):
+def _subgraph_is_movable(sub, subs, _seen=None, min_radius=None):
     """Does any internal mate edge -- at ANY nesting depth -- classify as a
     movable joint?  Internal edges are judged in strict mode (sub-assembly
     fastener heuristics).  Recurses so a rigid wrapper around a moving unit
@@ -4012,18 +4030,20 @@ def _subgraph_is_movable(sub, subs, _seen=None):
     for e in sub.edges:
         rec = _edge_rec(e)
         rec["strict"] = True
+        rec["strict_min_radius"] = min_radius
         if classify_edge_auto(rec)[0] in _MOVABLE_TYPES:
             return True
     for cs in sub.components:
         p = cs.part_path
         if cs.is_subassembly and p and p in subs and p not in _seen:
             _seen.add(p)
-            if _subgraph_is_movable(subs[p], subs, _seen):
+            if _subgraph_is_movable(subs[p], subs, _seen, min_radius):
                 return True
     return False
 
 
-def _expand_one(inst, sub, comps, adjacency, ground, deep=None, hidden=None):
+def _expand_one(inst, sub, comps, adjacency, ground, deep=None, hidden=None,
+                min_radius=None):
     T = inst.world
     deep = deep or {}
     hidden = hidden or set()
@@ -4087,6 +4107,7 @@ def _expand_one(inst, sub, comps, adjacency, ground, deep=None, hidden=None):
                 continue
         rec = _transform_rec(_edge_rec(e), M)
         rec["strict"] = True
+        rec["strict_min_radius"] = min_radius
         for g in rec["mates"]:
             g["owners"] = [f"{inst.name}/{o}" if o else ""
                            for o in g.get("owners", [])]
@@ -4165,7 +4186,7 @@ def _expand_one(inst, sub, comps, adjacency, ground, deep=None, hidden=None):
 
 def _expand_subassemblies(graph, comps, adjacency, ground,
                           expand=None, no_expand=None,
-                          force_no_expand=None):
+                          force_no_expand=None, min_radius=None):
     """Expand instances whose internals move.
 
     ``expand``/``no_expand`` are case-insensitive substring overrides from the
@@ -4192,7 +4213,8 @@ def _expand_subassemblies(graph, comps, adjacency, ground,
         if any(s in nm for s in expand):
             return True
         if inst.part_path not in movable:
-            movable[inst.part_path] = _subgraph_is_movable(sub, subs)
+            movable[inst.part_path] = _subgraph_is_movable(sub, subs,
+                                                           min_radius=min_radius)
         return movable[inst.part_path]
 
     deep = getattr(graph, "deep_worlds", None) or {}
@@ -4203,15 +4225,103 @@ def _expand_subassemblies(graph, comps, adjacency, ground,
             return comps, adjacency, ground
         comps, adjacency, ground = _expand_one(
             inst, subs[inst.part_path], comps, adjacency, ground,
-            deep=deep, hidden=hidden)
+            deep=deep, hidden=hidden, min_radius=min_radius)
 
 
 # ====================================================================
 # Build (no SolidWorks): GraphState + config -> RobotModel
 # ====================================================================
 
+def apply_link_overrides(comps, config, warn=True):
+    """Apply the per-link config overrides -- ``densities:``, ``masses:``,
+    ``mass_only:``, ``frame_only:`` -- to ``comps``.
+
+    Factored out because it runs TWICE: once over the extracted components,
+    and again over the links ``mirror_limbs`` generates, which do not exist
+    yet on the first pass.  Without the second pass a mass or a frame-only tick
+    the web editor writes for a generated link is accepted and silently does
+    nothing -- the editor cannot tell a generated link from a real one.
+
+    ``warn=False`` silences the "matched no link" notes, which are meaningless
+    on the second pass: most keys legitimately match nothing there.
+    """
+    def warn_(msg):
+        if warn:
+            print(msg)
+
+    if config and config.get("densities"):
+        # per-link density overrides (kg/m^3) -- the web editor's material
+        # setting; wins over the part's SolidWorks material
+        by_ln = {c.link_name: c for c in comps}
+        by_nm = {c.name: c for c in comps}
+        for k, v in config["densities"].items():
+            c = by_ln.get(str(k)) or by_nm.get(str(k))
+            if c is not None:
+                c.density = float(v)
+                # explicit density => drive mass from the mesh, not the
+                # SolidWorks-native value computed with the CAD material
+                c.density_override = True
+            else:
+                warn_(f"      WARN: densities: '{k}' matched no link")
+
+    if config and config.get("masses"):
+        # per-link target mass (kg) -- the web editor's direct-weight setting.
+        # Same name matching as densities.  Mutually exclusive with a density
+        # override: a target mass rescales the inertial to an exact weight, so
+        # clear any density override on the same link (mass wins).  Consumed in
+        # urdf_writer._inertial_xml via skrobot.utils.inertia.rescale_inertial_to_mass.
+        by_ln = {c.link_name: c for c in comps}
+        by_nm = {c.name: c for c in comps}
+        for k, v in config["masses"].items():
+            c = by_ln.get(str(k)) or by_nm.get(str(k))
+            if c is not None:
+                try:
+                    m = float(v)
+                except (TypeError, ValueError):
+                    warn_(f"      WARN: masses: '{k}' -> {v!r} is not a number")
+                    continue
+                if not (m > 0):
+                    warn_(f"      WARN: masses: '{k}' -> {m} is not positive")
+                    continue
+                c.mass_target = m
+                c.density_override = False   # mass wins over any density override
+            else:
+                warn_(f"      WARN: masses: '{k}' matched no link")
+
+    if config and config.get("mass_only"):
+        # mass-only links: keep the weight, drop the geometry.  Same name
+        # matching as densities (link name or SolidWorks name).  The only-fixed
+        # check happens below, once the tree (and so each part's joint) is known.
+        by_ln = {c.link_name: c for c in comps}
+        by_nm = {c.name: c for c in comps}
+        for k in config["mass_only"]:
+            c = by_ln.get(str(k)) or by_nm.get(str(k))
+            if c is not None:
+                c.mass_only = True
+            else:
+                warn_(f"      WARN: mass_only: '{k}' matched no link")
+
+    if config and config.get("frame_only"):
+        # frame-only links: a CAD-only part (dummy axis / locator) whose shape
+        # and weight are both fictional -- keep the frame, drop everything else.
+        # Same name matching as mass_only; no only-fixed check, a dummy part is
+        # just as fictional when it sits on a revolute joint.
+        by_ln = {c.link_name: c for c in comps}
+        by_nm = {c.name: c for c in comps}
+        for k in config["frame_only"]:
+            c = by_ln.get(str(k)) or by_nm.get(str(k))
+            if c is not None:
+                c.frame_only = True
+                # a frame carries no weight: drop any mass/density override that
+                # would otherwise fight the empty <inertial>
+                c.mass_target = None
+                c.mass_only = False
+            else:
+                warn_(f"      WARN: frame_only: '{k}' matched no link")
+
+
 def build_model(graph, robot_name=None, base_hint=None, config=None,
-                exclude=None):
+                exclude=None, meshes_dir=None):
     robot_name = robot_name or graph.robot_name
     exclude = list(exclude or [])
     if config and config.get("exclude"):
@@ -4341,10 +4451,15 @@ def build_model(graph, robot_name=None, base_hint=None, config=None,
                               "keeps expansion for: "
                               + ", ".join(repr(x) for x in overridden))
 
+    # `strict_min_radius:` (metres) moves the fastener/bearing cut-off that
+    # welds a small free axis inside a sub-assembly.  A robot built from hobby
+    # servos needs it: the default 3 mm reads their 2.4 mm horn boss as a screw.
     comps, adjacency, ground = from_graph(
         graph, exclude=exclude,
         expand=config.get("expand") if config else None,
         no_expand=config.get("no_expand") if config else None,
+        strict_min_radius_cfg=(config.get("strict_min_radius")
+                               if config else None),
         force_no_expand=sw2_force_no_expand)
 
     if sw2cfg is not None and sw2_link_names is not None:
@@ -4444,75 +4559,7 @@ def build_model(graph, robot_name=None, base_hint=None, config=None,
             else:
                 print(f"      WARN: force_fixed edge not found: {pair}")
 
-    if config and config.get("densities"):
-        # per-link density overrides (kg/m^3) -- the web editor's material
-        # setting; wins over the part's SolidWorks material
-        by_ln = {c.link_name: c for c in comps}
-        by_nm = {c.name: c for c in comps}
-        for k, v in config["densities"].items():
-            c = by_ln.get(str(k)) or by_nm.get(str(k))
-            if c is not None:
-                c.density = float(v)
-                # explicit density => drive mass from the mesh, not the
-                # SolidWorks-native value computed with the CAD material
-                c.density_override = True
-            else:
-                print(f"      WARN: densities: '{k}' matched no link")
-
-    if config and config.get("masses"):
-        # per-link target mass (kg) -- the web editor's direct-weight setting.
-        # Same name matching as densities.  Mutually exclusive with a density
-        # override: a target mass rescales the inertial to an exact weight, so
-        # clear any density override on the same link (mass wins).  Consumed in
-        # urdf_writer._inertial_xml via skrobot.utils.inertia.rescale_inertial_to_mass.
-        by_ln = {c.link_name: c for c in comps}
-        by_nm = {c.name: c for c in comps}
-        for k, v in config["masses"].items():
-            c = by_ln.get(str(k)) or by_nm.get(str(k))
-            if c is not None:
-                try:
-                    m = float(v)
-                except (TypeError, ValueError):
-                    print(f"      WARN: masses: '{k}' -> {v!r} is not a number")
-                    continue
-                if not (m > 0):
-                    print(f"      WARN: masses: '{k}' -> {m} is not positive")
-                    continue
-                c.mass_target = m
-                c.density_override = False   # mass wins over any density override
-            else:
-                print(f"      WARN: masses: '{k}' matched no link")
-
-    if config and config.get("mass_only"):
-        # mass-only links: keep the weight, drop the geometry.  Same name
-        # matching as densities (link name or SolidWorks name).  The only-fixed
-        # check happens below, once the tree (and so each part's joint) is known.
-        by_ln = {c.link_name: c for c in comps}
-        by_nm = {c.name: c for c in comps}
-        for k in config["mass_only"]:
-            c = by_ln.get(str(k)) or by_nm.get(str(k))
-            if c is not None:
-                c.mass_only = True
-            else:
-                print(f"      WARN: mass_only: '{k}' matched no link")
-
-    if config and config.get("frame_only"):
-        # frame-only links: a CAD-only part (dummy axis / locator) whose shape
-        # and weight are both fictional -- keep the frame, drop everything else.
-        # Same name matching as mass_only; no only-fixed check, a dummy part is
-        # just as fictional when it sits on a revolute joint.
-        by_ln = {c.link_name: c for c in comps}
-        by_nm = {c.name: c for c in comps}
-        for k in config["frame_only"]:
-            c = by_ln.get(str(k)) or by_nm.get(str(k))
-            if c is not None:
-                c.frame_only = True
-                # a frame carries no weight: drop any mass/density override that
-                # would otherwise fight the empty <inertial>
-                c.mass_target = None
-                c.mass_only = False
-            else:
-                print(f"      WARN: frame_only: '{k}' matched no link")
+    apply_link_overrides(comps, config)
 
     directed = None
     root_rpy = None
@@ -4639,9 +4686,25 @@ def build_model(graph, robot_name=None, base_hint=None, config=None,
                 ln = by_comp.get(member)
                 if ln:
                     lumped.append(ln)
-    return RobotModel(name=robot_name, components=comps, joints=joints,
-                      detected_edges=detected, base_link=base.link_name,
-                      ports=ports,
-                      root_link_name=root_link_name or base.link_name,
-                      loop_closures=closures_out[0] if closures_out else None,
-                      lumped_links=lumped)
+    model = RobotModel(name=robot_name, components=comps, joints=joints,
+                       detected_edges=detected, base_link=base.link_name,
+                       ports=ports,
+                       root_link_name=root_link_name or base.link_name,
+                       loop_closures=closures_out[0] if closures_out else None,
+                       lumped_links=lumped)
+    # `mirror_limbs:` builds the side that was never modelled.  It runs HERE --
+    # after the tree exists, because reflecting a limb needs its link frames --
+    # and its output then goes back through the per-link overrides, so a mass or
+    # a frame-only tick set on a generated link behaves exactly as it does on an
+    # extracted one.  (It used to run in export.build(), after the overrides had
+    # already been applied, where those edits were accepted and silently lost.)
+    if config and config.get("mirror_limbs"):
+        from .limb_mirror import mirror_limbs, print_limb_report
+
+        before = len(model.components)
+        print_limb_report(mirror_limbs(model, config["mirror_limbs"],
+                                       meshes_dir=meshes_dir))
+        generated = model.components[before:]
+        if generated:
+            apply_link_overrides(generated, config, warn=False)
+    return model

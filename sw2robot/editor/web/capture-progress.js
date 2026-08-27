@@ -69,6 +69,9 @@ export async function refreshCompMeta() {
       // view; both repaint here so every edit that rebuilds is reflected
       packageState.urdfMasses = r.urdf_masses ?? {};
       packageState.defaultMassLinks = r.default_mass_links ?? [];
+      // `mirror_limbs:` entries, so a link panel knows whether THIS link
+      // already generates the limb on the other side
+      packageState.mirrorLimbs = r.mirror_limbs ?? [];
       updateMassChip(r);
       refreshMassHeat();
       const chip = document.getElementById('exclchip');

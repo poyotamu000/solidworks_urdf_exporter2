@@ -125,7 +125,12 @@ await page.evaluate(() => {
   window.__samples = [];
   window.__t = setInterval(() => {
     let m = 0;
-    v.world.traverse(c => { if (c.isMesh && c.visible) m++; });
+    // helpers only, never the robot: the mirror-plane preview is a mesh in
+    // the robot's own subtree, so counting it makes the baseline one higher
+    // than the count that survives the reload -- a phantom "blank frame"
+    v.world.traverse(c => {
+      if (c.isMesh && c.visible && !c.userData?.sw2robotMarker) { m++; }
+    });
     window.__samples.push(m);
   }, 40);
 });

@@ -32,6 +32,21 @@ joint name; the value is the display name (sanitised on write)::
     joint_names:
       fingertip_front_2__fingertip_back_1: distal_joint
 
+Build the half of a symmetric robot that was never modelled: an assembly of
+torso + one arm + one leg becomes a whole robot, by reflecting each limb through
+the base link's sagittal plane (links, joints, inertials and meshes)::
+
+    mirror_limbs:
+      - root: right_arm_0             # the link the limb hangs from
+        plane: xz                    # base_link plane: xz (default) | yz | xy
+        rename: {right: left}         # substring substitution for the new names
+
+Joint limits carry over unchanged and the axis sign is set so that driving the
+generated joint and its twin to the SAME q gives a mirror-symmetric pose.  The
+generated links are exact reflections and have no CAD behind them, so anything
+genuinely asymmetric on that side (a cable tray, a one-sided gripper) is NOT
+modelled; each generated link is listed in the build log.
+
 Module interface (robot-compiler / NejiNeji).  The emitted URDF renames the root
 link to ``base_link`` (= input port / ``from_coords``); override or disable::
 
@@ -103,6 +118,11 @@ def write_template(model, path):
         "# empty dummy_link on a fixed joint -- no visual/collision/inertial),",
         "# on the part/sub-assembly they were drawn in.  Turn off or pick:",
         "#   coordinate_system_links: off | all | [<CoordSys name>, ...]",
+        "# Model only half a symmetric robot and generate the rest -- links,",
+        "# joints, inertials and meshes reflected through a base_link plane",
+        "# (same q on both sides = mirror pose; limits carry over unchanged):",
+        "#   mirror_limbs:",
+        "#     - {root: right_arm_0, plane: xz, rename: {right: left}}",
         "# A CAD reference axis can define ONE joint the mates do not show:",
         "#   axis_joints: [{axis: <RefAxis name>, parent: <part>, child: <part>}]",
         "#   (the pair may have no mate at all -- a forgotten constraint)",
