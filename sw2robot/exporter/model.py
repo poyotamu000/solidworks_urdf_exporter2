@@ -1525,7 +1525,18 @@ def _cluster_axes(axes):
     return out
 
 
-_STRICT_MIN_RADIUS = 0.003   # below this a free axis is a screw/pin, not a bearing
+# Below this radius a free rotation axis inside a sub-assembly is read as a
+# screw or a pin rather than a bearing.  3 mm suits machined hardware, but a
+# robot built from hobby servos has real joints under it: an STS3215's horn
+# mates on a 2.4 mm boss, so every servo in that quadruped welded shut and the
+# robot came out with 0 revolute joints.  `strict_min_radius:` in joints.yaml
+# lets such a machine lower it without weakening the default for everyone else.
+_STRICT_MIN_RADIUS = 0.003
+
+
+def strict_min_radius(value):
+    """The fastener/bearing radius cut-off (metres), or the default for None."""
+    return _STRICT_MIN_RADIUS if value is None else float(value)
 
 
 def _max_concentric_radius(recs):
@@ -1534,7 +1545,7 @@ def _max_concentric_radius(recs):
     return max(radii) if radii else None
 
 
-def classify_edge_geo(mates, strict=False):
+def classify_edge_geo(mates, strict=False, min_radius=None):
     """(jtype, axis, note) from full mate geometry; None -> caller falls back.
 
     Builds the twist constraint matrix from the deduped mates and inspects
@@ -1572,7 +1583,7 @@ def classify_edge_geo(mates, strict=False):
         if np.linalg.norm(r) < 1e-6 * np.linalg.norm(xi):
             if strict:
                 rmax = _max_concentric_radius(recs)
-                if rmax is not None and rmax < _STRICT_MIN_RADIUS:
+                if rmax is not None and rmax < strict_min_radius(min_radius):
                     return "fixed", None, \
                         (f"geo: free axis but r={rmax*1000:.1f}mm "
                          f"= fastener, not bearing -> fixed" + extra)
@@ -1623,7 +1634,8 @@ def classify_edge_auto(rec):
     mates = rec.get("mates")
     if mates:
         try:
-            out = classify_edge_geo(mates, strict=rec.get("strict", False))
+            out = classify_edge_geo(mates, strict=rec.get("strict", False),
+                                    min_radius=rec.get("strict_min_radius"))
             if out is not None:
                 return out
         except Exception as e:
@@ -3926,6 +3938,7 @@ def _sw2urdf_merge_directed(sw2_directed, user_directed):
 
 
 def from_graph(graph, exclude=None, expand=None, no_expand=None,
+               strict_min_radius_cfg=None,
                force_no_expand=None):
     """GraphState -> (comps, adjacency, ground), applying ``exclude`` and
     expanding sub-assemblies whose internals move (see
@@ -3961,7 +3974,7 @@ def from_graph(graph, exclude=None, expand=None, no_expand=None,
     _snap_unsolved_mates(comps, adjacency)
     comps, adjacency, ground = _expand_subassemblies(
         graph, comps, adjacency, ground, expand=expand, no_expand=no_expand,
-        force_no_expand=force_no_expand)
+        force_no_expand=force_no_expand, min_radius=strict_min_radius_cfg)
     if exclude:
         # Apply `exclude` AGAIN after expansion: the filter at the top of this
         # function only sees top-level graph.components, so a part excluded from
@@ -4008,7 +4021,7 @@ def _transform_rec(rec, T):
     return out
 
 
-def _subgraph_is_movable(sub, subs, _seen=None):
+def _subgraph_is_movable(sub, subs, _seen=None, min_radius=None):
     """Does any internal mate edge -- at ANY nesting depth -- classify as a
     movable joint?  Internal edges are judged in strict mode (sub-assembly
     fastener heuristics).  Recurses so a rigid wrapper around a moving unit
@@ -4017,18 +4030,20 @@ def _subgraph_is_movable(sub, subs, _seen=None):
     for e in sub.edges:
         rec = _edge_rec(e)
         rec["strict"] = True
+        rec["strict_min_radius"] = min_radius
         if classify_edge_auto(rec)[0] in _MOVABLE_TYPES:
             return True
     for cs in sub.components:
         p = cs.part_path
         if cs.is_subassembly and p and p in subs and p not in _seen:
             _seen.add(p)
-            if _subgraph_is_movable(subs[p], subs, _seen):
+            if _subgraph_is_movable(subs[p], subs, _seen, min_radius):
                 return True
     return False
 
 
-def _expand_one(inst, sub, comps, adjacency, ground, deep=None, hidden=None):
+def _expand_one(inst, sub, comps, adjacency, ground, deep=None, hidden=None,
+                min_radius=None):
     T = inst.world
     deep = deep or {}
     hidden = hidden or set()
@@ -4092,6 +4107,7 @@ def _expand_one(inst, sub, comps, adjacency, ground, deep=None, hidden=None):
                 continue
         rec = _transform_rec(_edge_rec(e), M)
         rec["strict"] = True
+        rec["strict_min_radius"] = min_radius
         for g in rec["mates"]:
             g["owners"] = [f"{inst.name}/{o}" if o else ""
                            for o in g.get("owners", [])]
@@ -4170,7 +4186,7 @@ def _expand_one(inst, sub, comps, adjacency, ground, deep=None, hidden=None):
 
 def _expand_subassemblies(graph, comps, adjacency, ground,
                           expand=None, no_expand=None,
-                          force_no_expand=None):
+                          force_no_expand=None, min_radius=None):
     """Expand instances whose internals move.
 
     ``expand``/``no_expand`` are case-insensitive substring overrides from the
@@ -4197,7 +4213,8 @@ def _expand_subassemblies(graph, comps, adjacency, ground,
         if any(s in nm for s in expand):
             return True
         if inst.part_path not in movable:
-            movable[inst.part_path] = _subgraph_is_movable(sub, subs)
+            movable[inst.part_path] = _subgraph_is_movable(sub, subs,
+                                                           min_radius=min_radius)
         return movable[inst.part_path]
 
     deep = getattr(graph, "deep_worlds", None) or {}
@@ -4208,7 +4225,7 @@ def _expand_subassemblies(graph, comps, adjacency, ground,
             return comps, adjacency, ground
         comps, adjacency, ground = _expand_one(
             inst, subs[inst.part_path], comps, adjacency, ground,
-            deep=deep, hidden=hidden)
+            deep=deep, hidden=hidden, min_radius=min_radius)
 
 
 # ====================================================================
@@ -4434,10 +4451,15 @@ def build_model(graph, robot_name=None, base_hint=None, config=None,
                               "keeps expansion for: "
                               + ", ".join(repr(x) for x in overridden))
 
+    # `strict_min_radius:` (metres) moves the fastener/bearing cut-off that
+    # welds a small free axis inside a sub-assembly.  A robot built from hobby
+    # servos needs it: the default 3 mm reads their 2.4 mm horn boss as a screw.
     comps, adjacency, ground = from_graph(
         graph, exclude=exclude,
         expand=config.get("expand") if config else None,
         no_expand=config.get("no_expand") if config else None,
+        strict_min_radius_cfg=(config.get("strict_min_radius")
+                               if config else None),
         force_no_expand=sw2_force_no_expand)
 
     if sw2cfg is not None and sw2_link_names is not None:
